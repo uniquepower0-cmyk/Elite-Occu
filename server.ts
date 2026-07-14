@@ -1,5 +1,5 @@
-import './init-fontconfig.js';
 import express from 'express';
+import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
@@ -95,46 +95,11 @@ const SERVICE_ACCOUNT_PATH = path.join(process.cwd(), 'service-account-key.json'
 let adminDb: any = null;
 let adminRTDB: any = null;
 
-let config: any = null;
-let serviceAccount: any = null;
-
 if (fs.existsSync(CONFIG_PATH) && fs.existsSync(SERVICE_ACCOUNT_PATH)) {
   try {
-    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8'));
-  } catch (err) {
-    console.error("Failed to read Firebase config files:", err);
-  }
-} else {
-  // Try loading from environment variables (e.g. on Vercel)
-  const envConfig = process.env.FIREBASE_CONFIG || process.env.NEXT_PUBLIC_FIREBASE_CONFIG;
-  const envServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
-  
-  if (envConfig && envServiceAccount) {
-    try {
-      config = JSON.parse(envConfig);
-      serviceAccount = JSON.parse(envServiceAccount);
-      console.log("Loaded Firebase configuration from environment variables.");
-    } catch (err) {
-      console.error("Failed to parse Firebase config environment variables:", err);
-    }
-  } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
-    config = {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      firestoreDatabaseId: process.env.FIREBASE_FIRESTORE_DATABASE_ID || '(default)'
-    };
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
-    serviceAccount = {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey
-    };
-    console.log("Loaded Firebase configuration from flat environment variables.");
-  }
-}
-
-if (config && serviceAccount) {
-  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8')); // <--- Read the key
+    
     let adminApp;
     if (admin.apps.length === 0) {
       adminApp = admin.initializeApp({
@@ -163,28 +128,16 @@ if (config && serviceAccount) {
     console.error("Failed to initialize Firebase Admin in backend:", err);
   }
 } else {
-  console.log("Firebase config or service-account-key.json file missing, and no compatible environment variables found. Admin SDK not initialized.");
+  console.error("Missing config or service-account-key.json file.");
 }
 
 // Use a local file for persistence. Note: This may still be lost on fresh deployments
 // but is generally more stable than /tmp in the dev environment.
-const DATA_FILE = process.env.VERCEL 
-  ? '/tmp/hospital_data.json' 
-  : path.join(__dirname, 'hospital_data.json');
+const DATA_FILE = path.join(__dirname, 'hospital_data.json');
 const LOGO_PATH = path.join(__dirname, 'elite_logo.png');
 const FALLBACK_LOGO_PATH = path.join(__dirname, 'elite_logo.png');
 
 function getCustomHeaderBgInfo() {
-  const tmpPng = '/tmp/header_bg.png';
-  const tmpJpg = '/tmp/header_bg.jpg';
-  const tmpJpeg = '/tmp/header_bg.jpeg';
-  
-  if (process.env.VERCEL) {
-    if (fs.existsSync(tmpPng)) return { path: tmpPng, ext: 'png' as const };
-    if (fs.existsSync(tmpJpg)) return { path: tmpJpg, ext: 'jpeg' as const };
-    if (fs.existsSync(tmpJpeg)) return { path: tmpJpeg, ext: 'jpeg' as const };
-  }
-
   const rootPng = path.join(process.cwd(), 'header_bg.png');
   const rootJpg = path.join(process.cwd(), 'header_bg.jpg');
   const rootJpeg = path.join(process.cwd(), 'header_bg.jpeg');
@@ -209,36 +162,6 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Middleware to ensure initial asynchronous database load has completed and keeps warm/cold instances synced
-app.use(async (req, res, next) => {
-  const isApi = req.path.startsWith('/api');
-  const isStaticApi = req.path.includes('logo') || req.path.includes('background') || req.path === '/api/health';
-
-  if (isApi && !isStaticApi) {
-    try {
-      if (loadDataPromise) {
-        await loadDataPromise;
-      }
-      const now = Date.now();
-      // If the cached database state is older than 2000ms, force-reload from Cloud Firestore.
-      // This is crucial for multi-instance environments like Vercel where another instance might have written updates.
-      if (now - lastLoadedTime > 2000) {
-        console.log(`[Sync] Warm instance data stale by ${now - lastLoadedTime}ms. Reloading from Firestore...`);
-        await loadData();
-      }
-    } catch (err) {
-      console.error("Error synchronizing database state in middleware:", err);
-    }
-  } else if (loadDataPromise) {
-    try {
-      await loadDataPromise;
-    } catch (err) {
-      console.error("Error awaiting loadDataPromise in request:", err);
-    }
-  }
-  next();
-});
-
 // Configuration
 const CONFIG = {
   EMAIL_RECIPIENT: "mohanad.md07@gmail.com",
@@ -249,8 +172,6 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 // Store parsed data
-let loadDataPromise: Promise<void> | null = null;
-let lastLoadedTime = 0;
 let hospitalData: any[][] | null = null;
 let previousHospitalData: any[][] | null = null;
 let cumulativeDischarged: any[] = []; 
@@ -798,7 +719,6 @@ async function loadData() {
       } else {
         console.log("No dataset document found in Firestore. Creating it on first upload/save.");
       }
-      lastLoadedTime = Date.now();
     } catch (err) {
       console.error('Failed to restore database state from Cloud Firestore:', err);
     }
@@ -866,8 +786,27 @@ app.get('/api/health', (req, res) => {
 });
 
 function checkDataTTL() {
-  // Automatic 24-hour TTL expiration has been disabled. 
-  // Hospital occupancy and other uploaded dashboard data persist permanently until a manual reset is requested.
+  if (uploadedAt && (Date.now() - uploadedAt > 24 * 60 * 60 * 1000)) {
+    console.log('Saved data has expired (older than 24 hours). Cleaning up all uploaded data.');
+    hospitalData = null;
+    previousHospitalData = null;
+    // Keep discharged patients that are in OR-x rooms (overlist patients)
+    cumulativeDischarged = (cumulativeDischarged || []).filter(p => isOrXRoom(p.room));
+    cumulativeEntries = [];
+    cumulativeDialysis = [];
+    cumulativeDebts = [];
+    cumulativeInsuredDebts = [];
+    cumulativeMedicalPlans = [];
+    cumulativeCompanionStatus = [];
+    cumulativeLOS = [];
+    // Do NOT clear cumulativeORList here to ensure manual-only reset!
+    uploadedAt = null;
+    
+    // Write empty state back to disk and Firestore async in background
+    saveData().catch(err => {
+      console.error('Failed to save empty state after TTL expiration:', err);
+    });
+  }
 }
 
 app.use((req, res, next) => {
@@ -941,7 +880,7 @@ async function saveData() {
 }
 
 // Trigger loadData asynchronously during startup
-loadDataPromise = loadData().catch(err => {
+loadData().catch(err => {
   console.error("Async startup data load failed:", err);
 });
 
@@ -1656,7 +1595,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
+          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -1679,7 +1618,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
+          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -2819,7 +2758,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <!-- Text Box Container in the middle of the header, arranged in front - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -2844,7 +2783,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
           <rect width="1200" height="180" fill="#EBF3F5" />
           <!-- Rounded text box at the center - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -5480,8 +5419,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -5504,8 +5443,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -5767,7 +5706,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
       const svgText = `
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -5790,7 +5729,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect width="600" height="180" fill="#E8F5E9" />
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -6455,7 +6394,7 @@ function generatePieChartSvg(
       // 100% single slice: full 3D cylinder
       sides.push(`<path d="M ${cx - rx} ${cy} A ${rx} ${ry} 0 0 0 ${cx + rx} ${cy} L ${cx + rx} ${cy + depth} A ${rx} ${ry} 0 0 1 ${cx - rx} ${cy + depth} Z" fill="${sideColor}" stroke="${sideColor}" stroke-width="0.5" />`);
       tops.push(`<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${slice.color}" stroke="#ffffff" stroke-width="1" />`);
-      labels.push(`<text x="${cx}" y="${cy}" fill="#ffffff" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="central" style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">100%</text>`);
+      labels.push(`<text x="${cx}" y="${cy}" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="central" style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">100%</text>`);
     } else {
       const x1 = cx + rx * Math.cos(currentAngle);
       const y1 = cy + ry * Math.sin(currentAngle);
@@ -6481,7 +6420,7 @@ function generatePieChartSvg(
         const lx = cx + labelR * Math.cos(middleAngle);
         const ly = cy + (labelR * 0.58) * Math.sin(middleAngle) + depth / 3;
         const percentageStr = `${Math.round(fraction * 100)}%`;
-        labels.push(`<text x="${lx}" y="${ly}" fill="#ffffff" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="11" font-weight="bold" text-anchor="middle" dominant-baseline="central" style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">${percentageStr}</text>`);
+        labels.push(`<text x="${lx}" y="${ly}" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="11" font-weight="bold" text-anchor="middle" dominant-baseline="central" style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">${percentageStr}</text>`);
       }
     }
 
@@ -6495,7 +6434,7 @@ function generatePieChartSvg(
     const percentage = total > 0 ? (slice.value / total) * 100 : 0;
     legendSvg += `
       <rect x="390" y="${legendY}" width="14" height="14" rx="3" fill="${slice.color}" />
-      <text x="412" y="${legendY + 11}" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="11" fill="#334155" font-weight="500">
+      <text x="412" y="${legendY + 11}" font-family="Segoe UI, sans-serif" font-size="11" fill="#334155" font-weight="500">
         ${escapeXml(slice.label)} (${slice.value}, ${percentage.toFixed(0)}%)
       </text>
     `;
@@ -6506,7 +6445,7 @@ function generatePieChartSvg(
     <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
       <rect width="100%" height="100%" fill="#ffffff" rx="12" />
       <rect width="100%" height="100%" fill="none" stroke="#cbd5e1" stroke-width="1" rx="12" />
-      <text x="24" y="35" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="14" font-weight="bold" fill="#0f172a">${escapeXml(title)}</text>
+      <text x="24" y="35" font-family="Segoe UI, sans-serif" font-size="14" font-weight="bold" fill="#0f172a">${escapeXml(title)}</text>
       <g>
         ${sides.join('\n')}
         ${tops.join('\n')}
@@ -6553,7 +6492,7 @@ function generateStackedBarChartSvg(
         `;
         if (occupiedHeight > 18) {
           barsSvg += `
-            <text x="${x + barWidth / 2}" y="${startY - occupiedHeight / 2}" fill="#ffffff" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="central">${cat.occupied}</text>
+            <text x="${x + barWidth / 2}" y="${startY - occupiedHeight / 2}" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="central">${cat.occupied}</text>
           `;
         }
       }
@@ -6564,7 +6503,7 @@ function generateStackedBarChartSvg(
         `;
         if (freeHeight > 18) {
           barsSvg += `
-            <text x="${x + barWidth / 2}" y="${startY - occupiedHeight - freeHeight / 2}" fill="#ffffff" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="central">${cat.free}</text>
+            <text x="${x + barWidth / 2}" y="${startY - occupiedHeight - freeHeight / 2}" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="central">${cat.free}</text>
           `;
         }
       }
@@ -6575,17 +6514,17 @@ function generateStackedBarChartSvg(
     const labelY = startY + 16;
     const transform = isRotated ? `transform="rotate(-25, ${labelX}, ${labelY})"` : '';
     xLabelsSvg += `
-      <text x="${labelX}" y="${labelY}" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="9" fill="#475569" text-anchor="${isRotated ? 'end' : 'middle'}" ${transform}>${escapeXml(cat.label)}</text>
+      <text x="${labelX}" y="${labelY}" font-family="Segoe UI, sans-serif" font-size="9" fill="#475569" text-anchor="${isRotated ? 'end' : 'middle'}" ${transform}>${escapeXml(cat.label)}</text>
     `;
   });
 
   const legendSvg = `
     <g transform="translate(${width - 140}, 60)">
       <rect x="0" y="0" width="12" height="12" rx="2" fill="#3b82f6" />
-      <text x="18" y="10" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="10" fill="#475569" font-weight="500">Occupied beds</text>
+      <text x="18" y="10" font-family="Segoe UI, sans-serif" font-size="10" fill="#475569" font-weight="500">Occupied beds</text>
       
       <rect x="0" y="22" width="12" height="12" rx="2" fill="#10b981" />
-      <text x="18" y="32" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="10" fill="#475569" font-weight="500">Free beds</text>
+      <text x="18" y="32" font-family="Segoe UI, sans-serif" font-size="10" fill="#475569" font-weight="500">Free beds</text>
     </g>
   `;
 
@@ -6594,7 +6533,7 @@ function generateStackedBarChartSvg(
     const y = startY - (i / 5) * chartHeight;
     gridLinesSvg += `
       <line x1="${startX}" y1="${y}" x2="${width - 150}" y2="${y}" stroke="#cbd5e1" stroke-dasharray="4" />
-      <text x="${startX - 10}" y="${y + 4}" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="9" fill="#64748b" text-anchor="end">${i * 20}%</text>
+      <text x="${startX - 10}" y="${y + 4}" font-family="Segoe UI, sans-serif" font-size="9" fill="#64748b" text-anchor="end">${i * 20}%</text>
     `;
   }
 
@@ -6602,7 +6541,7 @@ function generateStackedBarChartSvg(
     <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
       <rect width="100%" height="100%" fill="#ffffff" rx="12" />
       <rect width="100%" height="100%" fill="none" stroke="#cbd5e1" stroke-width="1" rx="12" />
-      <text x="24" y="35" font-family="'Cairo', 'Segoe UI', sans-serif" font-size="14" font-weight="bold" fill="#0f172a">${escapeXml(title)}</text>
+      <text x="24" y="35" font-family="Segoe UI, sans-serif" font-size="14" font-weight="bold" fill="#0f172a">${escapeXml(title)}</text>
       ${gridLinesSvg}
       ${barsSvg}
       ${xLabelsSvg}
@@ -7043,8 +6982,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -7067,8 +7006,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -10690,8 +10629,6 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
-    const viteModule = 'vite';
-    const { createServer: createViteServer } = await import(viteModule);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -10720,16 +10657,10 @@ app.all('/api/*', (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
-if (!process.env.VERCEL) {
-  console.log('Registering routes complete, starting server...');
-  startServer().catch(err => {
-    console.error('FAILED TO START SERVER:', err);
-  });
-} else {
-  console.log('Registering routes complete, server loaded in Vercel environment.');
-}
-
-export default app;
+console.log('Registering routes complete, starting server...');
+startServer().catch(err => {
+  console.error('FAILED TO START SERVER:', err);
+});
 
 // Final Error Handler
 app.use((err: any, req: any, res: any, next: any) => {
