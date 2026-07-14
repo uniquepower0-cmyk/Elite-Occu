@@ -209,9 +209,27 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Middleware to ensure initial asynchronous database load has completed before handling requests
+// Middleware to ensure initial asynchronous database load has completed and keeps warm/cold instances synced
 app.use(async (req, res, next) => {
-  if (loadDataPromise) {
+  const isApi = req.path.startsWith('/api');
+  const isStaticApi = req.path.includes('logo') || req.path.includes('background') || req.path === '/api/health';
+
+  if (isApi && !isStaticApi) {
+    try {
+      if (loadDataPromise) {
+        await loadDataPromise;
+      }
+      const now = Date.now();
+      // If the cached database state is older than 2000ms, force-reload from Cloud Firestore.
+      // This is crucial for multi-instance environments like Vercel where another instance might have written updates.
+      if (now - lastLoadedTime > 2000) {
+        console.log(`[Sync] Warm instance data stale by ${now - lastLoadedTime}ms. Reloading from Firestore...`);
+        await loadData();
+      }
+    } catch (err) {
+      console.error("Error synchronizing database state in middleware:", err);
+    }
+  } else if (loadDataPromise) {
     try {
       await loadDataPromise;
     } catch (err) {
@@ -232,6 +250,7 @@ const upload = multer({ storage: storage });
 
 // Store parsed data
 let loadDataPromise: Promise<void> | null = null;
+let lastLoadedTime = 0;
 let hospitalData: any[][] | null = null;
 let previousHospitalData: any[][] | null = null;
 let cumulativeDischarged: any[] = []; 
@@ -779,6 +798,7 @@ async function loadData() {
       } else {
         console.log("No dataset document found in Firestore. Creating it on first upload/save.");
       }
+      lastLoadedTime = Date.now();
     } catch (err) {
       console.error('Failed to restore database state from Cloud Firestore:', err);
     }
@@ -846,27 +866,8 @@ app.get('/api/health', (req, res) => {
 });
 
 function checkDataTTL() {
-  if (uploadedAt && (Date.now() - uploadedAt > 24 * 60 * 60 * 1000)) {
-    console.log('Saved data has expired (older than 24 hours). Cleaning up all uploaded data.');
-    hospitalData = null;
-    previousHospitalData = null;
-    // Keep discharged patients that are in OR-x rooms (overlist patients)
-    cumulativeDischarged = (cumulativeDischarged || []).filter(p => isOrXRoom(p.room));
-    cumulativeEntries = [];
-    cumulativeDialysis = [];
-    cumulativeDebts = [];
-    cumulativeInsuredDebts = [];
-    cumulativeMedicalPlans = [];
-    cumulativeCompanionStatus = [];
-    cumulativeLOS = [];
-    // Do NOT clear cumulativeORList here to ensure manual-only reset!
-    uploadedAt = null;
-    
-    // Write empty state back to disk and Firestore async in background
-    saveData().catch(err => {
-      console.error('Failed to save empty state after TTL expiration:', err);
-    });
-  }
+  // Automatic 24-hour TTL expiration has been disabled. 
+  // Hospital occupancy and other uploaded dashboard data persist permanently until a manual reset is requested.
 }
 
 app.use((req, res, next) => {

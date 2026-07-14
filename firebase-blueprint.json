@@ -110,11 +110,16 @@
         "entries": { "type": "string", "description": "JSON string of cumulativeEntries" },
         "dialysis": { "type": "string", "description": "JSON string of cumulativeDialysis" },
         "debts": { "type": "string", "description": "JSON string of cumulativeDebts" },
+        "insuredDebts": { "type": "string", "description": "JSON string of cumulativeInsuredDebts" },
         "medicalPlans": { "type": "string", "description": "JSON string of cumulativeMedicalPlans" },
         "companionStatus": { "type": "string", "description": "JSON string of cumulativeCompanionStatus" },
         "losData": { "type": "string", "description": "JSON string of cumulativeLOS" },
+        "orList": { "type": "string", "description": "JSON string of cumulativeORList" },
         "vipCasesText": { "type": "string" },
         "earlyDischargeRoomsText": { "type": "string" },
+        "pendingDischargePatientsText": { "type": "string" },
+        "manuallyDischargedNames": { "type": "string", "description": "JSON string of manuallyDischargedNames" },
+        "uploadedAt": { "type": "number", "description": "Epoch timestamp of when the datasets were uploaded" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["updatedAt"]
