@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net (default-deny catch-all)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Auth helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email.lower() == "mohanad.md07@gmail.com";
+    }
+
+    // Validation helpers
+    function isValidSettings(data) {
+      return data.keys().hasAll(['updatedAt'])
+        && (data.get('vipCasesText', '') is string && data.get('vipCasesText', '').size() <= 65536)
+        && (data.get('earlyDischargeRoomsText', '') is string && data.get('earlyDischargeRoomsText', '').size() <= 65536)
+        && data.updatedAt == request.time;
+    }
+
+    function isValidDatasetState(data) {
+      return data.keys().hasAll(['updatedAt'])
+        && data.updatedAt == request.time
+        && (data.get('vipCasesText', '') is string && data.get('vipCasesText', '').size() <= 65536)
+        && (data.get('earlyDischargeRoomsText', '') is string && data.get('earlyDischargeRoomsText', '').size() <= 65536)
+        && (data.get('current', '') is string && data.get('current', '').size() <= 524288)
+        && (data.get('previous', '') is string && data.get('previous', '').size() <= 524288)
+        && (data.get('discharged', '') is string && data.get('discharged', '').size() <= 524288)
+        && (data.get('entries', '') is string && data.get('entries', '').size() <= 524288)
+        && (data.get('dialysis', '') is string && data.get('dialysis', '').size() <= 524288)
+        && (data.get('debts', '') is string && data.get('debts', '').size() <= 524288)
+        && (data.get('medicalPlans', '') is string && data.get('medicalPlans', '').size() <= 524288)
+        && (data.get('companionStatus', '') is string && data.get('companionStatus', '').size() <= 524288)
+        && (data.get('losData', '') is string && data.get('losData', '').size() <= 524288);
+    }
+
+    // Collection validation rules
+    match /settings/{settingId} {
+      allow get: if isVerifiedEmail();
+      allow list: if isVerifiedEmail();
+      allow create, update: if isAdmin() && isValidSettings(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /state/{stateId} {
+      allow get: if isVerifiedEmail();
+      allow list: if isVerifiedEmail();
+      allow create, update: if isAdmin() && isValidDatasetState(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /logins/{loginId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if false; 
+    }
+  }
+}

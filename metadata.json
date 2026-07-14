@@ -1,0 +1,6 @@
+{
+  "name": "Hospital Occupancy Manager",
+  "description": "A comprehensive dashboard for managing hospital room occupancy, generating reports, and automating spreadsheet workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

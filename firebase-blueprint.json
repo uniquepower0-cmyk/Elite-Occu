@@ -1,0 +1,149 @@
+{
+  "entities": {
+    "HospitalSettings": {
+      "title": "Hospital Settings",
+      "description": "Global text boxes and parameters for the hospital dashboard",
+      "type": "object",
+      "properties": {
+        "vipCasesText": {
+          "type": "string",
+          "description": "User-configured text box for VIP cases, parsed for matching name lists"
+        },
+        "earlyDischargeRoomsText": {
+          "type": "string",
+          "description": "User-configured text box for early discharge rooms"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last modification"
+        }
+      },
+      "required": ["updatedAt"]
+    },
+    "PatientDischarge": {
+      "title": "Patient Discharge Record",
+      "description": "Information about a patient who has been discharged",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "room": { "type": "string" },
+        "patientName": { "type": "string" },
+        "dischargeDate": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "PatientEntry": {
+      "title": "Patient Entry Record",
+      "description": "Information about a new patient entry or admission",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "room": { "type": "string" },
+        "patientName": { "type": "string" },
+        "entryDate": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "MedicalPlan": {
+      "title": "Medical Plan Record",
+      "description": "Detailed medical plan row parsed from file data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "colB": { "type": "string", "description": "Room or ID field" },
+        "colD": { "type": "string", "description": "Patient Name" },
+        "colW": { "type": "string" },
+        "colM": { "type": "string" },
+        "colAG": { "type": "string" },
+        "colAH": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "DebtRecord": {
+      "title": "Debt Record",
+      "description": "Financial and debt information parsed from sheets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "room": { "type": "string" },
+        "patientName": { "type": "string" },
+        "debtAmount": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "CompanionStatus": {
+      "title": "Companion Status",
+      "description": "Record of patient companions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "colB": { "type": "string" },
+        "companionName": { "type": "string" },
+        "relation": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "LosRecord": {
+      "title": "Length of Stay Record",
+      "description": "Length of stay records for patients",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "colB": { "type": "string", "description": "Room" },
+        "colD": { "type": "string", "description": "Patient Name" },
+        "colM": { "type": "string" },
+        "colS": { "type": "string" },
+        "colU": { "type": "string" },
+        "colAL": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "DatasetState": {
+      "title": "Dataset State",
+      "description": "Full datasets of the application synchronized as active cache or backup",
+      "type": "object",
+      "properties": {
+        "current": { "type": "string", "description": "JSON string of hospitalData" },
+        "previous": { "type": "string", "description": "JSON string of previousHospitalData" },
+        "discharged": { "type": "string", "description": "JSON string of cumulativeDischarged" },
+        "entries": { "type": "string", "description": "JSON string of cumulativeEntries" },
+        "dialysis": { "type": "string", "description": "JSON string of cumulativeDialysis" },
+        "debts": { "type": "string", "description": "JSON string of cumulativeDebts" },
+        "medicalPlans": { "type": "string", "description": "JSON string of cumulativeMedicalPlans" },
+        "companionStatus": { "type": "string", "description": "JSON string of cumulativeCompanionStatus" },
+        "losData": { "type": "string", "description": "JSON string of cumulativeLOS" },
+        "vipCasesText": { "type": "string" },
+        "earlyDischargeRoomsText": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["updatedAt"]
+    },
+    "UserLogin": {
+      "title": "User Login Log",
+      "description": "Records user login events",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/settings/global": {
+      "schema": { "$ref": "#/entities/HospitalSettings" },
+      "description": "Global user-facing configurable variables like early discharges and VIP texts"
+    },
+    "/state/dataset": {
+      "schema": { "$ref": "#/entities/DatasetState" },
+      "description": "Optimized single-node document backup to maintain exact consistency of historical tables and sheets"
+    },
+    "/logins/{loginId}": {
+      "schema": { "$ref": "#/entities/UserLogin" },
+      "description": "Historical log of user logins"
+    }
+  }
+}
