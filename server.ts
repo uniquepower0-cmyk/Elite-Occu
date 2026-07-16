@@ -842,8 +842,8 @@ async function saveData() {
       manuallyDischargedNames: manuallyDischargedNames
     };
     // 1. Save locally fast sync
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data));
-    console.log('Hospital data saved to local persistence.');
+    try { fs.writeFileSync(DATA_FILE, JSON.stringify(data));
+    console.log('Hospital data saved to local persistence.'); } catch (e) { console.error('Failed to save local data (might be read-only env)', e); }
 
     // 2. Synchronize to Firestore
     if (adminDb) {
@@ -4793,8 +4793,8 @@ app.post('/api/upload-header-background', upload.single('file'), (req: any, res)
       }
     } catch (_) {}
 
-    fs.writeFileSync(savePath, req.file.buffer);
-    console.log('Saved custom header background image to:', savePath);
+    try { fs.writeFileSync(savePath, req.file.buffer);
+    console.log('Saved custom header background image to:', savePath); } catch (e) { console.error('Failed to save header bg image (might be read-only env)', e); }
     res.json({ success: true, message: 'Header background uploaded successfully' });
   } catch (error: any) {
     console.error('Header background upload error:', error);
@@ -10658,9 +10658,11 @@ app.all('/api/*', (req, res) => {
 });
 
 console.log('Registering routes complete, starting server...');
-startServer().catch(err => {
-  console.error('FAILED TO START SERVER:', err);
-});
+if (!process.env.VERCEL) {
+  startServer().catch(err => {
+    console.error('FAILED TO START SERVER:', err);
+  });
+}
 
 // Final Error Handler
 app.use((err: any, req: any, res: any, next: any) => {
@@ -10673,3 +10675,6 @@ app.use((err: any, req: any, res: any, next: any) => {
     });
   }
 });
+
+export default app;
+
