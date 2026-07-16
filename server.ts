@@ -1,5 +1,5 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
+
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
@@ -74,12 +74,12 @@ try {
     localDirname = path.dirname(localFilename);
   } else {
     localFilename = eval("__filename");
-    localDirname = eval("__dirname");
+    localDirname = eval("process.cwd()");
   }
 } catch (e) {
   try {
     localFilename = eval("__filename");
-    localDirname = eval("__dirname");
+    localDirname = eval("process.cwd()");
   } catch (err) {
     localFilename = "";
     localDirname = "";
@@ -133,18 +133,18 @@ if (fs.existsSync(CONFIG_PATH) && fs.existsSync(SERVICE_ACCOUNT_PATH)) {
 
 // Use a local file for persistence. Note: This may still be lost on fresh deployments
 // but is generally more stable than /tmp in the dev environment.
-const DATA_FILE = path.join(__dirname, 'hospital_data.json');
-const LOGO_PATH = path.join(__dirname, 'elite_logo.png');
-const FALLBACK_LOGO_PATH = path.join(__dirname, 'elite_logo.png');
+const DATA_FILE = path.join(process.cwd(), 'hospital_data.json');
+const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
+const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 
 function getCustomHeaderBgInfo() {
   const rootPng = path.join(process.cwd(), 'header_bg.png');
   const rootJpg = path.join(process.cwd(), 'header_bg.jpg');
   const rootJpeg = path.join(process.cwd(), 'header_bg.jpeg');
   
-  const dirPng = path.join(__dirname, 'header_bg.png');
-  const dirJpg = path.join(__dirname, 'header_bg.jpg');
-  const dirJpeg = path.join(__dirname, 'header_bg.jpeg');
+  const dirPng = path.join(process.cwd(), 'header_bg.png');
+  const dirJpg = path.join(process.cwd(), 'header_bg.jpg');
+  const dirJpeg = path.join(process.cwd(), 'header_bg.jpeg');
   
   if (fs.existsSync(rootPng)) return { path: rootPng, ext: 'png' as const };
   if (fs.existsSync(rootJpg)) return { path: rootJpg, ext: 'jpeg' as const };
@@ -4784,9 +4784,9 @@ app.post('/api/upload-header-background', upload.single('file'), (req: any, res)
         path.join(process.cwd(), 'header_bg.png'),
         path.join(process.cwd(), 'header_bg.jpg'),
         path.join(process.cwd(), 'header_bg.jpeg'),
-        path.join(__dirname, 'header_bg.png'),
-        path.join(__dirname, 'header_bg.jpg'),
-        path.join(__dirname, 'header_bg.jpeg'),
+        path.join(process.cwd(), 'header_bg.png'),
+        path.join(process.cwd(), 'header_bg.jpg'),
+        path.join(process.cwd(), 'header_bg.jpeg'),
       ];
       for (const f of filesToClean) {
         if (fs.existsSync(f)) fs.unlinkSync(f);
@@ -4825,9 +4825,9 @@ app.delete('/api/header-background', (req, res) => {
       path.join(process.cwd(), 'header_bg.png'),
       path.join(process.cwd(), 'header_bg.jpg'),
       path.join(process.cwd(), 'header_bg.jpeg'),
-      path.join(__dirname, 'header_bg.png'),
-      path.join(__dirname, 'header_bg.jpg'),
-      path.join(__dirname, 'header_bg.jpeg'),
+      path.join(process.cwd(), 'header_bg.png'),
+      path.join(process.cwd(), 'header_bg.jpg'),
+      path.join(process.cwd(), 'header_bg.jpeg'),
     ];
     for (const p of paths) {
       if (fs.existsSync(p)) {
@@ -4849,7 +4849,7 @@ app.delete('/api/header-background', (req, res) => {
 
 app.get('/api/debug-logo-status', (req, res) => {
   const processCwd = process.cwd();
-  const dirnameVal = __dirname;
+  const dirnameVal = process.cwd();
   
   const filesToCheck = [
     'elite_logo.png',
@@ -4904,8 +4904,8 @@ app.get('/api/debug-logo-status', (req, res) => {
 
 app.get('/api/elite-logo', (req, res) => {
   const logoPath = path.resolve(process.cwd(), 'elite_logo.png');
-  const dirLogoPath = path.resolve(__dirname, 'elite_logo.png');
-  console.log(`[Logo Debug] elite-logo requested. Process.cwd path: ${logoPath} (exists: ${fs.existsSync(logoPath)}), __dirname path: ${dirLogoPath} (exists: ${fs.existsSync(dirLogoPath)})`);
+  const dirLogoPath = path.resolve(process.cwd(), 'elite_logo.png');
+  console.log(`[Logo Debug] elite-logo requested. Process.cwd path: ${logoPath} (exists: ${fs.existsSync(logoPath)}), process.cwd() path: ${dirLogoPath} (exists: ${fs.existsSync(dirLogoPath)})`);
   
   if (fs.existsSync(logoPath)) {
     return res.sendFile(logoPath);
@@ -4922,8 +4922,8 @@ app.get('/api/elite-logo', (req, res) => {
 
 app.get('/api/elite-logo-transparent', (req, res) => {
   const logoPath = path.resolve(process.cwd(), 'elite_logo_transparent.png');
-  const dirLogoPath = path.resolve(__dirname, 'elite_logo_transparent.png');
-  console.log(`[Logo Debug] elite-logo-transparent requested. Process.cwd path: ${logoPath} (exists: ${fs.existsSync(logoPath)}), __dirname path: ${dirLogoPath} (exists: ${fs.existsSync(dirLogoPath)})`);
+  const dirLogoPath = path.resolve(process.cwd(), 'elite_logo_transparent.png');
+  console.log(`[Logo Debug] elite-logo-transparent requested. Process.cwd path: ${logoPath} (exists: ${fs.existsSync(logoPath)}), process.cwd() path: ${dirLogoPath} (exists: ${fs.existsSync(dirLogoPath)})`);
   
   if (fs.existsSync(logoPath)) {
     return res.sendFile(logoPath);
@@ -4933,7 +4933,7 @@ app.get('/api/elite-logo-transparent', (req, res) => {
     // try fallback to elite_logo
     console.log('[Logo Debug] elite-logo-transparent not found, trying fallback to elite_logo');
     const alternativeLogoPath = path.resolve(process.cwd(), 'elite_logo.png');
-    const alternativeDirLogoPath = path.resolve(__dirname, 'elite_logo.png');
+    const alternativeDirLogoPath = path.resolve(process.cwd(), 'elite_logo.png');
     if (fs.existsSync(alternativeLogoPath)) {
       return res.sendFile(alternativeLogoPath);
     } else if (fs.existsSync(alternativeDirLogoPath)) {
@@ -10629,6 +10629,7 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
