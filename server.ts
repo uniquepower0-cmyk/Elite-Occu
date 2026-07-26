@@ -655,6 +655,43 @@ function isNameMatch(nameA: string, nameB: string): boolean {
   return normA === normB;
 }
 
+function isToday(dateStr: string): boolean {
+  const d = String(dateStr || "").trim().toLowerCase();
+  if (!d) return false;
+  if (d.includes('اليوم')) return true;
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const year = today.getFullYear();
+  const shortYear = year % 100;
+  const month = today.getMonth() + 1;
+  const day = today.getDate();
+  const paddedMonth = month.toString().padStart(2, '0');
+  const paddedDay = day.toString().padStart(2, '0');
+  const possibleFormats = [
+    `${month}/${day}/${year}`, `${month}/${day}/${shortYear}`,
+    `${paddedMonth}/${paddedDay}/${year}`, `${paddedMonth}/${paddedDay}/${shortYear}`,
+    `${day}/${month}/${year}`, `${day}/${month}/${shortYear}`,
+    `${paddedDay}/${paddedMonth}/${year}`, `${paddedDay}/${paddedMonth}/${shortYear}`,
+    `${year}-${paddedMonth}-${paddedDay}`
+  ];
+  if (possibleFormats.some(f => d.includes(f))) return true;
+  try {
+     const parsedTime = Date.parse(d);
+     if (!isNaN(parsedTime)) {
+       const parsedDate = new Date(parsedTime);
+       if (parsedDate.getFullYear() === year && parsedDate.getMonth() === today.getMonth() && parsedDate.getDate() === day) return true;
+     }
+  } catch(e) {}
+  return false;
+}
+
+function getTodayRiyadhDateStr(): string {
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  const day = today.getDate();
+  return `${month}/${day}/${year}`;
+}
+
 // Persistence Helpers
 async function loadData() {
   try {
@@ -693,21 +730,54 @@ async function loadData() {
       if (docSnap.exists) {
         const parsed = docSnap.data();
         console.log("Cloud Firestore dataset found! Restoring state from cloud persistence.");
-        hospitalData = parsed.current ? JSON.parse(parsed.current) : hospitalData;
-        previousHospitalData = parsed.previous ? JSON.parse(parsed.previous) : previousHospitalData;
-        cumulativeDischarged = parsed.discharged ? JSON.parse(parsed.discharged) : cumulativeDischarged;
-        cumulativeEntries = parsed.entries ? JSON.parse(parsed.entries) : cumulativeEntries;
-        cumulativeDialysis = parsed.dialysis ? JSON.parse(parsed.dialysis) : cumulativeDialysis;
-        cumulativeDebts = parsed.debts ? JSON.parse(parsed.debts) : cumulativeDebts;
-        cumulativeInsuredDebts = parsed.insuredDebts ? JSON.parse(parsed.insuredDebts) : cumulativeInsuredDebts;
-        cumulativeMedicalPlans = parsed.medicalPlans ? JSON.parse(parsed.medicalPlans) : cumulativeMedicalPlans;
-        cumulativeCompanionStatus = parsed.companionStatus ? JSON.parse(parsed.companionStatus) : cumulativeCompanionStatus;
-        cumulativeLOS = parsed.losData ? JSON.parse(parsed.losData) : cumulativeLOS;
-        cumulativeORList = parsed.orList ? JSON.parse(parsed.orList) : cumulativeORList;
-        vipCasesText = parsed.vipCasesText || vipCasesText;
-        earlyDischargeRoomsText = parsed.earlyDischargeRoomsText || earlyDischargeRoomsText;
-        pendingDischargePatientsText = parsed.pendingDischargePatientsText || pendingDischargePatientsText;
-        manuallyDischargedNames = parsed.manuallyDischargedNames ? JSON.parse(parsed.manuallyDischargedNames) : manuallyDischargedNames;
+        
+        const parseMaybeJson = (val: any) => {
+          if (!val) return null;
+          if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch (e) { return val; }
+          }
+          return val;
+        };
+
+        const cloudCurrent = parseMaybeJson(parsed.current);
+        if (cloudCurrent && Array.isArray(cloudCurrent) && cloudCurrent.length > 0) hospitalData = cloudCurrent;
+
+        const cloudPrev = parseMaybeJson(parsed.previous);
+        if (cloudPrev) previousHospitalData = cloudPrev;
+
+        const cloudDischarged = parseMaybeJson(parsed.discharged);
+        if (Array.isArray(cloudDischarged) && cloudDischarged.length > 0) cumulativeDischarged = cloudDischarged;
+
+        const cloudEntries = parseMaybeJson(parsed.entries);
+        if (Array.isArray(cloudEntries)) cumulativeEntries = cloudEntries;
+
+        const cloudDialysis = parseMaybeJson(parsed.dialysis);
+        if (Array.isArray(cloudDialysis)) cumulativeDialysis = cloudDialysis;
+
+        const cloudDebts = parseMaybeJson(parsed.debts);
+        if (Array.isArray(cloudDebts)) cumulativeDebts = cloudDebts;
+
+        const cloudInsuredDebts = parseMaybeJson(parsed.insuredDebts);
+        if (Array.isArray(cloudInsuredDebts)) cumulativeInsuredDebts = cloudInsuredDebts;
+
+        const cloudMedicalPlans = parseMaybeJson(parsed.medicalPlans);
+        if (Array.isArray(cloudMedicalPlans)) cumulativeMedicalPlans = cloudMedicalPlans;
+
+        const cloudCompanionStatus = parseMaybeJson(parsed.companionStatus);
+        if (Array.isArray(cloudCompanionStatus)) cumulativeCompanionStatus = cloudCompanionStatus;
+
+        const cloudLOS = parseMaybeJson(parsed.losData);
+        if (Array.isArray(cloudLOS)) cumulativeLOS = cloudLOS;
+
+        const cloudORList = parseMaybeJson(parsed.orList);
+        if (Array.isArray(cloudORList) && cloudORList.length > 0) cumulativeORList = cloudORList;
+
+        if (parsed.vipCasesText !== undefined && parsed.vipCasesText !== null) vipCasesText = String(parsed.vipCasesText);
+        if (parsed.earlyDischargeRoomsText !== undefined && parsed.earlyDischargeRoomsText !== null) earlyDischargeRoomsText = String(parsed.earlyDischargeRoomsText);
+        if (parsed.pendingDischargePatientsText !== undefined && parsed.pendingDischargePatientsText !== null) pendingDischargePatientsText = String(parsed.pendingDischargePatientsText);
+
+        const cloudManualDisc = parseMaybeJson(parsed.manuallyDischargedNames);
+        if (Array.isArray(cloudManualDisc)) manuallyDischargedNames = cloudManualDisc;
         
         if (parsed.uploadedAt) {
           uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
@@ -775,9 +845,6 @@ async function loadData() {
   });
 
   console.log('Durable room-name sanitization done.');
-  
-  // Enforce TTL validation on initial data load
-  checkDataTTL();
 }
 
 // Health Check
@@ -786,27 +853,9 @@ app.get('/api/health', (req, res) => {
 });
 
 function checkDataTTL() {
-  if (uploadedAt && (Date.now() - uploadedAt > 24 * 60 * 60 * 1000)) {
-    console.log('Saved data has expired (older than 24 hours). Cleaning up all uploaded data.');
-    hospitalData = null;
-    previousHospitalData = null;
-    // Keep discharged patients that are in OR-x rooms (overlist patients)
-    cumulativeDischarged = (cumulativeDischarged || []).filter(p => isOrXRoom(p.room));
-    cumulativeEntries = [];
-    cumulativeDialysis = [];
-    cumulativeDebts = [];
-    cumulativeInsuredDebts = [];
-    cumulativeMedicalPlans = [];
-    cumulativeCompanionStatus = [];
-    cumulativeLOS = [];
-    // Do NOT clear cumulativeORList here to ensure manual-only reset!
-    uploadedAt = null;
-    
-    // Write empty state back to disk and Firestore async in background
-    saveData().catch(err => {
-      console.error('Failed to save empty state after TTL expiration:', err);
-    });
-  }
+  // All hospital data, discharged cases, VIP cases, and debt lists are permanently preserved
+  // in Cloud Firestore and local persistence until explicitly reset by user action.
+  return;
 }
 
 app.use((req, res, next) => {
@@ -971,35 +1020,6 @@ async function handleUnifiedUpload(req: any, res: any) {
     });
     rows = [...headerRow, ...dataRowsFiltered];
 
-    const isToday = (dateStr: string) => {
-      const d = dateStr.trim().toLowerCase();
-      if (!d) return false;
-      if (d.includes('اليوم')) return true;
-      const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
-      const year = today.getFullYear();
-      const shortYear = year % 100;
-      const month = today.getMonth() + 1;
-      const day = today.getDate();
-      const paddedMonth = month.toString().padStart(2, '0');
-      const paddedDay = day.toString().padStart(2, '0');
-      const possibleFormats = [
-        `${month}/${day}/${year}`, `${month}/${day}/${shortYear}`,
-        `${paddedMonth}/${paddedDay}/${year}`, `${paddedMonth}/${paddedDay}/${shortYear}`,
-        `${day}/${month}/${year}`, `${day}/${month}/${shortYear}`,
-        `${paddedDay}/${paddedMonth}/${year}`, `${paddedDay}/${paddedMonth}/${shortYear}`,
-        `${year}-${paddedMonth}-${paddedDay}`
-      ];
-      if (possibleFormats.some(f => d.includes(f))) return true;
-      try {
-         const parsedTime = Date.parse(d);
-         if (!isNaN(parsedTime)) {
-           const parsedDate = new Date(parsedTime);
-           if (parsedDate.getFullYear() === year && parsedDate.getMonth() === today.getMonth() && parsedDate.getDate() === day) return true;
-         }
-      } catch(e) {}
-      return false;
-    };
-
     const extractRowsFromData = (sourceData: any[][], skip: number) => {
       if (!sourceData || sourceData.length <= skip) return [];
       return sourceData.slice(skip).map(row => ({
@@ -1033,7 +1053,10 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     // CLEANUP: If a patient is in the hospital (any room), they are NOT discharged.
     if (!isNewSheetLikelyEmpty) {
-      cumulativeDischarged = cumulativeDischarged.filter(p => !currentSheetNames.has(p.name.toLowerCase().trim()));
+      cumulativeDischarged = cumulativeDischarged.filter(p => {
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(p.name, currentP.name));
+        return !isStillPresent;
+      });
     }
 
     const extractDialysisRows = (sourceData: any[][], skip: number) => {
@@ -1060,19 +1083,19 @@ async function handleUnifiedUpload(req: any, res: any) {
     
     // For Dialysis: Keep all dialysis cases cumulatively
     if (!isNewSheetLikelyEmpty) {
-      const currentDialNamesPersistent = new Set(cumulativeDialysis.map(p => p.name.toLowerCase().trim()));
       dialRowsNew.forEach(p => {
-        if (!currentDialNamesPersistent.has(p.name.toLowerCase().trim())) {
+        const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
           cumulativeDialysis.push(p);
         }
       });
     }
 
     // Update cumulative entries (today's entries)
-    const currentEntryNames = new Set(cumulativeEntries.map(p => p.name.toLowerCase().trim()));
     newRows.forEach(p => {
       if (isToday(p.date)) {
-        if (!currentEntryNames.has(p.name.toLowerCase().trim())) {
+        const alreadyExists = cumulativeEntries.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
           cumulativeEntries.push(p);
         }
       }
@@ -1093,7 +1116,10 @@ async function handleUnifiedUpload(req: any, res: any) {
       const oldRows = extractRowsFromData(hospitalData, oldStartIdx);
       
       // Identify new discharges: in old data (filtered) but NOT in current data (at all)
-      const newlyDischarged = oldRows.filter(oldP => !currentSheetNames.has(oldP.name.toLowerCase().trim()));
+      const newlyDischarged = oldRows.filter(oldP => {
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
+        return !isStillPresent;
+      });
       
       // Also identify any OR patients that are no longer in the current sheet at all
       const oldORPatients: any[] = [];
@@ -1111,18 +1137,23 @@ async function handleUnifiedUpload(req: any, res: any) {
           });
         }
       });
-      const newlyDischargedOR = oldORPatients.filter(oldP => !currentSheetNames.has(oldP.name.toLowerCase().trim()));
+      const newlyDischargedOR = oldORPatients.filter(oldP => {
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
+        return !isStillPresent;
+      });
 
-      const existingDischargedNames = new Set(cumulativeDischarged.map(p => p.name.toLowerCase().trim()));
-      
       newlyDischarged.forEach(p => {
-        if (!existingDischargedNames.has(p.name.toLowerCase().trim())) {
+        const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
+          (p as any).dischargeDate = getTodayRiyadhDateStr();
           cumulativeDischarged.push(p);
         }
       });
 
       newlyDischargedOR.forEach(p => {
-        if (!existingDischargedNames.has(p.name.toLowerCase().trim())) {
+        const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
+          (p as any).dischargeDate = getTodayRiyadhDateStr();
           cumulativeDischarged.push(p);
         }
       });
@@ -3428,35 +3459,6 @@ async function updateHospitalState(rows: any[][]) {
       }
   }
 
-  const isToday = (dateStr: string) => {
-    const d = dateStr.trim().toLowerCase();
-    if (!d) return false;
-    if (d.includes('اليوم')) return true;
-    const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
-    const year = today.getFullYear();
-    const shortYear = year % 100;
-    const month = today.getMonth() + 1;
-    const day = today.getDate();
-    const paddedMonth = month.toString().padStart(2, '0');
-    const paddedDay = day.toString().padStart(2, '0');
-    const possibleFormats = [
-      `${month}/${day}/${year}`, `${month}/${day}/${shortYear}`,
-      `${paddedMonth}/${paddedDay}/${year}`, `${paddedMonth}/${paddedDay}/${shortYear}`,
-      `${day}/${month}/${year}`, `${day}/${month}/${shortYear}`,
-      `${paddedDay}/${paddedMonth}/${year}`, `${paddedDay}/${paddedMonth}/${shortYear}`,
-      `${year}-${paddedMonth}-${paddedDay}`
-    ];
-    if (possibleFormats.some(f => d.includes(f))) return true;
-    try {
-       const parsedTime = Date.parse(d);
-       if (!isNaN(parsedTime)) {
-         const parsedDate = new Date(parsedTime);
-         if (parsedDate.getFullYear() === year && parsedDate.getMonth() === today.getMonth() && parsedDate.getDate() === day) return true;
-       }
-    } catch(e) {}
-    return false;
-  };
-
   const extractRowsFromData = (sourceData: any[][], skip: number) => {
     if (!sourceData || sourceData.length <= skip) return [];
     return sourceData.slice(skip).map(row => ({
@@ -3490,7 +3492,10 @@ async function updateHospitalState(rows: any[][]) {
 
   // CLEANUP: If a patient is in the hospital (any room), they are NOT discharged.
   if (!isNewSheetLikelyEmpty) {
-    cumulativeDischarged = cumulativeDischarged.filter(p => !currentSheetNames.has(p.name.toLowerCase().trim()));
+    cumulativeDischarged = cumulativeDischarged.filter(p => {
+      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(p.name, currentP.name));
+      return !isStillPresent;
+    });
   }
 
   const extractDialysisRows = (sourceData: any[][], skip: number) => {
@@ -3517,19 +3522,19 @@ async function updateHospitalState(rows: any[][]) {
   
   // For Dialysis: Keep all dialysis cases cumulatively
   if (!isNewSheetLikelyEmpty) {
-    const currentDialNamesPersistent = new Set(cumulativeDialysis.map(p => p.name.toLowerCase().trim()));
     dialRowsNew.forEach(p => {
-      if (!currentDialNamesPersistent.has(p.name.toLowerCase().trim())) {
+      const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
         cumulativeDialysis.push(p);
       }
     });
   }
 
   // Update cumulative entries (today's entries)
-  const currentEntryNames = new Set(cumulativeEntries.map(p => p.name.toLowerCase().trim()));
   newRows.forEach(p => {
     if (isToday(p.date)) {
-      if (!currentEntryNames.has(p.name.toLowerCase().trim())) {
+      const alreadyExists = cumulativeEntries.some(existing => isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
         cumulativeEntries.push(p);
       }
     }
@@ -3550,7 +3555,10 @@ async function updateHospitalState(rows: any[][]) {
     const oldRows = extractRowsFromData(hospitalData, oldStartIdx);
     
     // Identify new discharges: in old data (filtered) but NOT in current data (at all)
-    const newlyDischarged = oldRows.filter(oldP => !currentSheetNames.has(oldP.name.toLowerCase().trim()));
+    const newlyDischarged = oldRows.filter(oldP => {
+      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
+      return !isStillPresent;
+    });
     
     // Also identify any OR patients that are no longer in the current sheet at all
     const oldORPatients: any[] = [];
@@ -3568,18 +3576,23 @@ async function updateHospitalState(rows: any[][]) {
         });
       }
     });
-    const newlyDischargedOR = oldORPatients.filter(oldP => !currentSheetNames.has(oldP.name.toLowerCase().trim()));
+    const newlyDischargedOR = oldORPatients.filter(oldP => {
+      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
+      return !isStillPresent;
+    });
 
-    const existingDischargedNames = new Set(cumulativeDischarged.map(p => p.name.toLowerCase().trim()));
-    
     newlyDischarged.forEach(p => {
-      if (!existingDischargedNames.has(p.name.toLowerCase().trim())) {
+      const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
+        (p as any).dischargeDate = getTodayRiyadhDateStr();
         cumulativeDischarged.push(p);
       }
     });
 
     newlyDischargedOR.forEach(p => {
-      if (!existingDischargedNames.has(p.name.toLowerCase().trim())) {
+      const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
+        (p as any).dischargeDate = getTodayRiyadhDateStr();
         cumulativeDischarged.push(p);
       }
     });
@@ -4168,6 +4181,12 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 
 app.get('/api/occupancy/data', async (req, res) => {
   try {
+    await loadData();
+  } catch (err) {
+    console.error('Failed to load latest state from Firestore in GET /api/occupancy/data:', err);
+  }
+
+  try {
     await fetchAndSyncFromFirebaseRTDB();
   } catch (err) {
     console.error('Failed to sync instantly from Firebase RTDB:', err);
@@ -4186,12 +4205,35 @@ app.get('/api/occupancy/data', async (req, res) => {
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
   const enrichedOrList = getEnrichedOrListForStats(cumulativeORList, occRows);
 
+  const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
+    const isStillPresent = occRowsUnfiltered.some(activePt => {
+      const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
+      return activeName ? isNameMatch(discPt.name, activeName) : false;
+    });
+    return !isStillPresent;
+  });
+
+  const uniqueCleanDischarged: any[] = [];
+  cleanDischarged.forEach(p => {
+    if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+      uniqueCleanDischarged.push(p);
+    }
+  });
+
+  const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+  const uniqueTodayEntries: any[] = [];
+  todayEntries.forEach(p => {
+    if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
+      uniqueTodayEntries.push(p);
+    }
+  });
+
   if (!hospitalData) {
     return res.json({ 
       rows: [], 
       previousRows: [], 
-      dischargedRows: filterHelper(cumulativeDischarged),
-      entryRows: filterHelper(cumulativeEntries),
+      dischargedRows: filterHelper(uniqueCleanDischarged),
+      entryRows: filterHelper(uniqueTodayEntries),
       dialysisRows: cumulativeDialysis,
       debtRows: cumulativeDebts,
       insuredDebtRows: cumulativeInsuredDebts,
@@ -4213,8 +4255,8 @@ app.get('/api/occupancy/data', async (req, res) => {
   res.json({ 
     rows: occRowsUnfiltered, 
     previousRows: hospitalData ? getOccupancyRowsUnfiltered(previousHospitalData) : [],
-    dischargedRows: filterHelper(cumulativeDischarged),
-    entryRows: filterHelper(cumulativeEntries),
+    dischargedRows: filterHelper(uniqueCleanDischarged),
+    entryRows: filterHelper(uniqueTodayEntries),
     dialysisRows: cumulativeDialysis,
     debtRows: cumulativeDebts,
     insuredDebtRows: cumulativeInsuredDebts,
@@ -4340,9 +4382,9 @@ app.all('/api/vip-cases/formatted', (req, res) => {
   res.json({ text });
 });
 
-app.post('/api/vip-cases', (req, res) => {
+app.post('/api/vip-cases', async (req, res) => {
   vipCasesText = req.body.text || "";
-  saveData();
+  await saveData();
   res.json({ success: true, text: vipCasesText });
 });
 
@@ -4350,9 +4392,9 @@ app.get('/api/early-discharge-rooms', (req, res) => {
   res.json({ text: earlyDischargeRoomsText });
 });
 
-app.post('/api/early-discharge-rooms', (req, res) => {
+app.post('/api/early-discharge-rooms', async (req, res) => {
   earlyDischargeRoomsText = req.body.text || "";
-  saveData();
+  await saveData();
   res.json({ success: true, text: earlyDischargeRoomsText });
 });
 
@@ -4425,7 +4467,8 @@ app.post('/api/pending-discharge', async (req, res) => {
           name: patientName,
           physician: docVal,
           contractor: contVal,
-          date: dateVal
+          date: dateVal,
+          dischargeDate: getTodayRiyadhDateStr()
         };
         
         if (!cumulativeDischarged.some(p => isNameMatch(p.name, patientName))) {
@@ -4951,8 +4994,17 @@ app.get('/api/elite-logo-transparent', (req, res) => {
 app.get('/api/reports/entry_formatted', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
   try {
+    const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
+    const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+    const uniqueTodayEntries: any[] = [];
+    todayEntries.forEach(p => {
+      if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
+        uniqueTodayEntries.push(p);
+      }
+    });
+
     const workbook = new ExcelJS.Workbook();
-    addEntrySheet(workbook, cumulativeEntries);
+    addEntrySheet(workbook, uniqueTodayEntries);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Entry.xlsx');
     await workbook.xlsx.write(res);
@@ -10403,8 +10455,24 @@ app.get('/api/reports/inpatient_summary', async (req, res) => {
 app.get('/api/reports/exit_formatted', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'Please upload a sheet first.' });
   try {
+    const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
+    const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = occRowsUnfiltered.some(activePt => {
+        const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
+        return activeName ? isNameMatch(discPt.name, activeName) : false;
+      });
+      return !isStillPresent;
+    });
+
+    const uniqueCleanDischarged: any[] = [];
+    cleanDischarged.forEach(p => {
+      if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+        uniqueCleanDischarged.push(p);
+      }
+    });
+
     const workbook = new ExcelJS.Workbook();
-    addExitSheet(workbook, cumulativeDischarged);
+    addExitSheet(workbook, uniqueCleanDischarged);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Formatted_Exit_${new Date().toISOString().split('T')[0]}.xlsx"`);
     await workbook.xlsx.write(res);
@@ -10420,15 +10488,42 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
 app.get('/api/reports/combined', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'No data available.' });
   try {
+    const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
+    
+    // Clean exits
+    const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = occRowsUnfiltered.some(activePt => {
+        const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
+        return activeName ? isNameMatch(discPt.name, activeName) : false;
+      });
+      return !isStillPresent;
+    });
+
+    const uniqueCleanDischarged: any[] = [];
+    cleanDischarged.forEach(p => {
+      if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+        uniqueCleanDischarged.push(p);
+      }
+    });
+
+    // Clean entries
+    const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+    const uniqueTodayEntries: any[] = [];
+    todayEntries.forEach(p => {
+      if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
+        uniqueTodayEntries.push(p);
+      }
+    });
+
     const workbook = new ExcelJS.Workbook();
     const isRefined = req.query.refined === 'true';
     
     // Add all sheets if data exists (except companion status sheets per user request)
     if (isRefined) {
       await addGridOccupancySheet(workbook, getOccupancyRows(hospitalData));
-      await addRefinedEntrySheet(workbook, cumulativeEntries);
+      await addRefinedEntrySheet(workbook, uniqueTodayEntries);
       await addRefinedDialysisSheet(workbook, cumulativeDialysis);
-      await addRefinedExitSheet(workbook, cumulativeDischarged);
+      await addRefinedExitSheet(workbook, uniqueCleanDischarged);
       if (cumulativeDebts && cumulativeDebts.length > 0) {
         await addRefinedDebtsSheet(workbook, cumulativeDebts);
       }
@@ -10437,9 +10532,9 @@ app.get('/api/reports/combined', async (req, res) => {
       }
     } else {
       addOccupancySheet(workbook, getOccupancyRows(hospitalData));
-      addEntrySheet(workbook, cumulativeEntries);
+      addEntrySheet(workbook, uniqueTodayEntries);
       addDialysisSheet(workbook, cumulativeDialysis);
-      addExitSheet(workbook, cumulativeDischarged);
+      addExitSheet(workbook, uniqueCleanDischarged);
       if (cumulativeDebts && cumulativeDebts.length > 0) {
         addDebtsSheet(workbook, cumulativeDebts);
       }

@@ -34,7 +34,7 @@ import {
   Hotel
 } from 'lucide-react';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
-import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, onSnapshot } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -367,6 +367,25 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    console.log('Registering real-time Firestore listener for state/dataset...');
+    const docRef = doc(db, 'state', 'dataset');
+    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+      if (snapshot.exists()) {
+        console.log('Real-time database update detected from Firestore! Refreshing data...');
+        fetchData();
+      }
+    }, (error) => {
+      console.error('Firestore real-time subscription error:', error);
+      // Fallback: fetch data manually in case of error
+      fetchData();
+    });
+
+    return () => unsubscribe();
+  }, [isAuthenticated]);
 
   const handleLogin = async () => {
     setLoading(true);
