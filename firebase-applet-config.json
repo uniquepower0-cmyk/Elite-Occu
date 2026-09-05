@@ -6,5 +6,6 @@
   "firestoreDatabaseId": "ai-studio-f603660f-2a84-4c68-a5e8-166db31c3160",
   "storageBucket": "ai-studio-applet-webapp-f4da3.firebasestorage.app",
   "messagingSenderId": "779001651473",
-  "measurementId": ""
+  "measurementId": "",
+  "databaseURL": "https://ai-studio-applet-webapp-f4da3-default-rtdb.firebaseio.com"
 }

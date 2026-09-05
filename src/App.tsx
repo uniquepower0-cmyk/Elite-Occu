@@ -31,7 +31,8 @@ import {
   UserPlus,
   X,
   Activity,
-  Hotel
+  Hotel,
+  Percent
 } from 'lucide-react';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, onSnapshot } from 'firebase/firestore';
@@ -1821,6 +1822,32 @@ export default function App() {
     }
   };
 
+  const downloadVacantRoomsAscendingReport = async () => {
+    setProcessing('Downloading Vacant Rooms Ascending Sheet');
+    try {
+      const res = await fetch('/api/reports/vacant_rooms_ascending');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'No data found. Please upload the source sheet first.' }));
+        throw new Error(errorData.error);
+      }
+      
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Vacant_Rooms_Ascending_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error(err);
+      alert(`Download failed: ${err.message}`);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
   const downloadOccupancyChartsDashboardReport = async () => {
     setProcessing('Downloading Occupancy Charts Dashboard Sheet');
     try {
@@ -1922,7 +1949,24 @@ export default function App() {
 
   const totalOccupied = activeStatsPatients.length;
   const totalSlots = stats.reduce((acc, s) => acc + s.total, 0);
-  const occupancyRate = totalSlots > 0 ? ((totalOccupied / totalSlots) * 100).toFixed(1) : '0';
+  const totalOccupancyRate = totalSlots > 0 ? ((totalOccupied / totalSlots) * 100).toFixed(1) : '0';
+
+  const closedUnitZoneNames = ["ICU & VIP", "NICU", "PICU", "SICU", "CCU"];
+  const inpatientWardStats = useMemo(() => {
+    return stats.filter(s => !closedUnitZoneNames.includes(s.name));
+  }, [stats]);
+
+  const inpatientOccupied = useMemo(() => {
+    return inpatientWardStats.reduce((acc, s) => acc + s.occupied, 0);
+  }, [inpatientWardStats]);
+
+  const inpatientTotalSlots = useMemo(() => {
+    return inpatientWardStats.reduce((acc, s) => acc + s.total, 0);
+  }, [inpatientWardStats]);
+
+  const inpatientOccupancyRate = inpatientTotalSlots > 0 
+    ? ((inpatientOccupied / inpatientTotalSlots) * 100).toFixed(1) 
+    : '0';
 
   const cashCount = useMemo(() => activeStatsPatients.filter(p => isCashPayment(p.payment)).length, [activeStatsPatients]);
   const insuredCount = totalOccupied - cashCount;
@@ -2459,7 +2503,14 @@ export default function App() {
                   />
                   <StatCard label="Today's Entries" value={`${todaysEntries}`} subValue="Admitted today" icon={<Calendar className="text-blue-600" />} color="blue" />
                   <StatCard label="Discharged" value={`${dischargedPatients.length}`} subValue="Sync difference" icon={<LogOut className="text-pink-600" />} color="pink" />
-                  <StatCard label="Occupancy Rate" value={`${occupancyRate}%`} subValue="Capacity usage" icon={<LayoutDashboard className="text-slate-600" />} color="slate" />
+                  <StatCard 
+                    label="Inpatient Occupancy Rate" 
+                    value={`${inpatientOccupancyRate}%`} 
+                    subValue={`${inpatientOccupied} / ${inpatientTotalSlots} Inpatient Beds`} 
+                    icon={<Percent className="text-teal-600" />} 
+                    color="teal" 
+                    highlighted={true}
+                  />
                   <StatCard label="Critical Zones" value={stats.filter(s => s.occupied/s.total > 0.8).length.toString()} subValue="> 80% capacity" icon={<AlertCircle className="text-amber-600" />} color="amber" />
                   <StatCard 
                     label="VIP Cases" 
@@ -2710,7 +2761,7 @@ export default function App() {
                     <div className="flex justify-between items-center mb-6">
                       <h3 className="font-extrabold text-[#0b3c34] tracking-tight">Resource Health</h3>
                       <div className="px-3 py-1 bg-[#0b3c34]/10 text-[#0b3c34] rounded-full text-[10px] font-bold uppercase tracking-wider border border-teal-400/20">
-                        Total: {occupancyRate}%
+                        Inpatient: {inpatientOccupancyRate}% | Total: {totalOccupancyRate}%
                       </div>
                     </div>
 
@@ -2719,15 +2770,15 @@ export default function App() {
                       <div className="p-4 bg-white/30 rounded-xl border border-white/20 mb-2">
                         <div className="flex justify-between items-end mb-2">
                           <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Inpatient</p>
-                            <p className="text-xl font-bold text-slate-800">{occupancyRate}%</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Inpatient Occupancy Rate (Excl. Closed Units)</p>
+                            <p className="text-xl font-bold text-slate-800">{inpatientOccupancyRate}%</p>
                           </div>
-                          <p className="text-[11px] font-bold text-slate-500">{totalOccupied} / {totalSlots} Beds</p>
+                          <p className="text-[11px] font-bold text-slate-500">{inpatientOccupied} / {inpatientTotalSlots} Inpatient Beds</p>
                         </div>
                         <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                           <motion.div 
                             initial={{ width: 0 }}
-                            animate={{ width: `${occupancyRate}%` }}
+                            animate={{ width: `${inpatientOccupancyRate}%` }}
                             className="h-full bg-teal-600 rounded-full"
                           />
                         </div>
@@ -4168,6 +4219,14 @@ export default function App() {
                           disabled={!!processing}
                         />
                         <WorkflowCard 
+                          title="Empty Rooms (Ascending by Floor & Room)"
+                          description="Download empty rooms in ascending order by floor and room number, with accommodation category in a separate column."
+                          icon={<FileSpreadsheet className="text-teal-700" />}
+                          actionLabel={processing === 'Downloading Vacant Rooms Ascending Sheet' ? 'Generating...' : 'Download'}
+                          onAction={downloadVacantRoomsAscendingReport}
+                          disabled={!!processing}
+                        />
+                        <WorkflowCard 
                           title="Early Discharge Cases Sheet"
                           description="Download the custom 'Early Discharge Cases Sheet' containing extracted details formatted with stylish colored separators for each Zone showing zone name and number of cases."
                           icon={<FileSpreadsheet className="text-[#0D47A1]" />}
@@ -4344,7 +4403,7 @@ function StatCard({ label, value, subValue, icon, color = 'indigo', onCopy, copy
   highlighted?: boolean
 }) {
   const [copied, setCopied] = useState(false);
-  const isHighlighted = highlighted || label.toUpperCase().includes('TOTAL OCCUPIED') || label.toUpperCase().includes('AVAILABLE') || label.toUpperCase().includes('EXCEEDING') || label.toUpperCase().includes('VIP');
+  const isHighlighted = highlighted || label.toUpperCase().includes('TOTAL OCCUPIED') || label.toUpperCase().includes('AVAILABLE') || label.toUpperCase().includes('EXCEEDING') || label.toUpperCase().includes('VIP') || label.toUpperCase().includes('INPATIENT OCCUPANCY');
 
   const renderMiniChart = (lbl: string) => {
     const uLabel = lbl.toUpperCase();

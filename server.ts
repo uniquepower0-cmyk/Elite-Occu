@@ -5924,6 +5924,278 @@ app.get('/api/reports/vacant_by_category', async (req, res) => {
   }
 });
 
+app.get('/api/reports/vacant_rooms_ascending', async (req, res) => {
+  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await addVacantRoomsAscendingSheet(workbook, getOccupancyRows(hospitalData));
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_Ascending_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('Vacant rooms ascending excel generation error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: any[][]) {
+  const sheet = workbook.addWorksheet('الغرف الشاغرة بترتيب الأرقام', {
+    views: [{ rightToLeft: false }] 
+  });
+
+  const occupiedRooms = new Set<string>();
+  if (data) {
+    data.slice(3).forEach(row => {
+      const roomStr = String(row[0] || "").trim();
+      const norm = normalizeRoom(roomStr);
+      if (norm) {
+        occupiedRooms.add(norm);
+      }
+    });
+  }
+
+  const FIRST_FLOOR_BEDS = [
+    "101 - 1", "101 - 2",
+    "104 - 1", "104 - 2",
+    "105 - 1", "105 - 2"
+  ];
+
+  const MENTIONED_ROOMS = [
+    "102", "103", "106", "107",
+    "301", "302", "303", "304", "305", "401 A", "401 B", "402 A", "402 B", "403 A", "403 B", "404 A", "404 B", "405 A", "405 B",
+    "315", "316", "317", "320", "321", "322", "323", "324", "325", "326", "327",
+    "415", "416", "417", "418", "419", "420", "421", "422",
+    "307", "308", "318", "319", "328", "329", "406", "407", "409", "410", "411",
+    "309", "310", "311", "312", "313", "314", "412", "413", "414",
+    "408", "306", "330 A", "330 B", "331 A", "331 B", "332",
+    ...FIRST_FLOOR_BEDS
+  ];
+
+  const vacantRoomsRaw: string[] = [];
+
+  MENTIONED_ROOMS.forEach(room => {
+    const match = room.match(/^(33[01]|40[1-5])\s*([AB])$/);
+    if (match) {
+      const base = match[1];
+      const variant = match[2];
+      const isBaseOccupied = occupiedRooms.has(base);
+      const isAOccupied = occupiedRooms.has(`${base}A`) || occupiedRooms.has(`${base} A`);
+      const isBOccupied = occupiedRooms.has(`${base}B`) || occupiedRooms.has(`${base} B`);
+      
+      if (!isBaseOccupied) {
+        if (variant === 'A' && !isAOccupied) {
+          vacantRoomsRaw.push(room);
+        } else if (variant === 'B' && !isBOccupied) {
+          vacantRoomsRaw.push(room);
+        }
+      }
+    } else {
+      const norm = normalizeRoom(room);
+      if (!occupiedRooms.has(norm)) {
+        vacantRoomsRaw.push(room);
+      }
+    }
+  });
+
+  const emptyRoomsSet = new Set(vacantRoomsRaw);
+  const vacantRooms: string[] = [];
+  const processedBases = new Set<string>();
+
+  vacantRoomsRaw.forEach(room => {
+    const match = room.match(/^(33[01]|40[1-5])\s*([AB])$/);
+    if (match) {
+      const base = match[1];
+      if ((emptyRoomsSet.has(`${base} A`) || emptyRoomsSet.has(`${base}A`)) && 
+          (emptyRoomsSet.has(`${base} B`) || emptyRoomsSet.has(`${base}B`))) {
+        if (!processedBases.has(base)) {
+          vacantRooms.push(base);
+          processedBases.add(base);
+        }
+      } else {
+        vacantRooms.push(room);
+      }
+    } else {
+      vacantRooms.push(room);
+    }
+  });
+
+  function getFloorGroup(roomStr: string) {
+    const r = roomStr.toUpperCase().trim();
+    const numMatch = r.match(/\d+/);
+    const num = numMatch ? parseInt(numMatch[0], 10) : 9999;
+    
+    if (r.startsWith("1") || (num >= 101 && num <= 199)) {
+      return { floorName: "First Floor / الدور الأول", num, sub: r };
+    }
+    if (r.startsWith("3") || (num >= 301 && num <= 399)) {
+      return { floorName: "Third Floor / الدور الثالث", num, sub: r };
+    }
+    if (r.startsWith("4") || (num >= 401 && num <= 499)) {
+      return { floorName: "Fourth Floor / الدور الرابع", num, sub: r };
+    }
+    return { floorName: "Critical Care & Other / الوحدات الحرجة والأقسام الأخرى", num, sub: r };
+  }
+
+  const floorOrder = [
+    "First Floor / الدور الأول",
+    "Third Floor / الدور الثالث",
+    "Fourth Floor / الدور الرابع",
+    "Critical Care & Other / الوحدات الحرجة والأقسام الأخرى"
+  ];
+
+  const groupedByFloor: Record<string, string[]> = {
+    "First Floor / الدور الأول": [],
+    "Third Floor / الدور الثالث": [],
+    "Fourth Floor / الدور الرابع": [],
+    "Critical Care & Other / الوحدات الحرجة والأقسام الأخرى": []
+  };
+
+  vacantRooms.forEach(room => {
+    const info = getFloorGroup(room);
+    if (!groupedByFloor[info.floorName]) {
+      groupedByFloor[info.floorName] = [];
+    }
+    groupedByFloor[info.floorName].push(room);
+  });
+
+  floorOrder.forEach(floorName => {
+    const list = groupedByFloor[floorName] || [];
+    list.sort((a, b) => {
+      const infoA = getFloorGroup(a);
+      const infoB = getFloorGroup(b);
+      if (infoA.num !== infoB.num) return infoA.num - infoB.num;
+      return infoA.sub.localeCompare(infoB.sub);
+    });
+  });
+
+  sheet.mergeCells('A1:C1');
+  const titleCell = sheet.getCell('A1');
+  titleCell.value = '';
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 90;
+
+  let bgBuffer: Buffer | null = null;
+  const customBg = getCustomHeaderBgInfo();
+  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
+    try {
+      const svgText = `
+        <svg width="600" height="180" viewBox="0 0 600 180">
+          <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+        </svg>
+      `;
+      bgBuffer = await sharp(customBg.path)
+        .resize(600, 180, { fit: 'fill' })
+        .composite([{
+          input: Buffer.from(svgText),
+          top: 0,
+          left: 0
+        }])
+        .png()
+        .toBuffer();
+    } catch (sharpErr) {
+      console.error('Error generating vacant ascending custom header:', sharpErr);
+    }
+  }
+
+  if (!bgBuffer) {
+    try {
+      const svgText = `
+        <svg width="600" height="180" viewBox="0 0 600 180">
+          <rect width="600" height="180" fill="#E8F5E9" />
+          <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
+          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+        </svg>
+      `;
+      bgBuffer = await sharp(Buffer.from(svgText)).png().toBuffer();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  if (bgBuffer) {
+    try {
+      const bgId = workbook.addImage({
+        buffer: bgBuffer,
+        extension: 'png',
+      });
+      sheet.addImage(bgId, {
+        tl: { col: 0, row: 0 } as any,
+        br: { col: 3, row: 1 } as any,
+        editAs: 'oneCell'
+      });
+    } catch (err) {
+      console.error('Error adding header background image:', err);
+    }
+  }
+
+  const headerRow = sheet.addRow(['#', 'رقم الغرفة / Room Number', 'درجة الإقامة / Accommodation Category']);
+  headerRow.height = 25;
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
+    };
+  });
+
+  const floorColors: { [key: string]: { badge: string, row: string } } = {
+    "First Floor / الدور الأول": { badge: 'FF0D47A1', row: 'FFE3F2FD' },
+    "Third Floor / الدور الثالث": { badge: 'FF006064', row: 'FFE0F7FA' },
+    "Fourth Floor / الدور الرابع": { badge: 'FF4A148C', row: 'FFF3E5F5' },
+    "Critical Care & Other / الوحدات الحرجة والأقسام الأخرى": { badge: 'FF3E2723', row: 'FFEFEBE9' }
+  };
+
+  let serial = 1;
+
+  floorOrder.forEach(floorName => {
+    const list = groupedByFloor[floorName] || [];
+    if (list.length === 0) return;
+
+    const colors = floorColors[floorName] || { badge: 'FF455A64', row: 'FFF5F7F8' };
+
+    const startRow = sheet.rowCount + 1;
+    sheet.addRow(['', '', '']);
+    sheet.mergeCells(startRow, 1, startRow, 3);
+    const separatorCell = sheet.getCell(startRow, 1);
+
+    separatorCell.value = `■  ${floorName} (عدد الغرف الشاغرة: ${list.length})  ■`;
+    separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.badge } };
+    separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    separatorCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(startRow).height = 26;
+
+    list.forEach(room => {
+      const category = FIRST_FLOOR_BEDS.includes(room) ? "Day Case" : getAccommodationCategory(room);
+      const pRow = sheet.addRow([serial++, room, category]);
+      pRow.height = 24;
+      pRow.eachCell((cell, colNumber) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+          bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+          left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+          right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
+        };
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+        if (colNumber === 2 || colNumber === 3) {
+          cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+        }
+      });
+    });
+  });
+
+  sheet.getColumn(1).width = 10;
+  sheet.getColumn(2).width = 28;
+  sheet.getColumn(3).width = 38;
+}
+
 async function addOccupancyChartsDashboardSheet(
   workbook: ExcelJS.Workbook,
   occupiedCount: number,
@@ -10077,8 +10349,9 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     if (r.includes("VIP")) return "VIP" + num;
     if (r.includes("ICU")) return "ICU" + num;
     
-    if (r.includes("401") || r.includes("402") || r.includes("403") || r.includes("404") || r.includes("405")) {
-      const baseNumMatch = r.match(/40[1-5]/);
+    if (r.includes("401") || r.includes("402") || r.includes("403") || r.includes("404") || r.includes("405") ||
+        r.includes("330") || r.includes("331")) {
+      const baseNumMatch = r.match(/(40[1-5]|33[01])/);
       const baseNum = baseNumMatch ? baseNumMatch[0] : num;
       const suffix = r.includes("A") ? "A" : (r.includes("B") ? "B" : "");
       return baseNum + (suffix ? ` ${suffix}` : "");
@@ -10168,10 +10441,27 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
     group.rooms.forEach(roomID => {
       const normID = normalizeRoom(roomID);
-      const rowData = sheetDataMap.get(normID) || { rawRoom: roomID, patientName: "", contract: "", date: "", physician: "" };
+      let rowData = sheetDataMap.get(normID);
+      
+      // Fallback: if exact normID (e.g. "330 A") is not found in sheetDataMap,
+      // but base room "330" is present, use "330" and delete it so it cannot be duplicated to "330 B"
+      if (!rowData && normID.includes(" ")) {
+        const baseOnly = normID.split(" ")[0];
+        if (sheetDataMap.has(baseOnly)) {
+          rowData = sheetDataMap.get(baseOnly);
+          sheetDataMap.delete(baseOnly);
+        }
+      }
+
+      if (!rowData) {
+        rowData = { rawRoom: roomID, patientName: "", contract: "", date: "", physician: "" };
+      }
       
       // Enrich with medical plan data only as fallback
-      const plan = cumulativeMedicalPlans.find(p => normalizeRoom(p.colB) === normID);
+      const plan = cumulativeMedicalPlans.find(p => {
+        const normPlanB = normalizeRoom(p.colB);
+        return normPlanB === normID || (normID.includes(" ") && normPlanB === normID.split(" ")[0]);
+      });
       const patientNameRaw = rowData.patientName || (plan ? plan.colD : "") || "";
       const patientName = String(patientNameRaw).trim();
       const occupied = patientName.length > 0;
@@ -10563,7 +10853,7 @@ app.get('/api/reports/specialty_occupancy', async (req, res) => {
   if (cumulativeMedicalPlans.length === 0) return res.status(400).json({ error: 'No data available. Please upload the debts source sheet first.' });
   try {
     const workbook = new ExcelJS.Workbook();
-    addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans);
+    addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans, cumulativeLOS);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Inpatients_By_Specialty.xlsx');
     await workbook.xlsx.write(res);
@@ -10590,7 +10880,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
     
     // 4. Inpatients By Specialty
     if (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0) {
-      addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans);
+      addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans, cumulativeLOS);
     } else {
       const sheet = workbook.addWorksheet('By Specialty');
       sheet.addRow(['No specialty data available. Please upload the debts source sheet first.']);
@@ -10616,7 +10906,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
   }
 });
 
-function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
+function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[], losList: any[] = cumulativeLOS) {
   const sheet = workbook.addWorksheet('By Specialty', {
     views: [{ rightToLeft: false }]
   });
@@ -10655,7 +10945,7 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
   // Sort groups alphabetically
   const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'الحالات المنومة طبقاً للتخصص';
   titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
@@ -10663,9 +10953,9 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 6.0);
+  addLogosToSheet(workbook, sheet, 7.0);
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'التشخيص', 'التخصص'];
+  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'التشخيص', 'التخصص', 'LOS', 'Elite ALOS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -10683,8 +10973,8 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
     const groupRows = groups[specialty];
     
     // Group Header Row
-    const groupHeader = sheet.addRow([`${specialty} - (${groupRows.length} Cases)`, '', '', '', '', '', '']);
-    sheet.mergeCells(`A${groupHeader.number}:G${groupHeader.number}`);
+    const groupHeader = sheet.addRow([`${specialty} - (${groupRows.length} Cases)`, '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(`A${groupHeader.number}:I${groupHeader.number}`);
     groupHeader.eachCell({ includeEmpty: true }, (cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } };
       cell.font = { bold: true, size: 12 };
@@ -10693,7 +10983,23 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
     });
 
     groupRows.forEach(p => {
-      const rowValues = [globalSerial++, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colM, p.colW, p.colX || specialty];
+      let losVal = "";
+      let eliteAlosVal = "";
+      if (losList && losList.length > 0) {
+        const losItem = losList.find(l => {
+          if (l.colD && p.colD && isNameMatch(l.colD, p.colD)) return true;
+          if (l.colB && p.colB && normalizeRoom(l.colB) === normalizeRoom(p.colB)) return true;
+          return false;
+        });
+        if (losItem) {
+          losVal = losItem.colS !== undefined && losItem.colS !== null ? String(losItem.colS) : "";
+          eliteAlosVal = losItem.colAL !== undefined && losItem.colAL !== null ? String(losItem.colAL) : "";
+        }
+      }
+      if (!losVal && p.colS !== undefined && p.colS !== null) losVal = String(p.colS);
+      if (!eliteAlosVal && p.colAL !== undefined && p.colAL !== null) eliteAlosVal = String(p.colAL);
+
+      const rowValues = [globalSerial++, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colM, p.colW, p.colX || specialty, losVal, eliteAlosVal];
       const pRow = sheet.addRow(rowValues);
       pRow.eachCell((cell, colNumber) => {
         cell.border = {
@@ -10717,7 +11023,9 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[]) {
   sheet.getColumn(4).width = 30;
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 40;
-  sheet.getColumn(7).width = 30;
+  sheet.getColumn(7).width = 25;
+  sheet.getColumn(8).width = 12;
+  sheet.getColumn(9).width = 15;
 }
 
 // Routes complete
