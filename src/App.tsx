@@ -64,6 +64,7 @@ import {
   getAccommodationCategory,
   isOperatingRoom
 } from './logic/occupancy.ts';
+import { PatientTransfersTable } from './components/PatientTransfersTable';
 
 type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'audit-logs';
 type PaymentFilter = 'all' | 'cash' | 'insured';
@@ -210,7 +211,8 @@ export default function App() {
   const [vipCases, setVipCases] = useState<string>('');
   const [earlyDischargeRooms, setEarlyDischargeRooms] = useState<string>('');
   const [pendingDischargePatients, setPendingDischargePatients] = useState<string>('');
-  const [mohanadSubTab, setMohanadSubTab] = useState<'downloads' | 'inputs'>('downloads');
+  const [mohanadSubTab, setMohanadSubTab] = useState<'downloads' | 'inputs' | 'transfers'>('downloads');
+  const [transfersList, setTransfersList] = useState<any[]>([]);
 
   const [loginLogs, setLoginLogs] = useState<{ id: string; userId: string; email: string; displayName: string; timestamp: string }[]>([]);
   const [loadingLogs, setLoadingLogs] = useState<boolean>(false);
@@ -748,10 +750,51 @@ export default function App() {
       if (data.pendingDischargePatientsText !== undefined) {
         setPendingDischargePatients(data.pendingDischargePatientsText);
       }
+      if (Array.isArray(data.transfers)) {
+        setTransfersList(data.transfers);
+      }
     } catch (err: any) {
       console.error('Fetch data failed', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchTransfers = async () => {
+    try {
+      const res = await fetch('/api/transfers');
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.transfers)) {
+          setTransfersList(json.transfers);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch transfers:', err);
+    }
+  };
+
+  const downloadTransfersReport = async () => {
+    setProcessing('Downloading Patient Transfers Sheet');
+    try {
+      const res = await fetch('/api/reports/transfers_formatted');
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to download patient transfers report');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Patient_Transfers_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (err: any) {
+      alert(`Download failed: ${err.message}`);
+    } finally {
+      setProcessing(null);
     }
   };
 
@@ -2283,7 +2326,10 @@ export default function App() {
               />
               <NavItem 
                 active={currentView === 'mohanad-sheets'} 
-                onClick={() => setCurrentView('mohanad-sheets')}
+                onClick={() => {
+                  setCurrentView('mohanad-sheets');
+                  setMohanadSubTab('downloads');
+                }}
                 icon={<FileSpreadsheet />}
                 label="Mohanad's Sheets"
                 highlighted={user?.email?.toLowerCase() === 'mohanad.md07@gmail.com'}
@@ -3939,13 +3985,14 @@ export default function App() {
                     </div>
 
                     {/* Sub Tab Navigation for Mohanad's Sheets */}
-                    <div className="flex border-b border-[#0b3c34]/10 pb-px gap-2 mb-6">
+                    <div className="flex border-b border-[#0b3c34]/10 pb-px gap-2 mb-6 flex-wrap">
                       <button
+                        id="tab-downloads-btn"
                         onClick={() => setMohanadSubTab('downloads')}
                         type="button"
                         className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
                           mohanadSubTab === 'downloads'
-                            ? 'bg-white/80 border-t border-x border-teal-500/25 text-[#0b3c34]'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
                             : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
                         }`}
                       >
@@ -3953,11 +4000,12 @@ export default function App() {
                         Download Reports
                       </button>
                       <button
+                        id="tab-inputs-btn"
                         onClick={() => setMohanadSubTab('inputs')}
                         type="button"
                         className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
                           mohanadSubTab === 'inputs'
-                            ? 'bg-white/80 border-t border-x border-teal-500/25 text-[#0b3c34]'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
                             : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
                         }`}
                       >
@@ -3966,6 +4014,24 @@ export default function App() {
                         {(vipCases.trim() || earlyDischargeRooms.trim() || pendingDischargePatients.trim()) ? (
                           <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse ml-1" />
                         ) : null}
+                      </button>
+                      <button
+                        id="tab-transfers-btn"
+                        onClick={() => setMohanadSubTab('transfers')}
+                        type="button"
+                        className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
+                          mohanadSubTab === 'transfers'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
+                            : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
+                        }`}
+                      >
+                        <ArrowRightLeft size={16} className="text-teal-700" />
+                        Transfers Record
+                        {transfersList.length > 0 && (
+                          <span className="px-2 py-0.5 text-[11px] font-extrabold rounded-full bg-teal-100 text-teal-800 border border-teal-200">
+                            {transfersList.length}
+                          </span>
+                        )}
                       </button>
                     </div>
 
@@ -4155,6 +4221,14 @@ export default function App() {
                     {mohanadSubTab === 'downloads' && (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         <WorkflowCard 
+                          title="Patient Transfers Sheet (سجل تحويلات المرضى)"
+                          description="Download Mohanad's refined high-fidelity report of patients transferred between rooms, tracking room journeys, transfer history, and treating physicians."
+                          icon={<ArrowRightLeft className="text-teal-700" />}
+                          actionLabel={processing === 'Downloading Patient Transfers Sheet' ? 'Generating...' : 'Download'}
+                          onAction={downloadTransfersReport}
+                          disabled={!!processing}
+                        />
+                        <WorkflowCard 
                           title="Occupancy Analytics Dashboard (Charts Mimic)"
                           description="Download a beautiful, executive-level Excel dashboard mimicking the 8 key occupancy charts with real Excel formulas and a premium Refined Sheets look."
                           icon={<FileSpreadsheet className="text-emerald-600" />}
@@ -4257,6 +4331,18 @@ export default function App() {
                           actionLabel={processing === 'Downloading Insured Non-Cash Sheet' ? 'Generating...' : 'Download'}
                           onAction={downloadInsuredNonCashReport}
                           disabled={!!processing}
+                        />
+                      </div>
+                    )}
+
+                    {mohanadSubTab === 'transfers' && (
+                      <div className="space-y-6 animate-fade-in">
+                        <PatientTransfersTable
+                          transfers={transfersList}
+                          onRefresh={fetchTransfers}
+                          onDownloadExcel={downloadTransfersReport}
+                          isDownloading={processing === 'Downloading Patient Transfers Sheet'}
+                          activePatients={patients}
                         />
                       </div>
                     )}

@@ -183,6 +183,8 @@ let cumulativeMedicalPlans: any[] = [];
 let cumulativeCompanionStatus: any[] = []; 
 let cumulativeLOS: any[] = []; 
 let cumulativeORList: any[] = []; 
+let cumulativeTransfers: any[] = [];
+let patientRoomRegistry: Record<string, { name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
 let vipCasesText = "";
 let earlyDischargeRoomsText = "";
 let pendingDischargePatientsText = "";
@@ -692,6 +694,191 @@ function getTodayRiyadhDateStr(): string {
   return `${month}/${day}/${year}`;
 }
 
+function getTodayRiyadhDateTimeStr(): string {
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const year = d.getFullYear();
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  let hours = d.getHours();
+  const minutes = d.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  return `${month}/${day}/${year} ${hours}:${minutes} ${ampm}`;
+}
+
+function ensureDefaultTransfersSeed() {
+  const khadijaName = "خديجه محمد احمد جابر";
+  const hasKhadija = (cumulativeTransfers || []).some(t => isNameMatch(t.name, khadijaName));
+  if (!hasKhadija) {
+    cumulativeTransfers.unshift({
+      id: "transfer-khadija-seed",
+      name: khadijaName,
+      mrn: "",
+      initialRoom: "309",
+      currentRoom: "PICU Room 2",
+      journey: ["309", "Cath Lab", "PICU Room 2"],
+      history: [
+        {
+          fromRoom: "309",
+          toRoom: "Cath Lab",
+          date: "6/20/2026 10:30 AM",
+          physician: "Dr. Hesham",
+          contractor: "Cash"
+        },
+        {
+          fromRoom: "Cath Lab",
+          toRoom: "PICU Room 2",
+          date: "6/21/2026 03:15 PM",
+          physician: "Dr. Hesham",
+          contractor: "Cash"
+        }
+      ],
+      lastTransferDate: "6/21/2026 03:15 PM",
+      physician: "Dr. Hesham",
+      contractor: "Cash",
+      notes: "Transferred from 309 to Cath Lab, then to PICU Room 2"
+    });
+    patientRoomRegistry[khadijaName] = {
+      name: khadijaName,
+      lastRoom: "PICU Room 2",
+      physician: "Dr. Hesham",
+      contractor: "Cash",
+      date: "6/21/2026 03:15 PM"
+    };
+  }
+}
+
+function extractRawPatientsFromRows(data: any[][]): { name: string; room: string; physician?: string; contractor?: string; date?: string }[] {
+  if (!data || !Array.isArray(data)) return [];
+  let startIdx = 3;
+  for (let i = 0; i < Math.min(data.length, 10); i++) {
+    const r1 = String(data[i][1] || "").toLowerCase();
+    const r3 = String(data[i][3] || "").toLowerCase();
+    if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  return data.slice(startIdx).map(r => ({
+    room: String(r[1] || "").trim(),
+    name: String(r[3] || "").trim(),
+    physician: String(r[22] || "").trim(),
+    contractor: String(r[12] || "").trim(),
+    date: cleanAdmissionDateStr(r[0])
+  })).filter(p => p.name && p.room);
+}
+
+function processPatientTransfers(
+  patients: { name: string; room: string; physician?: string; contractor?: string; date?: string }[],
+  sheetDate?: string
+) {
+  if (!patients || !Array.isArray(patients) || patients.length === 0) return;
+  const transferDateStr = sheetDate || getTodayRiyadhDateTimeStr();
+  let transfersModified = false;
+
+  patients.forEach(p => {
+    const rawName = String(p.name || "").trim();
+    const rawRoom = cleanRoomStr(String(p.room || "").trim());
+    if (!rawName || !rawRoom) return;
+
+    const lowName = rawName.toLowerCase();
+    if (lowName === "patient" || lowName === "المريض" || lowName === "name" || lowName === "اسم المريض") return;
+
+    let matchedKey: string | null = null;
+    let matchedRegistryItem: { name: string; lastRoom: string; physician?: string; contractor?: string; date?: string } | null = null;
+
+    for (const key in patientRoomRegistry) {
+      if (isNameMatch(key, rawName)) {
+        matchedKey = key;
+        matchedRegistryItem = patientRoomRegistry[key];
+        break;
+      }
+    }
+
+    if (matchedRegistryItem) {
+      const prevRoom = matchedRegistryItem.lastRoom;
+      const normPrev = normalizeRoom(prevRoom);
+      const normCurr = normalizeRoom(rawRoom);
+
+      if (normPrev && normCurr && normPrev !== normCurr) {
+        console.log(`[Patient Transfer] "${rawName}" moved from "${prevRoom}" to "${rawRoom}"`);
+
+        let transferRecord = cumulativeTransfers.find(t => isNameMatch(t.name, rawName));
+
+        if (!transferRecord) {
+          transferRecord = {
+            id: `transfer-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            name: rawName,
+            mrn: "",
+            initialRoom: prevRoom,
+            currentRoom: rawRoom,
+            journey: [prevRoom, rawRoom],
+            history: [{
+              fromRoom: prevRoom,
+              toRoom: rawRoom,
+              date: transferDateStr,
+              physician: p.physician || matchedRegistryItem.physician || "",
+              contractor: p.contractor || matchedRegistryItem.contractor || ""
+            }],
+            lastTransferDate: transferDateStr,
+            physician: p.physician || matchedRegistryItem.physician || "",
+            contractor: p.contractor || matchedRegistryItem.contractor || "",
+            notes: `Transferred from ${prevRoom} to ${rawRoom}`
+          };
+          cumulativeTransfers.unshift(transferRecord);
+          transfersModified = true;
+        } else {
+          const lastStep = transferRecord.history && transferRecord.history.length > 0
+            ? transferRecord.history[transferRecord.history.length - 1]
+            : null;
+          const isDuplicateStep = lastStep && normalizeRoom(lastStep.fromRoom) === normPrev && normalizeRoom(lastStep.toRoom) === normCurr;
+
+          if (!isDuplicateStep) {
+            if (!Array.isArray(transferRecord.journey)) {
+              transferRecord.journey = [transferRecord.initialRoom || prevRoom];
+            }
+            if (transferRecord.journey[transferRecord.journey.length - 1] !== rawRoom) {
+              transferRecord.journey.push(rawRoom);
+            }
+            if (!Array.isArray(transferRecord.history)) {
+              transferRecord.history = [];
+            }
+            transferRecord.history.push({
+              fromRoom: prevRoom,
+              toRoom: rawRoom,
+              date: transferDateStr,
+              physician: p.physician || matchedRegistryItem.physician || "",
+              contractor: p.contractor || matchedRegistryItem.contractor || ""
+            });
+            transferRecord.currentRoom = rawRoom;
+            transferRecord.lastTransferDate = transferDateStr;
+            if (p.physician) transferRecord.physician = p.physician;
+            if (p.contractor) transferRecord.contractor = p.contractor;
+            transfersModified = true;
+          }
+        }
+
+        matchedRegistryItem.lastRoom = rawRoom;
+        if (p.physician) matchedRegistryItem.physician = p.physician;
+        if (p.contractor) matchedRegistryItem.contractor = p.contractor;
+      }
+    } else {
+      patientRoomRegistry[rawName] = {
+        name: rawName,
+        lastRoom: rawRoom,
+        physician: p.physician || "",
+        contractor: p.contractor || "",
+        date: p.date || transferDateStr
+      };
+    }
+  });
+
+  if (transfersModified) {
+    saveData();
+  }
+}
+
 // Persistence Helpers
 async function loadData() {
   try {
@@ -715,6 +902,8 @@ async function loadData() {
       pendingDischargePatientsText = parsed.pendingDischargePatientsText || "";
       uploadedAt = parsed.uploadedAt || null;
       manuallyDischargedNames = parsed.manuallyDischargedNames || [];
+      cumulativeTransfers = parsed.transfers || [];
+      patientRoomRegistry = parsed.patientRoomRegistry || {};
       console.log('Hospital data loaded from local disk cache.');
     }
   } catch (err) {
@@ -778,6 +967,12 @@ async function loadData() {
 
         const cloudManualDisc = parseMaybeJson(parsed.manuallyDischargedNames);
         if (Array.isArray(cloudManualDisc)) manuallyDischargedNames = cloudManualDisc;
+
+        const cloudTransfers = parseMaybeJson(parsed.transfers);
+        if (Array.isArray(cloudTransfers) && cloudTransfers.length > 0) cumulativeTransfers = cloudTransfers;
+
+        const cloudRegistry = parseMaybeJson(parsed.patientRoomRegistry);
+        if (cloudRegistry && typeof cloudRegistry === 'object') patientRoomRegistry = cloudRegistry;
         
         if (parsed.uploadedAt) {
           uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
@@ -845,6 +1040,27 @@ async function loadData() {
   });
 
   console.log('Durable room-name sanitization done.');
+  ensureDefaultTransfersSeed();
+  if (hospitalData && Array.isArray(hospitalData)) {
+    const rawOccupancy = extractRawPatientsFromRows(hospitalData);
+    if (Object.keys(patientRoomRegistry).length === 0) {
+      if (previousHospitalData && Array.isArray(previousHospitalData)) {
+        const prevRows = extractRawPatientsFromRows(previousHospitalData);
+        prevRows.forEach(p => {
+          if (p.name && p.room) {
+            patientRoomRegistry[p.name.trim()] = {
+              name: p.name.trim(),
+              lastRoom: cleanRoomStr(p.room),
+              physician: p.physician || "",
+              contractor: p.contractor || "",
+              date: p.date || ""
+            };
+          }
+        });
+      }
+      processPatientTransfers(rawOccupancy);
+    }
+  }
 }
 
 // Health Check
@@ -888,7 +1104,9 @@ async function saveData() {
       earlyDischargeRoomsText: earlyDischargeRoomsText,
       pendingDischargePatientsText: pendingDischargePatientsText,
       uploadedAt: uploadedAt,
-      manuallyDischargedNames: manuallyDischargedNames
+      manuallyDischargedNames: manuallyDischargedNames,
+      transfers: cumulativeTransfers,
+      patientRoomRegistry: patientRoomRegistry
     };
     // 1. Save locally fast sync
     try { fs.writeFileSync(DATA_FILE, JSON.stringify(data));
@@ -910,6 +1128,8 @@ async function saveData() {
         companionStatus: JSON.stringify(cumulativeCompanionStatus || []),
         losData: JSON.stringify(cumulativeLOS || []),
         orList: JSON.stringify(cumulativeORList || []),
+        transfers: JSON.stringify(cumulativeTransfers || []),
+        patientRoomRegistry: JSON.stringify(patientRoomRegistry || {}),
         vipCasesText: vipCasesText || "",
         earlyDischargeRoomsText: earlyDischargeRoomsText || "",
         pendingDischargePatientsText: pendingDischargePatientsText || "",
@@ -1161,6 +1381,9 @@ async function handleUnifiedUpload(req: any, res: any) {
       previousHospitalData = hospitalData;
     }
     
+    // Track and record patient room transfers
+    processPatientTransfers(currentSheetPatientsRaw);
+
     // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
     if (!isNewSheetLikelyEmpty || !hospitalData) {
         hospitalData = rows;
@@ -2672,6 +2895,166 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   ];
 }
 
+async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
+  const sheet = workbook.addWorksheet('Patient Transfers', {
+    views: [{ rightToLeft: false }]
+  });
+
+  sheet.mergeCells('A1:H1');
+  const titleCell = sheet.getCell('A1');
+  titleCell.value = '';
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 90;
+
+  await applyRefinedHeader(workbook, sheet, 'سجل تحويلات المرضى بين الغرف', 8);
+
+  const headerLabels = [
+    '# / م',
+    'اسم المريض / Patient Name',
+    'مسار التحويلات / Transfer Journey',
+    'الغرفة السابقة / From Room',
+    'الغرفة الحالية / Current Room',
+    'تاريخ التحويل / Transfer Date',
+    'الطبيب المعالج / Physician',
+    'الجهة والتعاقد / Contractor'
+  ];
+  const headerRow = sheet.addRow(headerLabels);
+  headerRow.height = 28;
+  headerRow.eachCell((cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C34' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
+    };
+  });
+
+  let serial = 1;
+  (transfers || []).forEach((t, idx) => {
+    const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
+      ? t.journey.join('  ➔  ')
+      : `${t.initialRoom || t.fromRoom || ''}  ➔  ${t.currentRoom || t.toRoom || ''}`;
+
+    const prevRoom = t.history && t.history.length > 0
+      ? t.history[t.history.length - 1].fromRoom
+      : (t.initialRoom || t.fromRoom || '-');
+
+    const currRoom = t.currentRoom || t.toRoom || '-';
+
+    const rowValues = [
+      serial++,
+      t.name || '-',
+      journeyStr,
+      prevRoom,
+      currRoom,
+      t.lastTransferDate || t.date || '-',
+      t.physician || '-',
+      t.contractor || '-'
+    ];
+
+    const row = sheet.addRow(rowValues);
+    row.height = 26;
+    const isEven = idx % 2 === 0;
+    const rowBg = isEven ? 'FFFFFFFF' : 'FFF4F9F8';
+
+    row.eachCell((cell, colNumber) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowBg } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
+      };
+      cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+
+      if (colNumber === 2) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF0B3C34' } };
+      } else if (colNumber === 3) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF0070BA' } };
+      } else if (colNumber === 4) {
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF555555' } };
+      } else if (colNumber === 5) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF2E7D32' } };
+      }
+    });
+  });
+
+  sheet.columns = [
+    { width: 8 },
+    { width: 34 },
+    { width: 44 },
+    { width: 18 },
+    { width: 18 },
+    { width: 22 },
+    { width: 26 },
+    { width: 24 }
+  ];
+}
+
+function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
+  const sheet = workbook.addWorksheet('Patient Transfers', {
+    views: [{ rightToLeft: false }]
+  });
+
+  const headerLabels = [
+    '#',
+    'Patient Name',
+    'Transfer Journey',
+    'From Room',
+    'To Room / Current',
+    'Transfer Date',
+    'Physician',
+    'Contractor'
+  ];
+  const headerRow = sheet.addRow(headerLabels);
+  headerRow.height = 24;
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C34' } };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  let serial = 1;
+  (transfers || []).forEach(t => {
+    const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
+      ? t.journey.join(' -> ')
+      : `${t.initialRoom || t.fromRoom || ''} -> ${t.currentRoom || t.toRoom || ''}`;
+
+    const prevRoom = t.history && t.history.length > 0
+      ? t.history[t.history.length - 1].fromRoom
+      : (t.initialRoom || t.fromRoom || '-');
+
+    const currRoom = t.currentRoom || t.toRoom || '-';
+
+    const row = sheet.addRow([
+      serial++,
+      t.name || '-',
+      journeyStr,
+      prevRoom,
+      currRoom,
+      t.lastTransferDate || t.date || '-',
+      t.physician || '-',
+      t.contractor || '-'
+    ]);
+    row.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  sheet.columns = [
+    { width: 8 },
+    { width: 32 },
+    { width: 40 },
+    { width: 16 },
+    { width: 16 },
+    { width: 20 },
+    { width: 24 },
+    { width: 22 }
+  ];
+}
+
 async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, sheetName: string, plans: any[], bgColor: string = 'FFB3E5FC') {
   (workbook as any).isMedicalPlans = true;
   const sanitizedName = sheetName.substring(0, 31).replace(/[\[\]\*\?\/\\]/g, "");
@@ -3600,6 +3983,9 @@ async function updateHospitalState(rows: any[][]) {
     previousHospitalData = hospitalData;
   }
   
+  // Track and record patient room transfers
+  processPatientTransfers(currentSheetPatientsRaw);
+
   // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
   if (!isNewSheetLikelyEmpty || !hospitalData) {
       hospitalData = rows;
@@ -4248,7 +4634,9 @@ app.get('/api/occupancy/data', async (req, res) => {
       hasORList: (cumulativeORList || []).length > 0,
       orListCount: (cumulativeORList || []).length,
       orList: enrichedOrList,
-      overList: []
+      overList: [],
+      transfers: cumulativeTransfers,
+      transfersCount: (cumulativeTransfers || []).length
     });
   }
 
@@ -4271,7 +4659,9 @@ app.get('/api/occupancy/data', async (req, res) => {
     hasORList: (cumulativeORList || []).length > 0,
     orListCount: (cumulativeORList || []).length,
     orList: enrichedOrList,
-    overList: getOverListPatients(hospitalData, cumulativeORList)
+    overList: getOverListPatients(hospitalData, cumulativeORList),
+    transfers: cumulativeTransfers,
+    transfersCount: (cumulativeTransfers || []).length
   });
 });
 
@@ -4889,6 +5279,128 @@ app.delete('/api/header-background', (req, res) => {
   }
 });
 
+// Patient Transfers API Endpoints
+app.get('/api/transfers', (req, res) => {
+  ensureDefaultTransfersSeed();
+  res.json({
+    success: true,
+    transfers: cumulativeTransfers,
+    count: (cumulativeTransfers || []).length
+  });
+});
+
+app.post('/api/transfers', async (req, res) => {
+  try {
+    const { name, fromRoom, toRoom, date, physician, contractor, notes } = req.body;
+    if (!name || !fromRoom || !toRoom) {
+      return res.status(400).json({ error: 'Name, fromRoom, and toRoom are required.' });
+    }
+    const transferDateStr = date || getTodayRiyadhDateTimeStr();
+
+    let record = cumulativeTransfers.find(t => isNameMatch(t.name, name));
+    if (!record) {
+      record = {
+        id: `transfer-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        name: name.trim(),
+        mrn: "",
+        initialRoom: fromRoom.trim(),
+        currentRoom: toRoom.trim(),
+        journey: [fromRoom.trim(), toRoom.trim()],
+        history: [{
+          fromRoom: fromRoom.trim(),
+          toRoom: toRoom.trim(),
+          date: transferDateStr,
+          physician: (physician || "").trim(),
+          contractor: (contractor || "").trim()
+        }],
+        lastTransferDate: transferDateStr,
+        physician: (physician || "").trim(),
+        contractor: (contractor || "").trim(),
+        notes: (notes || "").trim()
+      };
+      cumulativeTransfers.unshift(record);
+    } else {
+      if (!Array.isArray(record.journey)) {
+        record.journey = [record.initialRoom || fromRoom.trim()];
+      }
+      if (record.journey[record.journey.length - 1] !== toRoom.trim()) {
+        record.journey.push(toRoom.trim());
+      }
+      if (!Array.isArray(record.history)) {
+        record.history = [];
+      }
+      record.history.push({
+        fromRoom: fromRoom.trim(),
+        toRoom: toRoom.trim(),
+        date: transferDateStr,
+        physician: (physician || record.physician || "").trim(),
+        contractor: (contractor || record.contractor || "").trim()
+      });
+      record.currentRoom = toRoom.trim();
+      record.lastTransferDate = transferDateStr;
+      if (physician) record.physician = physician.trim();
+      if (contractor) record.contractor = contractor.trim();
+      if (notes) record.notes = notes.trim();
+    }
+
+    patientRoomRegistry[name.trim()] = {
+      name: name.trim(),
+      lastRoom: toRoom.trim(),
+      physician: physician || record.physician || "",
+      contractor: contractor || record.contractor || "",
+      date: transferDateStr
+    };
+
+    await saveData();
+    res.json({ success: true, transfers: cumulativeTransfers, record });
+  } catch (error: any) {
+    console.error('Error recording transfer:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/transfers/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    cumulativeTransfers = cumulativeTransfers.filter(t => t.id !== id);
+    await saveData();
+    res.json({ success: true, transfers: cumulativeTransfers });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/transfers/reset', async (req, res) => {
+  try {
+    cumulativeTransfers = [];
+    patientRoomRegistry = {};
+    ensureDefaultTransfersSeed();
+    await saveData();
+    res.json({ success: true, transfers: cumulativeTransfers });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reports/transfers_formatted', async (req, res) => {
+  try {
+    if (!cumulativeTransfers || cumulativeTransfers.length === 0) {
+      ensureDefaultTransfersSeed();
+    }
+    const workbook = new ExcelJS.Workbook();
+    await addRefinedTransfersSheet(workbook, cumulativeTransfers);
+    const filename = `Transferred_Patients_Refined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('Transfers Report Error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+});
 
 app.get('/api/debug-logo-status', (req, res) => {
   const processCwd = process.cwd();
@@ -10820,6 +11332,9 @@ app.get('/api/reports/combined', async (req, res) => {
       if (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0) {
         await addRefinedInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
       }
+      if (cumulativeTransfers && cumulativeTransfers.length > 0) {
+        await addRefinedTransfersSheet(workbook, cumulativeTransfers);
+      }
     } else {
       addOccupancySheet(workbook, getOccupancyRows(hospitalData));
       addEntrySheet(workbook, uniqueTodayEntries);
@@ -10830,6 +11345,9 @@ app.get('/api/reports/combined', async (req, res) => {
       }
       if (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0) {
         addInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
+      }
+      if (cumulativeTransfers && cumulativeTransfers.length > 0) {
+        addTransfersSheet(workbook, cumulativeTransfers);
       }
     }
 
