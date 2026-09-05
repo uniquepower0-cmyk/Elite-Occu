@@ -9,7 +9,8 @@ import {
   History, 
   X,
   FileSpreadsheet,
-  ArrowRight
+  ArrowRight,
+  Sparkles
 } from 'lucide-react';
 import { PatientTransferRecord } from '../types';
 
@@ -190,6 +191,24 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
     }
   };
 
+  // Handle clean duplicates
+  const handleCleanDuplicates = async () => {
+    setLoadingAction(true);
+    try {
+      const res = await fetch('/api/transfers/cleanup', {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        throw new Error('Failed to sanitize transfers');
+      }
+      await onRefresh();
+    } catch (err: any) {
+      alert('Error cleaning duplicates: ' + err.message);
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
   return (
     <div className="space-y-6 text-left" dir="ltr" id="patient-transfers-section">
       {/* Header Info Banner */}
@@ -210,6 +229,17 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              id="btn-clean-transfers"
+              onClick={handleCleanDuplicates}
+              disabled={loadingAction}
+              type="button"
+              className="px-3.5 py-2.5 bg-emerald-600/60 hover:bg-emerald-600 text-teal-100 hover:text-white rounded-xl text-xs font-bold flex items-center gap-1.5 border border-emerald-400/30 shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="Remove duplicate steps and sanitize room paths"
+            >
+              <Sparkles size={14} className="text-amber-300" />
+              Clean Duplicates
+            </button>
             <button
               id="btn-add-transfer"
               onClick={() => setIsAddModalOpen(true)}

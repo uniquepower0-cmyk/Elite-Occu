@@ -184,7 +184,7 @@ let cumulativeCompanionStatus: any[] = [];
 let cumulativeLOS: any[] = []; 
 let cumulativeORList: any[] = []; 
 let cumulativeTransfers: any[] = [];
-let patientRoomRegistry: Record<string, { name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
+let patientRoomRegistry: Record<string, { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
 let vipCasesText = "";
 let earlyDischargeRoomsText = "";
 let pendingDischargePatientsText = "";
@@ -634,27 +634,51 @@ function isNameMatch(nameA: string, nameB: string): boolean {
   
   if (wordsA.length === 0 || wordsB.length === 0) return false;
 
-  const setA = new Set(wordsA);
-  const setB = new Set(wordsB);
-  const intersection = [...setA].filter(w => setB.has(w));
-  const minSize = Math.min(wordsA.length, wordsB.length);
+  const babyPrefixes = ["ابن", "ابنه", "طفل", "طفله", "مولود", "مولوده", "baby", "twin"];
+  const isBabyA = babyPrefixes.includes(wordsA[0]);
+  const isBabyB = babyPrefixes.includes(wordsB[0]);
 
-  if (minSize >= 3) {
-    if (intersection.length >= 3) return true;
+  const coreWordsA = isBabyA ? wordsA.slice(1) : wordsA;
+  const coreWordsB = isBabyB ? wordsB.slice(1) : wordsB;
+
+  if (coreWordsA.length === 0 || coreWordsB.length === 0) return false;
+
+  // Crucial: First given name MUST match! Distinct first names mean different patients!
+  if (coreWordsA[0] !== coreWordsB[0]) {
+    return false;
   }
 
-  // Intelligent sub-phrase match for 2 or more words (e.g. "روان اسامه" and "روان اسامه حسن علي")
-  if (minSize >= 2) {
-    // First name must match
-    if (wordsA[0] === wordsB[0]) {
-      const lcsLen = getLcsLength(wordsA, wordsB);
-      if (lcsLen >= 2 && lcsLen === minSize) {
-        return true;
-      }
+  const minCoreSize = Math.min(coreWordsA.length, coreWordsB.length);
+  const setA = new Set(coreWordsA);
+  const intersection = coreWordsB.filter(w => setA.has(w));
+
+  // Intelligent sub-phrase match for 2 words (e.g. "روان اسامه" and "روان اسامه حسن علي")
+  if (minCoreSize === 2) {
+    if (coreWordsA[0] === coreWordsB[0] && coreWordsA[1] === coreWordsB[1]) {
+      return true;
+    }
+  }
+
+  // 3 or more words: first name must match, at least 3 matching words, and >= 75% overlap
+  if (minCoreSize >= 3) {
+    if (coreWordsA[0] === coreWordsB[0] && intersection.length >= 3 && (intersection.length / minCoreSize) >= 0.75) {
+      return true;
     }
   }
 
   return normA === normB;
+}
+
+function isPatientMatch(
+  a: { mrn?: string; name: string },
+  b: { mrn?: string; name: string }
+): boolean {
+  const cleanMrnA = String(a.mrn || "").trim().replace(/^0+/, "");
+  const cleanMrnB = String(b.mrn || "").trim().replace(/^0+/, "");
+  if (cleanMrnA && cleanMrnB) {
+    return cleanMrnA === cleanMrnB;
+  }
+  return isNameMatch(a.name, b.name);
 }
 
 function isToday(dateStr: string): boolean {
@@ -749,7 +773,20 @@ function ensureDefaultTransfersSeed() {
   }
 }
 
-function extractRawPatientsFromRows(data: any[][]): { name: string; room: string; physician?: string; contractor?: string; date?: string }[] {
+function isProcedureOrTemporaryRoom(room: string): boolean {
+  if (!room) return false;
+  const low = String(room).toLowerCase();
+  return isOperatingRoom(room) ||
+         isOrXRoom(room) ||
+         low.includes("theatre") ||
+         low.includes("cath lab") ||
+         low.includes("dialysis") ||
+         low.includes("diyalsis") ||
+         low.includes("endoscopy") ||
+         low.includes("recovery");
+}
+
+function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string }[] {
   if (!data || !Array.isArray(data)) return [];
   let startIdx = 3;
   for (let i = 0; i < Math.min(data.length, 10); i++) {
@@ -760,57 +797,129 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; room: string
       break;
     }
   }
-  return data.slice(startIdx).map(r => ({
-    room: String(r[1] || "").trim(),
-    name: String(r[3] || "").trim(),
-    physician: String(r[22] || "").trim(),
-    contractor: String(r[12] || "").trim(),
-    date: cleanAdmissionDateStr(r[0])
-  })).filter(p => p.name && p.room);
+
+  // Deduplicate by patient within the same sheet:
+  // If a patient is listed in an OR/procedure room AND an inpatient room, their inpatient room is their primary bed.
+  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string }>();
+
+  data.slice(startIdx).forEach(r => {
+    const rawRoom = cleanRoomStr(String(r[1] || "").trim());
+    const rawMrn = String(r[2] || "").trim().replace(/^0+/, "");
+    const rawName = String(r[3] || "").trim();
+    const rawPhysician = String(r[22] || "").trim();
+    const rawContractor = String(r[12] || "").trim();
+    const rawDate = cleanAdmissionDateStr(r[0]);
+
+    if (!rawName || !rawRoom) return;
+    const lowName = rawName.toLowerCase();
+    if (lowName === "patient" || lowName === "المريض" || lowName === "name" || lowName === "اسم المريض") return;
+
+    const patientKey = rawMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
+    const isProc = isProcedureOrTemporaryRoom(rawRoom);
+    const item = {
+      name: rawName,
+      mrn: rawMrn,
+      room: rawRoom,
+      physician: rawPhysician,
+      contractor: rawContractor,
+      date: rawDate
+    };
+
+    if (patientMap.has(patientKey)) {
+      const existing = patientMap.get(patientKey)!;
+      const existingIsProc = isProcedureOrTemporaryRoom(existing.room);
+      // If existing was a procedure room and the new one is an inpatient room, prefer the inpatient room!
+      if (existingIsProc && !isProc) {
+        patientMap.set(patientKey, item);
+      }
+    } else {
+      patientMap.set(patientKey, item);
+    }
+  });
+
+  return Array.from(patientMap.values());
 }
 
 function processPatientTransfers(
-  patients: { name: string; room: string; physician?: string; contractor?: string; date?: string }[],
+  patients: { name: string; mrn?: string; room: string; physician?: string; contractor?: string; date?: string }[],
   sheetDate?: string
 ) {
   if (!patients || !Array.isArray(patients) || patients.length === 0) return;
   const transferDateStr = sheetDate || getTodayRiyadhDateTimeStr();
   let transfersModified = false;
 
+  // Deduplicate input if not already deduplicated
+  const uniquePatients: typeof patients = [];
+  const seenKeys = new Set<string>();
   patients.forEach(p => {
     const rawName = String(p.name || "").trim();
+    const rawMrn = String(p.mrn || "").trim().replace(/^0+/, "");
     const rawRoom = cleanRoomStr(String(p.room || "").trim());
     if (!rawName || !rawRoom) return;
+    const key = rawMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniquePatients.push({ ...p, name: rawName, mrn: rawMrn, room: rawRoom });
+    }
+  });
 
-    const lowName = rawName.toLowerCase();
-    if (lowName === "patient" || lowName === "المريض" || lowName === "name" || lowName === "اسم المريض") return;
+  uniquePatients.forEach(p => {
+    const rawName = p.name;
+    const rawMrn = p.mrn || "";
+    const rawRoom = p.room;
 
     let matchedKey: string | null = null;
-    let matchedRegistryItem: { name: string; lastRoom: string; physician?: string; contractor?: string; date?: string } | null = null;
+    let matchedRegistryItem: { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string } | null = null;
 
-    for (const key in patientRoomRegistry) {
-      if (isNameMatch(key, rawName)) {
-        matchedKey = key;
-        matchedRegistryItem = patientRoomRegistry[key];
-        break;
+    // First try exact MRN lookup
+    if (rawMrn) {
+      for (const key in patientRoomRegistry) {
+        const item = patientRoomRegistry[key];
+        const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
+        if (itemMrn && itemMrn === rawMrn) {
+          matchedKey = key;
+          matchedRegistryItem = item;
+          break;
+        }
+      }
+    }
+
+    // If not matched by MRN, try strict patient match
+    if (!matchedRegistryItem) {
+      for (const key in patientRoomRegistry) {
+        const item = patientRoomRegistry[key];
+        const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
+        // If both have MRN and they differ, do not match!
+        if (rawMrn && itemMrn && rawMrn !== itemMrn) continue;
+
+        if (isPatientMatch({ mrn: rawMrn, name: rawName }, { mrn: itemMrn, name: item.name || key })) {
+          matchedKey = key;
+          matchedRegistryItem = item;
+          break;
+        }
       }
     }
 
     if (matchedRegistryItem) {
-      const prevRoom = matchedRegistryItem.lastRoom;
+      const prevRoom = cleanRoomStr(matchedRegistryItem.lastRoom);
       const normPrev = normalizeRoom(prevRoom);
       const normCurr = normalizeRoom(rawRoom);
 
       if (normPrev && normCurr && normPrev !== normCurr) {
-        console.log(`[Patient Transfer] "${rawName}" moved from "${prevRoom}" to "${rawRoom}"`);
+        console.log(`[Patient Transfer] "${rawName}" (MRN: ${rawMrn}) moved from "${prevRoom}" to "${rawRoom}"`);
 
-        let transferRecord = cumulativeTransfers.find(t => isNameMatch(t.name, rawName));
+        // Look for existing record
+        let transferRecord = cumulativeTransfers.find(t => {
+          const tMrn = String(t.mrn || "").trim().replace(/^0+/, "");
+          if (rawMrn && tMrn) return rawMrn === tMrn;
+          return isPatientMatch({ mrn: rawMrn, name: rawName }, { mrn: tMrn, name: t.name });
+        });
 
         if (!transferRecord) {
           transferRecord = {
             id: `transfer-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
             name: rawName,
-            mrn: "",
+            mrn: rawMrn,
             initialRoom: prevRoom,
             currentRoom: rawRoom,
             journey: [prevRoom, rawRoom],
@@ -829,21 +938,23 @@ function processPatientTransfers(
           cumulativeTransfers.unshift(transferRecord);
           transfersModified = true;
         } else {
-          const lastStep = transferRecord.history && transferRecord.history.length > 0
-            ? transferRecord.history[transferRecord.history.length - 1]
-            : null;
-          const isDuplicateStep = lastStep && normalizeRoom(lastStep.fromRoom) === normPrev && normalizeRoom(lastStep.toRoom) === normCurr;
+          // Check if already in current room or duplicate step
+          if (!Array.isArray(transferRecord.journey)) {
+            transferRecord.journey = [transferRecord.initialRoom || prevRoom];
+          }
+          if (!Array.isArray(transferRecord.history)) {
+            transferRecord.history = [];
+          }
+
+          const lastJourneyRoom = transferRecord.journey[transferRecord.journey.length - 1];
+          const lastStep = transferRecord.history.length > 0 ? transferRecord.history[transferRecord.history.length - 1] : null;
+
+          const isDuplicateStep = (lastStep && normalizeRoom(lastStep.fromRoom) === normPrev && normalizeRoom(lastStep.toRoom) === normCurr) ||
+                                  (normalizeRoom(lastJourneyRoom) === normCurr) ||
+                                  (normalizeRoom(transferRecord.currentRoom) === normCurr);
 
           if (!isDuplicateStep) {
-            if (!Array.isArray(transferRecord.journey)) {
-              transferRecord.journey = [transferRecord.initialRoom || prevRoom];
-            }
-            if (transferRecord.journey[transferRecord.journey.length - 1] !== rawRoom) {
-              transferRecord.journey.push(rawRoom);
-            }
-            if (!Array.isArray(transferRecord.history)) {
-              transferRecord.history = [];
-            }
+            transferRecord.journey.push(rawRoom);
             transferRecord.history.push({
               fromRoom: prevRoom,
               toRoom: rawRoom,
@@ -864,8 +975,10 @@ function processPatientTransfers(
         if (p.contractor) matchedRegistryItem.contractor = p.contractor;
       }
     } else {
-      patientRoomRegistry[rawName] = {
+      const regKey = rawMrn ? `mrn:${rawMrn}` : rawName;
+      patientRoomRegistry[regKey] = {
         name: rawName,
+        mrn: rawMrn,
         lastRoom: rawRoom,
         physician: p.physician || "",
         contractor: p.contractor || "",
@@ -877,6 +990,105 @@ function processPatientTransfers(
   if (transfersModified) {
     saveData();
   }
+}
+
+function sanitizeAndDeduplicateTransfers(): boolean {
+  if (!Array.isArray(cumulativeTransfers) || cumulativeTransfers.length === 0) return false;
+  let changed = false;
+
+  const validTransfers: any[] = [];
+  const seenPatientKeys = new Set<string>();
+
+  cumulativeTransfers.forEach(t => {
+    if (!t || !t.name) return;
+    const name = String(t.name || "").trim();
+    const mrn = String(t.mrn || "").trim().replace(/^0+/, "");
+    const patientKey = mrn ? `mrn:${mrn}` : `name:${normalizeArabicName(name)}`;
+
+    // Always preserve seed records like Khadija
+    if (t.id === "transfer-khadija-seed" || name.includes("خديجه")) {
+      validTransfers.push(t);
+      seenPatientKeys.add(patientKey);
+      return;
+    }
+
+    const rawJourney = Array.isArray(t.journey) && t.journey.length > 0
+      ? t.journey
+      : [t.initialRoom || t.fromRoom, t.currentRoom || t.toRoom].filter(Boolean);
+
+    // Deduplicate consecutive identical rooms
+    const dedupedJourney: string[] = [];
+    rawJourney.forEach((r: any) => {
+      const cleanR = cleanRoomStr(String(r || "").trim());
+      if (!cleanR) return;
+      if (dedupedJourney.length === 0 || normalizeRoom(dedupedJourney[dedupedJourney.length - 1]) !== normalizeRoom(cleanR)) {
+        dedupedJourney.push(cleanR);
+      }
+    });
+
+    // Check if this was an artifact ping-pong between 2 rooms (e.g. [A, B, A, B, ...])
+    const uniqueRooms = Array.from(new Set(dedupedJourney.map(r => normalizeRoom(r))));
+    if (uniqueRooms.length <= 2 && dedupedJourney.length > 2) {
+      // Artifact ping-pong from previous bug! Discard it!
+      changed = true;
+      return;
+    }
+
+    // If journey has less than 2 distinct rooms, it's not a real transfer
+    if (uniqueRooms.length < 2 || dedupedJourney.length < 2) {
+      changed = true;
+      return;
+    }
+
+    // Clean up history
+    const rawHistory = Array.isArray(t.history) ? t.history : [];
+    const dedupedHistory: any[] = [];
+    rawHistory.forEach((h: any) => {
+      if (!h) return;
+      const fromR = cleanRoomStr(String(h.fromRoom || "").trim());
+      const toR = cleanRoomStr(String(h.toRoom || "").trim());
+      if (normalizeRoom(fromR) === normalizeRoom(toR)) return;
+      
+      const lastH = dedupedHistory.length > 0 ? dedupedHistory[dedupedHistory.length - 1] : null;
+      if (lastH && normalizeRoom(lastH.fromRoom) === normalizeRoom(fromR) && normalizeRoom(lastH.toRoom) === normalizeRoom(toR)) {
+        return; // Duplicate step
+      }
+      dedupedHistory.push({
+        ...h,
+        fromRoom: fromR,
+        toRoom: toR
+      });
+    });
+
+    if (dedupedHistory.length === 0) {
+      dedupedHistory.push({
+        fromRoom: dedupedJourney[0],
+        toRoom: dedupedJourney[dedupedJourney.length - 1],
+        date: t.lastTransferDate || getTodayRiyadhDateTimeStr(),
+        physician: t.physician || "",
+        contractor: t.contractor || ""
+      });
+    }
+
+    t.journey = dedupedJourney;
+    t.history = dedupedHistory;
+    t.initialRoom = dedupedJourney[0];
+    t.currentRoom = dedupedJourney[dedupedJourney.length - 1];
+
+    if (!seenPatientKeys.has(patientKey)) {
+      seenPatientKeys.add(patientKey);
+      validTransfers.push(t);
+    } else {
+      changed = true;
+    }
+  });
+
+  if (validTransfers.length !== cumulativeTransfers.length || changed) {
+    cumulativeTransfers = validTransfers;
+    changed = true;
+  }
+
+  return changed;
 }
 
 // Persistence Helpers
@@ -1041,25 +1253,27 @@ async function loadData() {
 
   console.log('Durable room-name sanitization done.');
   ensureDefaultTransfersSeed();
-  if (hospitalData && Array.isArray(hospitalData)) {
+  if (hospitalData && Array.isArray(hospitalData) && Object.keys(patientRoomRegistry).length === 0) {
     const rawOccupancy = extractRawPatientsFromRows(hospitalData);
-    if (Object.keys(patientRoomRegistry).length === 0) {
-      if (previousHospitalData && Array.isArray(previousHospitalData)) {
-        const prevRows = extractRawPatientsFromRows(previousHospitalData);
-        prevRows.forEach(p => {
-          if (p.name && p.room) {
-            patientRoomRegistry[p.name.trim()] = {
-              name: p.name.trim(),
-              lastRoom: cleanRoomStr(p.room),
-              physician: p.physician || "",
-              contractor: p.contractor || "",
-              date: p.date || ""
-            };
-          }
-        });
+    rawOccupancy.forEach(p => {
+      if (p.name && p.room) {
+        const regKey = p.mrn ? `mrn:${p.mrn}` : p.name.trim();
+        patientRoomRegistry[regKey] = {
+          name: p.name.trim(),
+          mrn: p.mrn || "",
+          lastRoom: cleanRoomStr(p.room),
+          physician: p.physician || "",
+          contractor: p.contractor || "",
+          date: p.date || ""
+        };
       }
-      processPatientTransfers(rawOccupancy);
-    }
+    });
+  }
+
+  const transfersCleaned = sanitizeAndDeduplicateTransfers();
+  if (transfersCleaned) {
+    console.log('[Transfers] Sanitized and removed corrupted ping-pong duplicates on startup.');
+    saveData().catch(e => console.error('Error saving cleaned transfers:', e));
   }
 }
 
@@ -1382,7 +1596,8 @@ async function handleUnifiedUpload(req: any, res: any) {
     }
     
     // Track and record patient room transfers
-    processPatientTransfers(currentSheetPatientsRaw);
+    const deduplicatedPatients = extractRawPatientsFromRows(rows);
+    processPatientTransfers(deduplicatedPatients);
 
     // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
     if (!isNewSheetLikelyEmpty || !hospitalData) {
@@ -3984,7 +4199,8 @@ async function updateHospitalState(rows: any[][]) {
   }
   
   // Track and record patient room transfers
-  processPatientTransfers(currentSheetPatientsRaw);
+  const deduplicatedPatients = extractRawPatientsFromRows(rows);
+  processPatientTransfers(deduplicatedPatients);
 
   // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
   if (!isNewSheetLikelyEmpty || !hospitalData) {
@@ -5282,11 +5498,28 @@ app.delete('/api/header-background', (req, res) => {
 // Patient Transfers API Endpoints
 app.get('/api/transfers', (req, res) => {
   ensureDefaultTransfersSeed();
+  const cleaned = sanitizeAndDeduplicateTransfers();
+  if (cleaned) {
+    saveData().catch(e => console.error('Save error after transfers sanitization:', e));
+  }
   res.json({
     success: true,
     transfers: cumulativeTransfers,
     count: (cumulativeTransfers || []).length
   });
+});
+
+app.post('/api/transfers/cleanup', async (req, res) => {
+  try {
+    ensureDefaultTransfersSeed();
+    const changed = sanitizeAndDeduplicateTransfers();
+    if (changed) {
+      await saveData();
+    }
+    res.json({ success: true, transfers: cumulativeTransfers, count: cumulativeTransfers.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/transfers', async (req, res) => {
