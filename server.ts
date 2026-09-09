@@ -8,6 +8,7 @@ import ExcelJS from 'exceljs';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import sharp from 'sharp';
+import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import admin from 'firebase-admin';
@@ -15,6 +16,19 @@ import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getDatabase as getAdminDatabase } from 'firebase-admin/database';
 
 dotenv.config();
+
+// Initialize Supabase Client for Primary Database Operations
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0';
+
+export const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+});
+console.log(`Supabase Client initialized successfully with endpoint: ${SUPABASE_URL}`);
+
 
 // --- MONKEY PATCH EXCELJS FOR A4 PRINT PREPARATION (COLUMN-TO-COLUMN) ---
 const originalAddWorksheet = ExcelJS.Workbook.prototype.addWorksheet;
@@ -1091,6 +1105,211 @@ function sanitizeAndDeduplicateTransfers(): boolean {
   return changed;
 }
 
+function extractSubsheetsFromHospitalData(rows: any[][]) {
+  if (!rows || rows.length < 2) return;
+
+  // Dynamically find where data starts
+  let startIdx = 3;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const r1 = String(rows[i][1] || "").toLowerCase();
+    const r3 = String(rows[i][3] || "").toLowerCase();
+    if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة") {
+      startIdx = i + 1;
+      break;
+    }
+  }
+
+  // 1. Extract Entries (Today's admissions)
+  const entryPatients = rows.slice(startIdx).map(row => ({
+    room: cleanRoomStr(String(row[1] || "").trim()),
+    name: String(row[3] || "").trim(),
+    physician: String(row[22] || "").trim(),
+    contractor: String(row[12] || "").trim(),
+    date: cleanAdmissionDateStr(row[0]),
+    mrn: String(row[2] || "").trim(),
+  })).filter(p => {
+    if (!p.room || !p.name) return false;
+    const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
+    const isOR = isOperatingRoom(p.room);
+    const rowAsString = Object.values(p).join(" ").toLowerCase();
+    return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+  });
+
+  const newEntries: any[] = [];
+  entryPatients.forEach(p => {
+    if (isToday(p.date) || isToday(p.date.split(" ")[0])) {
+      if (!newEntries.some(existing => isNameMatch(existing.name, p.name))) {
+        newEntries.push(p);
+      }
+    }
+  });
+
+  if (cumulativeEntries.length === 0) {
+    cumulativeEntries = newEntries;
+  } else {
+    newEntries.forEach(p => {
+      if (!cumulativeEntries.some(existing => isNameMatch(existing.name, p.name))) {
+        cumulativeEntries.push(p);
+      }
+    });
+  }
+
+  // 2. Extract Dialysis
+  const dialRows = rows.slice(startIdx).map(row => ({
+    room: cleanRoomStr(String(row[1] || "").trim()),
+    name: String(row[3] || "").trim(),
+    physician: String(row[22] || "").trim(),
+    contractor: String(row[12] || "").trim(),
+    date: cleanAdmissionDateStr(row[0]),
+  })).filter(p => {
+    if (!p.room || !p.name) return false;
+    const roomLower = p.room.toLowerCase();
+    const rowAsString = Object.values(p).join(" ").toLowerCase();
+    const isDialysis = roomLower.includes("dialysis") || roomLower.includes("diyalsis") || roomLower.includes("غسيل");
+    const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
+    return isDialysis && !isGloballyExcluded;
+  });
+  if (cumulativeDialysis.length === 0) {
+    cumulativeDialysis = dialRows;
+  } else {
+    dialRows.forEach(p => {
+      if (!cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name))) {
+        cumulativeDialysis.push(p);
+      }
+    });
+  }
+
+  // 3. Extract Debts (Cash)
+  const finalExtractedDebts = rows.slice(startIdx).map(row => ({
+    colA: cleanAdmissionDateStr(row[0]),
+    room: cleanRoomStr(String(row[1] || "").trim()),
+    colD: String(row[3] || "").trim(),
+    colF: String(row[5] || "").trim(),
+    colM: String(row[12] || "").trim(),
+    colL: String(row[11] || "").trim(),
+    colZ: String(row[25] || "").trim(),
+    colAB: String(row[27] || "").trim()
+  })).filter(p => {
+    const fLower = p.colF.toLowerCase();
+    const mLower = p.colM.toLowerCase();
+    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
+    const fMatch = (fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
+                    fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
+                    fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
+                    mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
+                    mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
+                    mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل")) && !isHomeCare;
+    const lLower = p.colL.toLowerCase();
+    const dLower = p.colD.toLowerCase();
+    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
+    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+    const isOR = isOperatingRoom(p.room);
+    return fMatch && isNotPhysician && !isOR && p.colD.length > 0;
+  });
+  cumulativeDebts = finalExtractedDebts;
+
+  // 4. Extract Insured Debts
+  const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
+    colA: cleanAdmissionDateStr(row[0]),
+    room: cleanRoomStr(String(row[1] || "").trim()),
+    colD: String(row[3] || "").trim(),
+    colF: String(row[5] || "").trim(),
+    colM: String(row[12] || "").trim(),
+    colL: String(row[11] || "").trim(),
+    colZ: String(row[25] || "").trim(),
+    colAB: String(row[27] || "").trim()
+  })).filter(p => {
+    const fLower = p.colF.toLowerCase();
+    const mLower = p.colM.toLowerCase();
+    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
+    const isCash = fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
+                   fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
+                   fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
+                   mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
+                   mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
+                   mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل");
+    const isInsured = !isCash && !isHomeCare && (fLower.length > 0 || mLower.length > 0);
+    const lLower = p.colL.toLowerCase();
+    const dLower = p.colD.toLowerCase();
+    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
+    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
+    const isOR = isOperatingRoom(p.room);
+    return isInsured && isNotPhysician && valAB > 0 && p.colD.length > 0 && !isOR;
+  });
+  cumulativeInsuredDebts = finalExtractedInsuredDebts;
+
+  // 5. Extract Medical Plans
+  const medicalPlansRaw = rows.slice(startIdx).map(row => ({
+    colA: cleanAdmissionDateStr(row[0]),
+    colB: cleanRoomStr(String(row[1] || "").trim()),
+    colD: String(row[3] || "").trim(),
+    colM: String(row[12] || "").trim(),
+    colW: String(row[22] || "").trim(),
+    colAG: String(row[32] || "").trim(),
+    colAH: String(row[33] || "").trim(),
+    colX: String(row[23] || "").trim()
+  })).filter(p => {
+    const bLower = p.colB.toLowerCase();
+    const dLower = p.colD.toLowerCase();
+    if (!p.colB || p.colB === "") return false;
+    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
+                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
+                     bLower === "id" || dLower === "patient name" ||
+                     (bLower.includes("bed") && dLower.includes("patient"));
+    if (isHeader) return false;
+    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
+  });
+  cumulativeMedicalPlans = medicalPlansRaw;
+
+  // 6. Extract Companion Status
+  const companionStatusRaw = rows.slice(startIdx).map(row => ({
+    colA: cleanAdmissionDateStr(row[0]),
+    colB: cleanRoomStr(String(row[1] || "").trim()),
+    colD: String(row[3] || "").trim(),
+    colI: String(row[8] || "").trim(),
+    colM: String(row[12] || "").trim(),
+    colW: String(row[22] || "").trim()
+  })).filter(p => {
+    const bLower = p.colB.toLowerCase();
+    const dLower = p.colD.toLowerCase();
+    if (!p.colB || p.colB === "") return false;
+    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
+                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
+                     bLower === "id" || dLower === "patient name" ||
+                     (bLower.includes("bed") && dLower.includes("patient"));
+    if (isHeader) return false;
+    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
+  });
+  cumulativeCompanionStatus = companionStatusRaw;
+
+  // 7. Extract LOS Data
+  const losSheetRaw = rows.slice(startIdx).map(row => ({
+    colA: cleanAdmissionDateStr(row[0]),
+    colB: cleanRoomStr(String(row[1] || "").trim()),
+    colD: String(row[3] || "").trim(),
+    colM: String(row[12] || "").trim(),
+    colS: String(row[18] || "").trim(),
+    colU: String(row[20] || "").trim(),
+    colAL: String(row[37] || "").trim()
+  })).filter(p => {
+    const bLower = p.colB.toLowerCase();
+    const dLower = p.colD.toLowerCase();
+    if (!p.colB || p.colB === "") return false;
+    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
+                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
+                     bLower === "id" || dLower === "patient name" ||
+                     (bLower.includes("bed") && dLower.includes("patient"));
+    if (isHeader) return false;
+    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
+    if (isExcluded) return false;
+    const isOR = isOperatingRoom(p.colB);
+    if (isOR) return false;
+    return true;
+  });
+  cumulativeLOS = losSheetRaw;
+}
+
 // Persistence Helpers
 async function loadData() {
   try {
@@ -1122,83 +1341,111 @@ async function loadData() {
     console.error('Failed to load local data:', err);
   }
 
-  // 2. Load/override with Cloud Firestore dataset as the absolute source of truth
-  if (adminDb) {
-    try {
-      console.log('Fetching latest durable dataset state from Cloud Firestore...');
-      const docRef = adminDb.collection('state').doc('dataset');
-      const docSnap = await docRef.get();
-      if (docSnap.exists) {
-        const parsed = docSnap.data();
-        console.log("Cloud Firestore dataset found! Restoring state from cloud persistence.");
-        
-        const parseMaybeJson = (val: any) => {
-          if (!val) return null;
-          if (typeof val === 'string') {
-            try { return JSON.parse(val); } catch (e) { return val; }
-          }
-          return val;
-        };
+  // 2. Load/override with Supabase dataset as the primary durable source of truth
+  try {
+    console.log('Fetching latest durable dataset state from Supabase rtdb_nodes (state/dataset)...');
+    const { data: supabaseNode, error: sbErr } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('*')
+      .eq('path', 'state/dataset')
+      .maybeSingle();
 
-        const cloudCurrent = parseMaybeJson(parsed.current);
-        if (cloudCurrent && Array.isArray(cloudCurrent) && cloudCurrent.length > 0) hospitalData = cloudCurrent;
+    if (!sbErr && supabaseNode && supabaseNode.data) {
+      const parsed = supabaseNode.data;
+      console.log("Supabase dataset found! Restoring state from Supabase database.");
 
-        const cloudPrev = parseMaybeJson(parsed.previous);
-        if (cloudPrev) previousHospitalData = cloudPrev;
-
-        const cloudDischarged = parseMaybeJson(parsed.discharged);
-        if (Array.isArray(cloudDischarged) && cloudDischarged.length > 0) cumulativeDischarged = cloudDischarged;
-
-        const cloudEntries = parseMaybeJson(parsed.entries);
-        if (Array.isArray(cloudEntries)) cumulativeEntries = cloudEntries;
-
-        const cloudDialysis = parseMaybeJson(parsed.dialysis);
-        if (Array.isArray(cloudDialysis)) cumulativeDialysis = cloudDialysis;
-
-        const cloudDebts = parseMaybeJson(parsed.debts);
-        if (Array.isArray(cloudDebts)) cumulativeDebts = cloudDebts;
-
-        const cloudInsuredDebts = parseMaybeJson(parsed.insuredDebts);
-        if (Array.isArray(cloudInsuredDebts)) cumulativeInsuredDebts = cloudInsuredDebts;
-
-        const cloudMedicalPlans = parseMaybeJson(parsed.medicalPlans);
-        if (Array.isArray(cloudMedicalPlans)) cumulativeMedicalPlans = cloudMedicalPlans;
-
-        const cloudCompanionStatus = parseMaybeJson(parsed.companionStatus);
-        if (Array.isArray(cloudCompanionStatus)) cumulativeCompanionStatus = cloudCompanionStatus;
-
-        const cloudLOS = parseMaybeJson(parsed.losData);
-        if (Array.isArray(cloudLOS)) cumulativeLOS = cloudLOS;
-
-        const cloudORList = parseMaybeJson(parsed.orList);
-        if (Array.isArray(cloudORList) && cloudORList.length > 0) cumulativeORList = cloudORList;
-
-        if (parsed.vipCasesText !== undefined && parsed.vipCasesText !== null) vipCasesText = String(parsed.vipCasesText);
-        if (parsed.earlyDischargeRoomsText !== undefined && parsed.earlyDischargeRoomsText !== null) earlyDischargeRoomsText = String(parsed.earlyDischargeRoomsText);
-        if (parsed.pendingDischargePatientsText !== undefined && parsed.pendingDischargePatientsText !== null) pendingDischargePatientsText = String(parsed.pendingDischargePatientsText);
-
-        const cloudManualDisc = parseMaybeJson(parsed.manuallyDischargedNames);
-        if (Array.isArray(cloudManualDisc)) manuallyDischargedNames = cloudManualDisc;
-
-        const cloudTransfers = parseMaybeJson(parsed.transfers);
-        if (Array.isArray(cloudTransfers) && cloudTransfers.length > 0) cumulativeTransfers = cloudTransfers;
-
-        const cloudRegistry = parseMaybeJson(parsed.patientRoomRegistry);
-        if (cloudRegistry && typeof cloudRegistry === 'object') patientRoomRegistry = cloudRegistry;
-        
-        if (parsed.uploadedAt) {
-          uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
-        } else if (parsed.updatedAt) {
-          uploadedAt = typeof parsed.updatedAt.toDate === 'function' ? parsed.updatedAt.toDate().getTime() : new Date(parsed.updatedAt).getTime();
-        } else {
-          uploadedAt = null;
+      const parseMaybeJson = (val: any) => {
+        if (!val) return null;
+        if (typeof val === 'string') {
+          try { return JSON.parse(val); } catch (e) { return val; }
         }
-      } else {
-        console.log("No dataset document found in Firestore. Creating it on first upload/save.");
+        return val;
+      };
+
+      const normalizeRowsArray = (rows: any): any[][] | null => {
+        const raw = parseMaybeJson(rows);
+        if (!raw || !Array.isArray(raw) || raw.length === 0) return null;
+
+        // If it's already a 2D array of arrays, return as is
+        if (Array.isArray(raw[0])) {
+          return raw;
+        }
+
+        // If items are objects with "No filters applied", "Unnamed: 1", etc. (RTDB format), map to 2D array
+        const keys = [
+          "No filters applied", "Unnamed: 1", "Unnamed: 2", "Unnamed: 3", "Unnamed: 4",
+          "Unnamed: 5", "Unnamed: 6", "Unnamed: 7", "Unnamed: 8", "Unnamed: 9",
+          "Unnamed: 10", "Unnamed: 11", "Unnamed: 12", "Unnamed: 13", "Unnamed: 14",
+          "Unnamed: 15", "Unnamed: 16", "Unnamed: 17", "Unnamed: 18", "Unnamed: 19",
+          "Unnamed: 20", "Unnamed: 21", "Unnamed: 22", "Unnamed: 23", "Unnamed: 24",
+          "Unnamed: 25", "Unnamed: 26", "Unnamed: 27", "Unnamed: 28", "Unnamed: 29",
+          "Unnamed: 30", "Unnamed: 31", "Unnamed: 32", "Unnamed: 33", "Unnamed: 34",
+          "Unnamed: 35", "Unnamed: 36", "Unnamed: 37", "Unnamed: 38"
+        ];
+
+        return raw.map(item => {
+          if (Array.isArray(item)) return item;
+          if (item && typeof item === 'object') {
+            return keys.map(k => (item[k] !== undefined && item[k] !== null) ? item[k] : "");
+          }
+          return [];
+        });
+      };
+
+      const cloudCurrent = normalizeRowsArray(parsed.current);
+      if (cloudCurrent && cloudCurrent.length > 0) hospitalData = cloudCurrent;
+
+      const cloudPrev = normalizeRowsArray(parsed.previous);
+      if (cloudPrev && cloudPrev.length > 0) previousHospitalData = cloudPrev;
+
+      const cloudDischarged = parseMaybeJson(parsed.discharged);
+      if (Array.isArray(cloudDischarged) && cloudDischarged.length > 0) cumulativeDischarged = cloudDischarged;
+
+      const cloudEntries = parseMaybeJson(parsed.entries);
+      if (Array.isArray(cloudEntries)) cumulativeEntries = cloudEntries;
+
+      const cloudDialysis = parseMaybeJson(parsed.dialysis);
+      if (Array.isArray(cloudDialysis)) cumulativeDialysis = cloudDialysis;
+
+      const cloudDebts = parseMaybeJson(parsed.debts);
+      if (Array.isArray(cloudDebts)) cumulativeDebts = cloudDebts;
+
+      const cloudInsuredDebts = parseMaybeJson(parsed.insuredDebts);
+      if (Array.isArray(cloudInsuredDebts)) cumulativeInsuredDebts = cloudInsuredDebts;
+
+      const cloudMedicalPlans = parseMaybeJson(parsed.medicalPlans);
+      if (Array.isArray(cloudMedicalPlans)) cumulativeMedicalPlans = cloudMedicalPlans;
+
+      const cloudCompanionStatus = parseMaybeJson(parsed.companionStatus);
+      if (Array.isArray(cloudCompanionStatus)) cumulativeCompanionStatus = cloudCompanionStatus;
+
+      const cloudLOS = parseMaybeJson(parsed.losData);
+      if (Array.isArray(cloudLOS)) cumulativeLOS = cloudLOS;
+
+      const cloudORList = parseMaybeJson(parsed.orList);
+      if (Array.isArray(cloudORList) && cloudORList.length > 0) cumulativeORList = cloudORList;
+
+      if (parsed.vipCasesText !== undefined && parsed.vipCasesText !== null) vipCasesText = String(parsed.vipCasesText);
+      if (parsed.earlyDischargeRoomsText !== undefined && parsed.earlyDischargeRoomsText !== null) earlyDischargeRoomsText = String(parsed.earlyDischargeRoomsText);
+      if (parsed.pendingDischargePatientsText !== undefined && parsed.pendingDischargePatientsText !== null) pendingDischargePatientsText = String(parsed.pendingDischargePatientsText);
+
+      const cloudManualDisc = parseMaybeJson(parsed.manuallyDischargedNames);
+      if (Array.isArray(cloudManualDisc)) manuallyDischargedNames = cloudManualDisc;
+
+      const cloudTransfers = parseMaybeJson(parsed.transfers);
+      if (Array.isArray(cloudTransfers) && cloudTransfers.length > 0) cumulativeTransfers = cloudTransfers;
+
+      const cloudRegistry = parseMaybeJson(parsed.patientRoomRegistry);
+      if (cloudRegistry && typeof cloudRegistry === 'object') patientRoomRegistry = cloudRegistry;
+
+      if (parsed.uploadedAt) {
+        uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
       }
-    } catch (err) {
-      console.error('Failed to restore database state from Cloud Firestore:', err);
+    } else {
+      console.log("No Supabase dataset node found yet; will sync current memory state to Supabase.");
     }
+  } catch (err) {
+    console.error('Failed to restore database state from Supabase:', err);
   }
 
   // Clean loaded data room strings for Room 307
@@ -1251,6 +1498,63 @@ async function loadData() {
     return p;
   });
 
+  // Self-heal/Extract missing sub-datasets if hospitalData is present
+  if (hospitalData && hospitalData.length > 1) {
+    let needsSave = false;
+    if (cumulativeDebts.length === 0 || cumulativeLOS.length === 0 || cumulativeEntries.length === 0 || cumulativeInsuredDebts.length === 0 || cumulativeMedicalPlans.length === 0) {
+      console.log('Extracting derived sub-datasets (entries, debts, insured debts, medical plans, los) from hospitalData...');
+      extractSubsheetsFromHospitalData(hospitalData);
+      needsSave = true;
+    }
+
+    if (previousHospitalData && previousHospitalData.length > 1 && cumulativeDischarged.length === 0) {
+      // Find discharges between previous and current
+      let oldStartIdx = 3;
+      for (let i = 0; i < Math.min(previousHospitalData.length, 10); i++) {
+        const r1 = String(previousHospitalData[i][1] || "").toLowerCase();
+        const r3 = String(previousHospitalData[i][3] || "").toLowerCase();
+        if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+          oldStartIdx = i + 1;
+          break;
+        }
+      }
+      let currStartIdx = 3;
+      for (let i = 0; i < Math.min(hospitalData.length, 10); i++) {
+        const r1 = String(hospitalData[i][1] || "").toLowerCase();
+        const r3 = String(hospitalData[i][3] || "").toLowerCase();
+        if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+          currStartIdx = i + 1;
+          break;
+        }
+      }
+      const oldPts = previousHospitalData.slice(oldStartIdx).map(r => ({
+        room: cleanRoomStr(String(r[1] || "").trim()),
+        name: String(r[3] || "").trim(),
+        physician: String(r[22] || "").trim(),
+        contractor: String(r[12] || "").trim(),
+        date: cleanAdmissionDateStr(r[0]),
+      })).filter(p => p.name && !KEYWORDS_TO_EXCLUDE.some(kw => Object.values(p).join(" ").toLowerCase().includes(kw)));
+
+      const currPts = hospitalData.slice(currStartIdx).map(r => ({
+        name: String(r[3] || "").trim(),
+      })).filter(p => p.name);
+
+      const newlyDischarged = oldPts.filter(oldP => !currPts.some(currP => isNameMatch(oldP.name, currP.name)));
+      newlyDischarged.forEach(p => {
+        if (!cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+          (p as any).dischargeDate = getTodayRiyadhDateStr();
+          cumulativeDischarged.push(p);
+          needsSave = true;
+        }
+      });
+    }
+
+    if (needsSave) {
+      console.log('Persisting newly derived datasets to Supabase cloud database...');
+      saveData().catch(e => console.error('Error saving derived datasets:', e));
+    }
+  }
+
   console.log('Durable room-name sanitization done.');
   ensureDefaultTransfersSeed();
   if (hospitalData && Array.isArray(hospitalData) && Object.keys(patientRoomRegistry).length === 0) {
@@ -1277,14 +1581,361 @@ async function loadData() {
   }
 }
 
-// Health Check
+// Health Check & Database Status
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', dataLoaded: !!hospitalData });
+  res.json({ 
+    status: 'ok', 
+    dataLoaded: !!hospitalData,
+    database: 'supabase',
+    supabaseUrl: SUPABASE_URL
+  });
+});
+
+// Parity verification endpoint comparing Supabase vs Firestore
+app.get('/api/db-parity', async (req, res) => {
+  try {
+    // 1. Fetch Supabase state
+    const { data: sbDatasetNode, error: sbErr } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('*')
+      .eq('path', 'state/dataset')
+      .maybeSingle();
+
+    const { data: sbProfiles, count: profilesCount } = await supabaseAdmin
+      .from('profiles')
+      .select('*', { count: 'exact' });
+
+    const { data: sbAuditNode } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'audit_logs')
+      .maybeSingle();
+
+    const sbData = sbDatasetNode?.data || {};
+    const parseMaybe = (v: any) => {
+      if (!v) return [];
+      if (typeof v === 'string') {
+        try { return JSON.parse(v); } catch (e) { return []; }
+      }
+      return Array.isArray(v) ? v : [];
+    };
+
+    const supabaseStats = {
+      connected: !sbErr,
+      provider: 'Supabase PostgreSQL Cloud',
+      endpoint: SUPABASE_URL,
+      table: 'rtdb_nodes',
+      updatedAt: sbDatasetNode?.updated_at || null,
+      records: {
+        inpatientPatients: parseMaybe(sbData.current).length,
+        dischargedPatients: parseMaybe(sbData.discharged).length,
+        transfers: parseMaybe(sbData.transfers).length,
+        orList: parseMaybe(sbData.orList).length,
+        entries: parseMaybe(sbData.entries).length,
+        dialysis: parseMaybe(sbData.dialysis).length,
+        debts: parseMaybe(sbData.debts).length,
+        insuredDebts: parseMaybe(sbData.insuredDebts).length,
+        medicalPlans: parseMaybe(sbData.medicalPlans).length,
+        companionStatus: parseMaybe(sbData.companionStatus).length,
+        losData: parseMaybe(sbData.losData).length,
+        profilesCount: profilesCount || (sbProfiles?.length || 0),
+        auditLogsCount: Array.isArray(sbAuditNode?.data) ? sbAuditNode.data.length : 0
+      }
+    };
+
+    // 2. Fetch Firestore state
+    let firestoreStats: any = {
+      connected: false,
+      provider: 'Google Cloud Firestore',
+      projectId: null,
+      databaseId: null,
+      updatedAt: null,
+      records: {
+        inpatientPatients: 0,
+        dischargedPatients: 0,
+        transfers: 0,
+        orList: 0,
+        entries: 0,
+        dialysis: 0,
+        debts: 0,
+        insuredDebts: 0,
+        medicalPlans: 0,
+        companionStatus: 0,
+        losData: 0,
+        loginsCount: 0
+      }
+    };
+
+    if (adminDb) {
+      try {
+        const snap = await adminDb.collection('state').doc('dataset').get();
+        if (snap.exists) {
+          const fData = snap.data() || {};
+          firestoreStats.connected = true;
+          firestoreStats.updatedAt = fData.updatedAt?.toDate ? fData.updatedAt.toDate().toISOString() : (fData.uploadedAt ? new Date(fData.uploadedAt).toISOString() : null);
+          firestoreStats.records = {
+            inpatientPatients: parseMaybe(fData.current).length,
+            dischargedPatients: parseMaybe(fData.discharged).length,
+            transfers: parseMaybe(fData.transfers).length,
+            orList: parseMaybe(fData.orList).length,
+            entries: parseMaybe(fData.entries).length,
+            dialysis: parseMaybe(fData.dialysis).length,
+            debts: parseMaybe(fData.debts).length,
+            insuredDebts: parseMaybe(fData.insuredDebts).length,
+            medicalPlans: parseMaybe(fData.medicalPlans).length,
+            companionStatus: parseMaybe(fData.companionStatus).length,
+            losData: parseMaybe(fData.losData).length,
+            loginsCount: 0
+          };
+        }
+        const loginsSnap = await adminDb.collection('logins').get();
+        firestoreStats.records.loginsCount = loginsSnap.size;
+      } catch (fErr: any) {
+        firestoreStats.error = fErr.message;
+      }
+    }
+
+    // 3. Compare parity
+    const keysToCompare = [
+      { key: 'inpatientPatients', label: 'Active Inpatient Occupancy' },
+      { key: 'dischargedPatients', label: 'Discharged Patients' },
+      { key: 'transfers', label: 'Room Transfers Registry' },
+      { key: 'orList', label: 'Operating Room (OR) List' },
+      { key: 'entries', label: 'Daily Admitted Entries' },
+      { key: 'dialysis', label: 'Dialysis Cases' },
+      { key: 'debts', label: 'Cash / Total Debts' },
+      { key: 'insuredDebts', label: 'Insured Debts' },
+      { key: 'medicalPlans', label: 'Medical Director Plans' },
+      { key: 'companionStatus', label: 'Companion Status Records' },
+      { key: 'losData', label: 'Length of Stay (LOS) Records' }
+    ];
+
+    let allMatched = true;
+    const comparison = keysToCompare.map(item => {
+      const sbCount = (supabaseStats.records as any)[item.key] || 0;
+      const fCount = (firestoreStats.records as any)[item.key] || 0;
+      const isMatch = sbCount === fCount;
+      if (!isMatch) allMatched = false;
+      return {
+        key: item.key,
+        label: item.label,
+        supabaseCount: sbCount,
+        firestoreCount: fCount,
+        difference: sbCount - fCount,
+        match: isMatch
+      };
+    });
+
+    // 4. Detailed schema definition created during migration
+    const schemaDetails = {
+      tables: [
+        {
+          name: 'rtdb_nodes',
+          type: 'PostgreSQL Table (JSONB Document Store)',
+          purpose: 'Stores full structured hospital application dataset, patient registries, and audit logs with real-time replication.',
+          columns: [
+            { name: 'path', type: 'text', constraint: 'PRIMARY KEY', description: 'Unique path identifier (e.g., state/dataset, audit_logs)' },
+            { name: 'data', type: 'jsonb', constraint: 'NOT NULL', description: 'Complete nested JSON payload (patients, transfers, OR list, medical plans, etc.)' },
+            { name: 'updated_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Timestamp of last modification for real-time synchronization' }
+          ],
+          storedDocuments: [
+            { path: 'state/dataset', recordsCount: supabaseStats.records.inpatientPatients, description: 'Active hospital dataset with all clinical & administrative sheets' },
+            { path: 'audit_logs', recordsCount: supabaseStats.records.auditLogsCount, description: 'Audit trail of administrative and user login sessions' }
+          ]
+        },
+        {
+          name: 'profiles',
+          type: 'PostgreSQL Relational Table',
+          purpose: 'Stores user accounts, authorized medical staff credentials, roles (admin/user), and login metadata.',
+          columns: [
+            { name: 'id', type: 'text', constraint: 'PRIMARY KEY', description: 'User identifier or auth UID' },
+            { name: 'email', type: 'text', constraint: 'NULLABLE', description: 'Staff email address' },
+            { name: 'display_name', type: 'text', constraint: 'NULLABLE', description: 'Doctor or staff full display name' },
+            { name: 'photo_url', type: 'text', constraint: 'NULLABLE', description: 'Profile avatar URL' },
+            { name: 'role', type: 'text', constraint: 'DEFAULT "user"', description: 'Access level (admin, doctor, user)' },
+            { name: 'metadata', type: 'jsonb', constraint: 'NULLABLE', description: 'Session data, last login details' },
+            { name: 'created_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Registration timestamp' },
+            { name: 'updated_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Last active timestamp' }
+          ],
+          rowCount: supabaseStats.records.profilesCount
+        },
+        {
+          name: 'posts',
+          type: 'PostgreSQL Relational Table',
+          purpose: 'Supports hospital announcements, shift handover notes, and clinical bulletins.',
+          columns: [
+            { name: 'id', type: 'text', constraint: 'PRIMARY KEY', description: 'Post ID' },
+            { name: 'user_id', type: 'text', constraint: 'FOREIGN KEY -> profiles(id)', description: 'Author ID' },
+            { name: 'title', type: 'text', constraint: 'NOT NULL', description: 'Bulletin title' },
+            { name: 'content', type: 'text', constraint: 'NOT NULL', description: 'Content / memo text' },
+            { name: 'status', type: 'text', constraint: 'DEFAULT "draft"', description: 'Publish status (draft, published, archived)' },
+            { name: 'tags', type: 'text[]', constraint: 'ARRAY', description: 'Categorization tags' },
+            { name: 'custom_data', type: 'jsonb', constraint: 'NULLABLE', description: 'Additional structured metadata' },
+            { name: 'created_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Creation date' },
+            { name: 'updated_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Last update date' }
+          ]
+        },
+        {
+          name: 'post_comments',
+          type: 'PostgreSQL Relational Table',
+          purpose: 'Supports threaded discussions, department comments, and review notes.',
+          columns: [
+            { name: 'id', type: 'text', constraint: 'PRIMARY KEY', description: 'Comment ID' },
+            { name: 'post_id', type: 'text', constraint: 'FOREIGN KEY -> posts(id)', description: 'Associated post reference' },
+            { name: 'user_id', type: 'text', constraint: 'FOREIGN KEY -> profiles(id)', description: 'Author user ID' },
+            { name: 'content', type: 'text', constraint: 'NOT NULL', description: 'Comment body text' },
+            { name: 'metadata', type: 'jsonb', constraint: 'NULLABLE', description: 'Audit metadata' },
+            { name: 'created_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Creation timestamp' },
+            { name: 'updated_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Update timestamp' }
+          ]
+        }
+      ]
+    };
+
+    res.json({
+      status: 'ok',
+      parityStatus: allMatched ? '100% PARITY MATCHED' : 'DRIFT DETECTED',
+      allMatched,
+      checkedAt: new Date().toISOString(),
+      supabase: supabaseStats,
+      firestore: firestoreStats,
+      comparison,
+      schema: schemaDetails
+    });
+  } catch (err: any) {
+    console.error('Error computing DB parity:', err);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+// Force re-sync parity endpoint
+app.post('/api/db-resync', async (req, res) => {
+  try {
+    await saveData();
+    res.json({ success: true, message: 'Database state successfully synchronized across Supabase and local persistence.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/db-status', async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('path, updated_at')
+      .eq('path', 'state/dataset')
+      .maybeSingle();
+
+    res.json({
+      status: error ? 'error' : 'connected',
+      provider: 'Supabase PostgreSQL',
+      endpoint: SUPABASE_URL,
+      table: 'rtdb_nodes',
+      record: data || null,
+      error: error ? error.message : null,
+      memoryStatus: {
+        patientsCount: Array.isArray(hospitalData) ? hospitalData.length : 0,
+        dischargedCount: Array.isArray(cumulativeDischarged) ? cumulativeDischarged.length : 0,
+        transfersCount: Array.isArray(cumulativeTransfers) ? cumulativeTransfers.length : 0,
+        orListCount: Array.isArray(cumulativeORList) ? cumulativeORList.length : 0
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+// Login Audit Logs endpoints (powered by Supabase)
+app.get('/api/logins', async (req, res) => {
+  try {
+    // 1. Fetch from Supabase audit_logs node in rtdb_nodes
+    const { data: auditData } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'audit_logs')
+      .maybeSingle();
+
+    if (auditData && Array.isArray(auditData.data) && auditData.data.length > 0) {
+      return res.json({ logs: auditData.data });
+    }
+
+    // 2. Fallback to profiles table in Supabase
+    const { data: profiles } = await supabaseAdmin
+      .from('profiles')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(100);
+
+    if (profiles && profiles.length > 0) {
+      const formatted = profiles.map(p => ({
+        id: p.id,
+        userId: p.id,
+        email: p.email || '',
+        displayName: p.display_name || '',
+        timestamp: p.updated_at || p.created_at || new Date().toISOString()
+      }));
+      return res.json({ logs: formatted });
+    }
+
+    res.json({ logs: [] });
+  } catch (err: any) {
+    console.error('Error fetching logins:', err);
+    res.status(500).json({ error: 'Failed to fetch logins', details: err.message });
+  }
+});
+
+app.post('/api/logins', async (req, res) => {
+  try {
+    const { userId, email, displayName, timestamp } = req.body;
+    const now = timestamp || new Date().toISOString();
+    const uid = userId || `usr_${Date.now()}`;
+    const userEmail = email || 'user@elite.hospital';
+    const name = displayName || 'Authorized Staff';
+
+    // 1. Upsert profile in Supabase
+    await supabaseAdmin.from('profiles').upsert({
+      id: uid,
+      email: userEmail,
+      display_name: name,
+      role: 'user',
+      metadata: { lastLogin: now },
+      updated_at: now
+    });
+
+    // 2. Append to audit_logs in rtdb_nodes
+    const { data: existingNode } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'audit_logs')
+      .maybeSingle();
+
+    let logs: any[] = (existingNode && Array.isArray(existingNode.data)) ? existingNode.data : [];
+    logs.unshift({
+      id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      userId: uid,
+      email: userEmail,
+      displayName: name,
+      timestamp: now
+    });
+    // Keep last 150 entries
+    if (logs.length > 150) logs = logs.slice(0, 150);
+
+    await supabaseAdmin.from('rtdb_nodes').upsert({
+      path: 'audit_logs',
+      data: logs,
+      updated_at: now
+    });
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Error recording login:', err);
+    res.status(500).json({ error: 'Failed to record login', details: err.message });
+  }
 });
 
 function checkDataTTL() {
   // All hospital data, discharged cases, VIP cases, and debt lists are permanently preserved
-  // in Cloud Firestore and local persistence until explicitly reset by user action.
+  // in Supabase Database and local persistence until explicitly reset by user action.
   return;
 }
 
@@ -1322,45 +1973,36 @@ async function saveData() {
       transfers: cumulativeTransfers,
       patientRoomRegistry: patientRoomRegistry
     };
+    
     // 1. Save locally fast sync
-    try { fs.writeFileSync(DATA_FILE, JSON.stringify(data));
-    console.log('Hospital data saved to local persistence.'); } catch (e) { console.error('Failed to save local data (might be read-only env)', e); }
+    try { 
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data));
+      console.log('Hospital data saved to local persistence.'); 
+    } catch (e) { 
+      console.error('Failed to save local data (might be read-only env)', e); 
+    }
 
-    // 2. Synchronize to Firestore
-    if (adminDb) {
-      console.log('Synchronizing hospital database cache to Firestore...');
-      const docRef = adminDb.collection('state').doc('dataset');
-      await docRef.set({
-        current: JSON.stringify(hospitalData || []),
-        previous: JSON.stringify(previousHospitalData || []),
-        discharged: JSON.stringify(cumulativeDischarged || []),
-        entries: JSON.stringify(cumulativeEntries || []),
-        dialysis: JSON.stringify(cumulativeDialysis || []),
-        debts: JSON.stringify(cumulativeDebts || []),
-        insuredDebts: JSON.stringify(cumulativeInsuredDebts || []),
-        medicalPlans: JSON.stringify(cumulativeMedicalPlans || []),
-        companionStatus: JSON.stringify(cumulativeCompanionStatus || []),
-        losData: JSON.stringify(cumulativeLOS || []),
-        orList: JSON.stringify(cumulativeORList || []),
-        transfers: JSON.stringify(cumulativeTransfers || []),
-        patientRoomRegistry: JSON.stringify(patientRoomRegistry || {}),
-        vipCasesText: vipCasesText || "",
-        earlyDischargeRoomsText: earlyDischargeRoomsText || "",
-        pendingDischargePatientsText: pendingDischargePatientsText || "",
-        manuallyDischargedNames: JSON.stringify(manuallyDischargedNames || []),
-        uploadedAt: uploadedAt,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    // 2. Synchronize to Supabase (Primary Cloud Database)
+    try {
+      console.log('Synchronizing hospital dataset to Supabase rtdb_nodes (state/dataset)...');
+      const { error: sbErr } = await supabaseAdmin.from('rtdb_nodes').upsert({
+        path: 'state/dataset',
+        data: data,
+        updated_at: new Date().toISOString()
       });
-      console.log('Hospital cloud database synchronization completed.');
+      if (sbErr) {
+        console.error('Supabase state/dataset upsert error:', sbErr);
+      } else {
+        console.log('Hospital Supabase cloud database synchronization completed.');
+      }
+    } catch (sbEx) {
+      console.error('Supabase sync exception:', sbEx);
     }
   } catch (err: any) {
-    if (err.code === 7) {
-      console.log('Hospital data synced locally, Firebase sync bypassed due to insufficient AD permissions.');
-    } else {
-      console.error('Failed to save data:', err);
-    }
+    console.error('Failed to save data:', err);
   }
 }
+
 
 // Trigger loadData asynchronously during startup
 loadData().catch(err => {
@@ -1751,11 +2393,7 @@ async function handleUnifiedUpload(req: any, res: any) {
     cumulativeLOS = losSheetRaw;
 
     uploadedAt = Date.now();
-    saveData();
-
-    // Push the manually uploaded spreadsheet to Firebase Realtime Database
-    // so both automated and manual uploads sync with each other
-    await pushToFirebaseRTDB(rows);
+    await saveData();
 
     res.json({ 
       success: true, 
@@ -4432,249 +5070,6 @@ function areRowsDifferent(rowsA: any[][] | null, rowsB: any[][] | null): boolean
   return false;
 }
 
-async function pushToFirebaseRTDB(rows: any[][]) {
-  console.log('Pushing manual spreadsheet upload to Firebase Realtime Database for automated sync...');
-  const rtdbUrl = 'https://ai-studio-applet-webapp-f4da3-default-rtdb.firebaseio.com/latest_occupancy.json';
-
-  const keys = [
-    "No filters applied", // 0
-    "Unnamed: 1",         // 1
-    "Unnamed: 2",         // 2
-    "Unnamed: 3",         // 3
-    "Unnamed: 4",         // 4
-    "Unnamed: 5",         // 5
-    "Unnamed: 6",         // 6
-    "Unnamed: 7",         // 7
-    "Unnamed: 8",         // 8
-    "Unnamed: 9",         // 9
-    "Unnamed: 10",        // 10
-    "Unnamed: 11",        // 11
-    "Unnamed: 12",        // 12
-    "Unnamed: 13",        // 13
-    "Unnamed: 14",        // 14
-    "Unnamed: 15",        // 15
-    "Unnamed: 16",        // 16
-    "Unnamed: 17",        // 17
-    "Unnamed: 18",        // 18
-    "Unnamed: 19",        // 19
-    "Unnamed: 20",        // 20
-    "Unnamed: 21",        // 21
-    "Unnamed: 22",        // 22
-    "Unnamed: 23",        // 23
-    "Unnamed: 24",        // 24
-    "Unnamed: 25",        // 25
-    "Unnamed: 26",        // 26
-    "Unnamed: 27",        // 27
-    "Unnamed: 28",        // 28
-    "Unnamed: 29",        // 29
-    "Unnamed: 30",        // 30
-    "Unnamed: 31",        // 31
-    "Unnamed: 32",        // 32
-    "Unnamed: 33",        // 33
-    "Unnamed: 34",        // 34
-    "Unnamed: 35",        // 35
-    "Unnamed: 36",        // 36
-    "Unnamed: 37",        // 37
-    "Unnamed: 38"         // 38
-  ];
-
-  // Map each row in the Excel rows into the Firebase RTDB object structure
-  const rtdbPayload = rows.map((row) => {
-    const item: any = {};
-    keys.forEach((key, colIdx) => {
-      let cellVal = row[colIdx];
-      if (cellVal === undefined || cellVal === null) {
-        item[key] = "";
-        return;
-      }
-
-      if (typeof cellVal === 'number') {
-        item[key] = cellVal;
-      } else if (cellVal instanceof Date) {
-        item[key] = cellVal.getTime();
-      } else if (typeof cellVal === 'string') {
-        const trimmed = cellVal.trim();
-        if (colIdx === 0 && trimmed) {
-          const parsedTime = Date.parse(trimmed);
-          if (!isNaN(parsedTime)) {
-            item[key] = parsedTime;
-          } else {
-            item[key] = trimmed;
-          }
-        } else {
-          const num = Number(trimmed);
-          if (trimmed !== "" && !isNaN(num) && isFinite(num)) {
-            item[key] = num;
-          } else {
-            item[key] = trimmed;
-          }
-        }
-      } else {
-        item[key] = String(cellVal).trim();
-      }
-    });
-    return item;
-  });
-
-  try {
-    if (adminRTDB) {
-      await adminRTDB.ref('latest_occupancy').set(rtdbPayload);
-      console.log('Firebase Realtime Database successfully updated with manual upload sheet via Admin SDK.');
-    } else {
-      console.warn('Firebase Realtime Database Admin reference is not initialized. Falling back to fetch (which may fail due to permissions)...');
-      const response = await fetch(rtdbUrl, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(rtdbPayload)
-      });
-      if (!response.ok) {
-        console.error(`Firebase Realtime Database PUT failed: ${response.statusText}`);
-      } else {
-        console.log('Firebase Realtime Database successfully updated with manual upload sheet.');
-      }
-    }
-  } catch (err) {
-    console.error('Error uploading to Firebase Realtime Database:', err);
-  }
-}
-
-async function fetchAndSyncFromFirebaseRTDB() {
-  console.log('Fetching state from Firebase Realtime Database dynamically...');
-  const rtdbUrl = 'https://ai-studio-applet-webapp-f4da3-default-rtdb.firebaseio.com/latest_occupancy.json';
-  
-  let rawData: any = null;
-  if (adminRTDB) {
-    const snapshot = await adminRTDB.ref('latest_occupancy').once('value');
-    rawData = snapshot.val();
-  } else {
-    console.warn('Firebase Realtime Database Admin reference is not initialized. Falling back to fetch (which may fail due to permissions)...');
-    const response = await fetch(rtdbUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch from Firebase RTDB: ${response.statusText}`);
-    }
-    rawData = await response.json();
-  }
-  if (!rawData || !Array.isArray(rawData)) {
-    throw new Error('Firebase RTDB data is not an array.');
-  }
-
-  const items = rawData.filter(x => x !== null);
-  if (items.length === 0) {
-    throw new Error('Firebase RTDB data is empty after filtering nulls.');
-  }
-
-  // Filter out headers or non-patient items
-  const dataItems = items.filter(item => {
-    const admissionVal = String(item["No filters applied"] || "").toLowerCase();
-    return admissionVal !== "admissiondate" && admissionVal !== "";
-  });
-
-  const keys = [
-    "No filters applied", // 0
-    "Unnamed: 1",         // 1
-    "Unnamed: 2",         // 2
-    "Unnamed: 3",         // 3
-    "Unnamed: 4",         // 4
-    "Unnamed: 5",         // 5
-    "Unnamed: 6",         // 6
-    "Unnamed: 7",         // 7
-    "Unnamed: 8",         // 8
-    "Unnamed: 9",         // 9
-    "Unnamed: 10",        // 10
-    "Unnamed: 11",        // 11
-    "Unnamed: 12",        // 12
-    "Unnamed: 13",        // 13
-    "Unnamed: 14",        // 14
-    "Unnamed: 15",        // 15
-    "Unnamed: 16",        // 16
-    "Unnamed: 17",        // 17
-    "Unnamed: 18",        // 18
-    "Unnamed: 19",        // 19
-    "Unnamed: 20",        // 20
-    "Unnamed: 21",        // 21
-    "Unnamed: 22",        // 22
-    "Unnamed: 23",        // 23
-    "Unnamed: 24",        // 24
-    "Unnamed: 25",        // 25
-    "Unnamed: 26",        // 26
-    "Unnamed: 27",        // 27
-    "Unnamed: 28",        // 28
-    "Unnamed: 29",        // 29
-    "Unnamed: 30",        // 30
-    "Unnamed: 31",        // 31
-    "Unnamed: 32",        // 32
-    "Unnamed: 33",        // 33
-    "Unnamed: 34",        // 34
-    "Unnamed: 35",        // 35
-    "Unnamed: 36",        // 36
-    "Unnamed: 37",        // 37
-    "Unnamed: 38"         // 38
-  ];
-
-  // Dummy header row as startIdx target
-  const dummyHeader = Array(40).fill("");
-  dummyHeader[0] = "AdmissionDate";
-  dummyHeader[1] = "room";
-  dummyHeader[2] = "MRN";
-  dummyHeader[3] = "patient";
-
-  const rows: any[][] = [dummyHeader];
-
-  dataItems.forEach(item => {
-    const rowArray = keys.map((key, colIdx) => {
-      let val = item[key];
-      if (val === undefined || val === null) {
-        return "";
-      }
-      if (colIdx === 0) {
-        return cleanAdmissionDateStr(val);
-      }
-      // Formatting unix timestamp in milliseconds to standard string for other columns if needed
-      if (typeof val === 'number' && val > 30 * 365 * 24 * 3600 * 1000) {
-        const dateObj = new Date(val);
-        return formatDateToUserFormat(dateObj);
-      }
-      return String(val).trim();
-    });
-    rows.push(rowArray);
-  });
-
-  const actualRtdbNames = rows.slice(1).map(r => String(r[3] || "").trim()).filter(Boolean);
-  manuallyDischargedNames = manuallyDischargedNames.filter(mName => {
-    return actualRtdbNames.some(rName => isNameMatch(mName, rName));
-  });
-
-  const headerRow = rows.slice(0, 1);
-  const filteredDataRows = rows.slice(1).filter(r => {
-    const pName = String(r[3] || "").trim();
-    return !isManuallyDischarged(pName);
-  });
-  const filteredRows = [...headerRow, ...filteredDataRows];
-
-  if (areRowsDifferent(hospitalData, filteredRows)) {
-    console.log("Detected a change in Firebase Realtime Database. Updating memory state...");
-    return await updateHospitalState(filteredRows);
-  } else {
-    console.log("No changes in Firebase Realtime Database since last check. Leaving last fetched sheet timestamp unchanged.");
-    return {
-      count: cumulativeDebts.length,
-      medicalPlansCount: cumulativeMedicalPlans.length,
-      companionStatusCount: cumulativeCompanionStatus.length,
-      losCount: cumulativeLOS.length,
-      countOccupancy: hospitalData ? hospitalData.length - 1 : 0
-    };
-  }
-}
-
-// Background periodic synchronization task every 15 minutes
-setInterval(() => {
-  fetchAndSyncFromFirebaseRTDB()
-    .then(() => console.log('Periodic Firebase Realtime Database synchronization success.'))
-    .catch(err => console.error('Periodic Firebase RTDB synchronization failure:', err));
-}, 15 * 60 * 1000);
-
 // Helper to classify IN/OUT as a fallback using string matching
 function classifyInOutFallback(p: any): 'IN' | 'OUT' {
   const vt = String(p.vt || "").toUpperCase().trim();
@@ -4785,13 +5180,7 @@ app.get('/api/occupancy/data', async (req, res) => {
   try {
     await loadData();
   } catch (err) {
-    console.error('Failed to load latest state from Firestore in GET /api/occupancy/data:', err);
-  }
-
-  try {
-    await fetchAndSyncFromFirebaseRTDB();
-  } catch (err) {
-    console.error('Failed to sync instantly from Firebase RTDB:', err);
+    console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
   }
 
   const filterHelper = (list: any[]) => {
@@ -5137,9 +5526,6 @@ app.post('/api/restore-patient', async (req, res) => {
 
     await saveData();
 
-    // Re-trigger RTDB sync to restore them immediately to actual hospital memory mapping
-    await fetchAndSyncFromFirebaseRTDB();
-
     res.json({
       success: true,
       message: `Patient ${name} has been successfully restored to active patient sheets.`,
@@ -5209,12 +5595,6 @@ app.post('/api/reset-or', async (req, res) => {
 app.post('/api/or-list/sync', async (req, res) => {
   console.log('Manual OR dashboard sync with occupancy requested');
   try {
-    try {
-      await fetchAndSyncFromFirebaseRTDB();
-    } catch (firebaseErr) {
-      console.error('Non-blocking Firebase sync failure during manual OR sync:', firebaseErr);
-    }
-
     const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
     const enrichedOrList = getEnrichedOrListForStats(cumulativeORList, occRows);
 
