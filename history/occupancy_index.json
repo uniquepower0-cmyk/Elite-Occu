@@ -1,0 +1,32 @@
+[
+  {
+    "date": "2026-09-15",
+    "timestamp": 1789473849581,
+    "cairoTime": "2026-09-15 15:04:09",
+    "summary": {
+      "totalOccupancy": 92,
+      "entriesCount": 19,
+      "dischargesCount": 43,
+      "autoDischargesCount": 43,
+      "manualDischargesCount": 0,
+      "dialysisCount": 6,
+      "debtsCount": 20,
+      "insuredDebtsCount": 12,
+      "transfersCount": 0
+    }
+  },
+  {
+    "date": "2026-09-10",
+    "timestamp": 1789033766440,
+    "cairoTime": "2026-09-10 12:49:26",
+    "summary": {
+      "totalOccupancy": 114,
+      "entriesCount": 16,
+      "dischargesCount": 17,
+      "dialysisCount": 4,
+      "debtsCount": 17,
+      "insuredDebtsCount": 14,
+      "transfersCount": 60
+    }
+  }
+]

@@ -347,9 +347,95 @@ export function calculateStats(patients: PatientRow[]): ZoneStats[] {
 export function isCashPayment(payment: string): boolean {
   if (!payment) return false;
   const p = payment.toString().toLowerCase().trim();
-  // We can look for keywords like cash, نقد, نقدي, كاش
   return p.includes('cash') || p.includes('كاش') || p.includes('نقد');
 }
+
+export function normalizeArabicName(name: string): string {
+  if (!name) return "";
+  let n = name.trim().toLowerCase();
+  
+  // Remove titles & honorifics
+  n = n.replace(/^(د\/|د\.|دكتور\/|دكتور|استاذ\/|أستاذ\/|السيد\/|السيد|السيدة\/|السيدة|م\/|مهندس\/|baby\s+of|baby|طفل|طفلة|ابن|ابنة|مولود|مولودة|twin\s*\d*)\s+/gi, "");
+
+  // Remove diacritics
+  n = n.replace(/[\u064B-\u065F\u0670]/g, "");
+  // Normalize alef variations
+  n = n.replace(/[أإآٱ]/g, "ا");
+  // Normalize taa marbuta
+  n = n.replace(/ة/g, "ه");
+  // Normalize yaa
+  n = n.replace(/ى/g, "ي");
+  // Normalize common compound names
+  n = n.replace(/\bعبد\s+/g, "عبد");
+  n = n.replace(/\bابو\s+/g, "ابو");
+  n = n.replace(/\bام\s+/g, "ام");
+  // Normalize alif-lam prefix for common names (e.g. السيد -> سيد)
+  n = n.replace(/\bال([^\s]{3,})/g, "$1");
+  // Remove special characters, symbols, and extra spaces
+  n = n.replace(/[^a-z0-9\u0600-\u06FF\s]/g, " ");
+  return n.replace(/\s+/g, " ").trim();
+}
+
+export function getNormalizedWords(name: string): string[] {
+  const norm = normalizeArabicName(name);
+  if (!norm) return [];
+  return norm.split(" ").filter(w => w.length > 1);
+}
+
+export function isClientNameMatch(nameA: string, nameB: string): boolean {
+  if (!nameA || !nameB) return false;
+  const nA = nameA.toLowerCase().trim();
+  const nB = nameB.toLowerCase().trim();
+  const isPascalA = nA.includes("باسكال") || nA.includes("pascal");
+  const isJeaneldieA = nA.includes("jeaneldie") || nA.includes("nzola") || nA.includes("mpaka");
+  const isPascalB = nB.includes("باسكال") || nB.includes("pascal");
+  const isJeaneldieB = nB.includes("jeaneldie") || nB.includes("nzola") || nB.includes("mpaka");
+  if ((isPascalA && isJeaneldieB) || (isJeaneldieA && isPascalB)) {
+    return true;
+  }
+
+  const normA = normalizeArabicName(nameA);
+  const normB = normalizeArabicName(nameB);
+  if (normA === normB) return true;
+  
+  const wordsA = getNormalizedWords(nameA);
+  const wordsB = getNormalizedWords(nameB);
+  
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+
+  // First given name MUST match!
+  if (wordsA[0] !== wordsB[0]) {
+    return false;
+  }
+
+  const setA = new Set(wordsA);
+  const setB = new Set(wordsB);
+  const common = [...setA].filter(w => setB.has(w));
+  const minSize = Math.min(setA.size, setB.size);
+
+  if (minSize >= 3) {
+    if (wordsA[0] === wordsB[0] && wordsA[1] === wordsB[1] && common.length >= 2) return true;
+    return common.length >= 3 || (common.length / minSize) >= 0.7;
+  } else if (minSize === 2) {
+    return (wordsA[0] === wordsB[0] && wordsA[1] === wordsB[1]) || common.length >= 2 || normA === normB;
+  }
+
+  return normA === normB;
+}
+
+export function isPatientOnORList(patient: { name: string; mrn?: string }, orList: any[]): boolean {
+  if (!patient || !orList || orList.length === 0) return false;
+  const pMrn = String(patient.mrn || "").trim().replace(/^0+/, "");
+  
+  return orList.some(orPt => {
+    const orMrn = String(orPt.mrn || "").trim().replace(/^0+/, "");
+    if (pMrn && orMrn && pMrn.length >= 3 && orMrn.length >= 3) {
+      if (pMrn === orMrn) return true;
+    }
+    return isClientNameMatch(patient.name, orPt.patientName || orPt.name || "");
+  });
+}
+
 
 export function getAccommodationCategory(roomStr: string): string {
   if (!roomStr) return "غير مصنف";

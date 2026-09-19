@@ -209,6 +209,26 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
     }
   };
 
+  // Handle auto-detect and sync transfers from latest occupancy and historical baselines
+  const handleSyncFromOccupancy = async () => {
+    setLoadingAction(true);
+    try {
+      const res = await fetch('/api/transfers/sync-from-occupancy', {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to detect transfers');
+      }
+      await onRefresh();
+      alert(data.message || `Transfers reconciled. Total cases: ${data.transfersCount || 0}`);
+    } catch (err: any) {
+      alert('Error detecting transfers: ' + err.message);
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
   return (
     <div className="space-y-6 text-left" dir="ltr" id="patient-transfers-section">
       {/* Header Info Banner */}
@@ -229,6 +249,17 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              id="btn-sync-occupancy-transfers"
+              onClick={handleSyncFromOccupancy}
+              disabled={loadingAction}
+              type="button"
+              className="px-3.5 py-2.5 bg-amber-500/80 hover:bg-amber-500 text-amber-950 font-bold rounded-xl text-xs flex items-center gap-1.5 border border-amber-300/40 shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="Detect and reconcile transfers by comparing current occupancy against baseline snapshots"
+            >
+              <ArrowRightLeft size={14} className={loadingAction ? 'animate-spin' : ''} />
+              Detect Transfers
+            </button>
             <button
               id="btn-clean-transfers"
               onClick={handleCleanDuplicates}

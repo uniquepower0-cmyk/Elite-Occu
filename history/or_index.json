@@ -1,0 +1,22 @@
+[
+  {
+    "date": "2026-09-15",
+    "timestamp": 1789473747162,
+    "cairoTime": "2026-09-15 15:02:27",
+    "summary": {
+      "totalCases": 18,
+      "matched": 18,
+      "outpatients": 0
+    }
+  },
+  {
+    "date": "2026-09-10",
+    "timestamp": 1789033977780,
+    "cairoTime": "2026-09-10 12:52:57",
+    "summary": {
+      "totalCases": 16,
+      "matched": 0,
+      "outpatients": 16
+    }
+  }
+]

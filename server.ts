@@ -14,6 +14,16 @@ import { getFirestore } from 'firebase/firestore';
 import admin from 'firebase-admin';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getDatabase as getAdminDatabase } from 'firebase-admin/database';
+import {
+  getCairoDateTime,
+  getCairoDateFromTimestamp,
+  saveOccupancySnapshot,
+  getOccupancySnapshot,
+  deleteOccupancySnapshot,
+  saveORSnapshot,
+  getORSnapshot,
+  getAvailableDates
+} from './historyManager';
 
 dotenv.config();
 
@@ -183,7 +193,23 @@ const CONFIG = {
 
 // Set up storage for file uploads (in memory for this applet)
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+});
+
+export const handleUploadSingle = (req: any, res: any, next: any) => {
+  upload.any()(req, res, (err: any) => {
+    if (err) {
+      console.error('File upload middleware error:', err);
+      return res.status(400).json({ success: false, error: `Upload error: ${err.message || String(err)}` });
+    }
+    if (req.files && req.files.length > 0 && !req.file) {
+      req.file = req.files[0];
+    }
+    next();
+  });
+};
 
 // Store parsed data
 let hospitalData: any[][] | null = null;
@@ -203,6 +229,8 @@ let vipCasesText = "";
 let earlyDischargeRoomsText = "";
 let pendingDischargePatientsText = "";
 let uploadedAt: number | null = null;
+let lastActiveDate = "";
+let lastTransfersDate = "";
 let manuallyDischargedNames: string[] = [];
 
 function isManuallyDischarged(patientName: string): boolean {
@@ -217,7 +245,9 @@ function normalizeRoom(roomStr: string): string {
     .replace(/ROOM/g, "")
     .replace(/BED/g, "")
     .replace(/الغرفة/g, "")
-    .replace(/\s+/g, "")
+    .replace(/غرفة/g, "")
+    .replace(/سرير/g, "")
+    .replace(/[\s\-_]+/g, "")
     .trim();
 }
 
@@ -261,6 +291,21 @@ function isOperatingRoom(roomStr: string): boolean {
          bLower.startsWith("or -");
 }
 
+function isDialysisRoom(roomStr: string): boolean {
+  if (!roomStr) return false;
+  const r = String(roomStr).trim().toLowerCase();
+  return (
+    r.includes("dialysis") ||
+    r.includes("diyalsis") ||
+    r.includes("dialys") ||
+    r.includes("hemodialysis") ||
+    r.includes("غسيل") ||
+    r.includes("كلوي") ||
+    r.includes("كلى") ||
+    r.includes("استصفاء")
+  );
+}
+
 function formatDateToUserFormat(dateObj: Date): string {
   const y = dateObj.getFullYear();
   const m = dateObj.getMonth() + 1;
@@ -277,78 +322,97 @@ function cleanAdmissionDateStr(val: any): string {
     if (isNaN(val.getTime())) return "";
     return formatDateToUserFormat(val);
   }
-  const str = String(val).trim();
+  let str = String(val).trim();
   if (!str) return "";
+
+  // Convert Arabic numerals to Western digits
+  str = str.replace(/[٠-٩]/g, d => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(d)]);
 
   // Check if it's a Unix timestamp in milliseconds (typically 13 digits)
   if (/^\d{13}$/.test(str)) {
     const ts = parseInt(str, 10);
     const dateObj = new Date(ts);
-    return formatDateToUserFormat(dateObj);
+    if (!isNaN(dateObj.getTime())) return formatDateToUserFormat(dateObj);
   }
 
   // Check if it's a Unix timestamp in seconds (10 digits)
   if (/^\d{10}$/.test(str)) {
     const ts = parseInt(str, 10) * 1000;
     const dateObj = new Date(ts);
-    return formatDateToUserFormat(dateObj);
+    if (!isNaN(dateObj.getTime())) return formatDateToUserFormat(dateObj);
   }
 
   // Check if it's a standard JS serial date (if read from Excel but imported wrong as a raw float/number)
   const num = Number(str);
   if (!isNaN(num) && num > 40000 && num < 60000) { // realistic range for OLE Automation / Excel date (years ~2009 to 2063)
     const dateObj = new Date((num - 25569) * 86400 * 1000);
-    return formatDateToUserFormat(dateObj);
+    if (!isNaN(dateObj.getTime())) return formatDateToUserFormat(dateObj);
   }
 
-  // Try parsing the string to Date
+  // Try parsing the string to Date with format awareness
   try {
-    const cleanStr = str.replace(/\s+/g, ' ');
+    let cleanStr = str.replace(/\s+/g, ' ');
+    const isPM = /pm|م/i.test(cleanStr);
+    const isAM = /am|ص/i.test(cleanStr);
+    cleanStr = cleanStr.replace(/am|pm|ص|م/gi, '').trim();
     
-    // Pattern 1: YYYY-MM-DD HH:mm:ss or YYYY-MM-DD HH:mm or YYYY/MM/DD ...
-    const matchYMD = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+    // Pattern 1: YYYY-MM-DD HH:mm:ss or YYYY/MM/DD ...
+    const matchYMD = cleanStr.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
     if (matchYMD) {
       const y = parseInt(matchYMD[1], 10);
       const m = parseInt(matchYMD[2], 10) - 1;
       const d = parseInt(matchYMD[3], 10);
-      const h = parseInt(matchYMD[4] || "0", 10);
+      let h = parseInt(matchYMD[4] || "0", 10);
       const min = parseInt(matchYMD[5] || "0", 10);
       const sec = parseInt(matchYMD[6] || "0", 10);
+      if (isPM && h < 12) h += 12;
+      if (isAM && h === 12) h = 0;
       const dateObj = new Date(y, m, d, h, min, sec);
-      if (!isNaN(dateObj.getTime())) {
+      if (!isNaN(dateObj.getTime()) && dateObj.getDate() === d) {
         return formatDateToUserFormat(dateObj);
       }
     }
 
-    // Pattern 2: DD-MM-YYYY HH:mm or DD/MM/YYYY ...
-    const matchDMY = cleanStr.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
-    if (matchDMY) {
-      const d = parseInt(matchDMY[1], 10);
-      const m = parseInt(matchDMY[2], 10) - 1;
-      const y = parseInt(matchDMY[3], 10);
-      const h = parseInt(matchDMY[4] || "0", 10);
-      const min = parseInt(matchDMY[5] || "0", 10);
-      const sec = parseInt(matchDMY[6] || "0", 10);
-      const dateObj = new Date(y, m, d, h, min, sec);
-      if (!isNaN(dateObj.getTime())) {
-        return formatDateToUserFormat(dateObj);
-      }
-    }
+    // Pattern 2 & 3: num1/num2/year (where year is 2 or 4 digits, delimiter can be / - or .)
+    const matchD1D2Y = cleanStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+    if (matchD1D2Y) {
+      const n1 = parseInt(matchD1D2Y[1], 10);
+      const n2 = parseInt(matchD1D2Y[2], 10);
+      let y = parseInt(matchD1D2Y[3], 10);
+      if (y < 100) y += 2000;
+      let h = parseInt(matchD1D2Y[4] || "0", 10);
+      const min = parseInt(matchD1D2Y[5] || "0", 10);
+      const sec = parseInt(matchD1D2Y[6] || "0", 10);
+      if (isPM && h < 12) h += 12;
+      if (isAM && h === 12) h = 0;
 
-    // Pattern 3: MM/DD/YYYY HH:mm or MM/DD/YY HH:mm or M/D/YY H:mm ...
-    const matchMDY = cleanStr.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
-    if (matchMDY) {
-      const m = parseInt(matchMDY[1], 10) - 1;
-      const d = parseInt(matchMDY[2], 10);
-      let y = parseInt(matchMDY[3], 10);
-      if (y < 100) {
-        y += 2000;
+      let month = 0, day = 1;
+      if (n1 > 12 && n2 <= 12) {
+        // n1 is Day, n2 is Month
+        day = n1;
+        month = n2 - 1;
+      } else if (n2 > 12 && n1 <= 12) {
+        // n1 is Month, n2 is Day
+        month = n1 - 1;
+        day = n2;
+      } else {
+        // Both <= 12: Check against current Cairo month
+        const cMonth = new Date().getMonth();
+        if (n1 - 1 === cMonth) {
+          month = n1 - 1;
+          day = n2;
+        } else if (n2 - 1 === cMonth) {
+          day = n1;
+          month = n2 - 1;
+        } else {
+          // Default to M/D/Y (standard hospital HIS export format)
+          month = n1 - 1;
+          day = n2;
+        }
       }
-      const h = parseInt(matchMDY[4] || "0", 10);
-      const min = parseInt(matchMDY[5] || "0", 10);
-      const sec = parseInt(matchMDY[6] || "0", 10);
-      const dateObj = new Date(y, m, d, h, min, sec);
-      if (!isNaN(dateObj.getTime())) {
+
+      const dateObj = new Date(y, month, day, h, min, sec);
+      if (!isNaN(dateObj.getTime()) && dateObj.getDate() === day && dateObj.getMonth() === month) {
         return formatDateToUserFormat(dateObj);
       }
     }
@@ -442,7 +506,9 @@ function getOccupancyRows(data: any[][] | null): any[][] {
     ];
   }).filter(row => {
     const room = row[0];
+    const name = row[1];
     if (isOperatingRoom(room)) return false;
+    if (isManuallyDischarged(name)) return false;
     return true;
   });
   
@@ -482,6 +548,10 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
       cleanAdmissionDateStr(row[0]),  // Col A -> Col E (Admission Date)
       String(row[2] || "").trim(),  // Col C -> Col F (MRN)
     ];
+  }).filter(row => {
+    const name = row[1];
+    if (isManuallyDischarged(name)) return false;
+    return true;
   });
   
   const deduplicatedBody = deduplicateZoneC(body);
@@ -664,7 +734,8 @@ function isNameMatch(nameA: string, nameB: string): boolean {
 
   const minCoreSize = Math.min(coreWordsA.length, coreWordsB.length);
   const setA = new Set(coreWordsA);
-  const intersection = coreWordsB.filter(w => setA.has(w));
+  const setB = new Set(coreWordsB);
+  const commonWords = [...setA].filter(w => setB.has(w));
 
   // Intelligent sub-phrase match for 2 words (e.g. "روان اسامه" and "روان اسامه حسن علي")
   if (minCoreSize === 2) {
@@ -673,9 +744,14 @@ function isNameMatch(nameA: string, nameB: string): boolean {
     }
   }
 
-  // 3 or more words: first name must match, at least 3 matching words, and >= 75% overlap
+  // 3 or more words: first name must match
   if (minCoreSize >= 3) {
-    if (coreWordsA[0] === coreWordsB[0] && intersection.length >= 3 && (intersection.length / minCoreSize) >= 0.75) {
+    // If father names match:
+    if (coreWordsA[0] === coreWordsB[0] && coreWordsA[1] === coreWordsB[1] && commonWords.length >= 3 && (commonWords.length / minCoreSize) >= 0.75) {
+      return true;
+    }
+    // If father name was omitted or skipped, require high overlap and at least 3 matching words
+    if (coreWordsA[0] === coreWordsB[0] && commonWords.length >= 3 && (commonWords.length / minCoreSize) >= 0.85) {
       return true;
     }
   }
@@ -695,32 +771,110 @@ function isPatientMatch(
   return isNameMatch(a.name, b.name);
 }
 
-function isToday(dateStr: string): boolean {
-  const d = String(dateStr || "").trim().toLowerCase();
+function parseDateComponents(dateStr: any): { y: number; m: number; d: number } | null {
+  if (dateStr === undefined || dateStr === null) return null;
+  if (dateStr instanceof Date) {
+    if (isNaN(dateStr.getTime())) return null;
+    return { y: dateStr.getFullYear(), m: dateStr.getMonth() + 1, d: dateStr.getDate() };
+  }
+  let s = String(dateStr || "").trim();
+  if (!s) return null;
+  s = s.replace(/[٠-٩]/g, ch => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(ch)]);
+
+  // Handle ISO-like format: 2026-09-13T... or 2026-09-13
+  if (s.includes('T')) {
+    const datePart = s.split('T')[0];
+    const parts = datePart.split('-');
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      const d = parseInt(parts[2], 10);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) return { y, m, d };
+    }
+  }
+
+  const numbers = s.match(/\d+/g)?.map(n => parseInt(n, 10)) || [];
+  if (numbers.length >= 3) {
+    const [n1, n2, n3] = numbers;
+    // Format YYYY-MM-DD
+    if (n1 >= 2000 && n1 <= 2100 && n2 >= 1 && n2 <= 12 && n3 >= 1 && n3 <= 31) {
+      return { y: n1, m: n2, d: n3 };
+    }
+    // Format MM/DD/YYYY or DD/MM/YYYY
+    if (n3 >= 2000 && n3 <= 2100) {
+      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
+        return { y: n3, m: n1, d: n2 };
+      }
+      return { y: n3, m: n2, d: n1 };
+    }
+    // Format MM/DD/YY or DD/MM/YY
+    if (n3 >= 0 && n3 <= 99) {
+      const fullYear = 2000 + n3;
+      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
+        return { y: fullYear, m: n1, d: n2 };
+      }
+      return { y: fullYear, m: n2, d: n1 };
+    }
+  }
+
+  const parsedTime = Date.parse(s);
+  if (!isNaN(parsedTime)) {
+    const pDate = new Date(parsedTime);
+    return { y: pDate.getFullYear(), m: pDate.getMonth() + 1, d: pDate.getDate() };
+  }
+
+  return null;
+}
+
+function getDatasetOperationalDateStr(patients: { date?: string; rawDate?: string }[]): string {
+  if (!patients || patients.length === 0) return "";
+  let maxDateKey = "";
+  patients.forEach(p => {
+    const comp = parseDateComponents(p.rawDate || p.date);
+    if (comp) {
+      const key = `${comp.y}-${String(comp.m).padStart(2, '0')}-${String(comp.d).padStart(2, '0')}`;
+      if (!maxDateKey || key > maxDateKey) {
+        maxDateKey = key;
+      }
+    }
+  });
+  return maxDateKey;
+}
+
+function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
+  if (dateStr === undefined || dateStr === null) return false;
+  let d = String(dateStr || "").trim();
   if (!d) return false;
-  if (d.includes('اليوم')) return true;
-  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
-  const year = today.getFullYear();
-  const shortYear = year % 100;
-  const month = today.getMonth() + 1;
-  const day = today.getDate();
-  const paddedMonth = month.toString().padStart(2, '0');
-  const paddedDay = day.toString().padStart(2, '0');
-  const possibleFormats = [
-    `${month}/${day}/${year}`, `${month}/${day}/${shortYear}`,
-    `${paddedMonth}/${paddedDay}/${year}`, `${paddedMonth}/${paddedDay}/${shortYear}`,
-    `${day}/${month}/${year}`, `${day}/${month}/${shortYear}`,
-    `${paddedDay}/${paddedMonth}/${year}`, `${paddedDay}/${paddedMonth}/${shortYear}`,
-    `${year}-${paddedMonth}-${paddedDay}`
-  ];
-  if (possibleFormats.some(f => d.includes(f))) return true;
-  try {
-     const parsedTime = Date.parse(d);
-     if (!isNaN(parsedTime)) {
-       const parsedDate = new Date(parsedTime);
-       if (parsedDate.getFullYear() === year && parsedDate.getMonth() === today.getMonth() && parsedDate.getDate() === day) return true;
-     }
-  } catch(e) {}
+  if (d.includes('اليوم') || d.toLowerCase().includes('today')) return true;
+
+  const inputComp = parseDateComponents(dateStr);
+  if (!inputComp) return false;
+
+  // Check against referenceDate if provided
+  if (referenceDate) {
+    const refComp = parseDateComponents(referenceDate);
+    if (refComp) {
+      if (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d) {
+        return true;
+      }
+    }
+  }
+
+  // Check against today's calendar date in Cairo/Riyadh timezones
+  const timezones = ["Africa/Cairo", "Asia/Riyadh"];
+  for (const tz of timezones) {
+    try {
+      const today = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
+      const year = today.getFullYear();
+      const month = today.getMonth() + 1;
+      const day = today.getDate();
+
+      if (inputComp.y === year && inputComp.m === month && inputComp.d === day) {
+        return true;
+      }
+    } catch (e) {}
+  }
+
   return false;
 }
 
@@ -745,46 +899,24 @@ function getTodayRiyadhDateTimeStr(): string {
   return `${month}/${day}/${year} ${hours}:${minutes} ${ampm}`;
 }
 
-function ensureDefaultTransfersSeed() {
-  const khadijaName = "خديجه محمد احمد جابر";
-  const hasKhadija = (cumulativeTransfers || []).some(t => isNameMatch(t.name, khadijaName));
-  if (!hasKhadija) {
-    cumulativeTransfers.unshift({
-      id: "transfer-khadija-seed",
-      name: khadijaName,
-      mrn: "",
-      initialRoom: "309",
-      currentRoom: "PICU Room 2",
-      journey: ["309", "Cath Lab", "PICU Room 2"],
-      history: [
-        {
-          fromRoom: "309",
-          toRoom: "Cath Lab",
-          date: "6/20/2026 10:30 AM",
-          physician: "Dr. Hesham",
-          contractor: "Cash"
-        },
-        {
-          fromRoom: "Cath Lab",
-          toRoom: "PICU Room 2",
-          date: "6/21/2026 03:15 PM",
-          physician: "Dr. Hesham",
-          contractor: "Cash"
-        }
-      ],
-      lastTransferDate: "6/21/2026 03:15 PM",
-      physician: "Dr. Hesham",
-      contractor: "Cash",
-      notes: "Transferred from 309 to Cath Lab, then to PICU Room 2"
-    });
-    patientRoomRegistry[khadijaName] = {
-      name: khadijaName,
-      lastRoom: "PICU Room 2",
-      physician: "Dr. Hesham",
-      contractor: "Cash",
-      date: "6/21/2026 03:15 PM"
-    };
+function isDateStringFromPreviousDay(dateStr: string, cairoTodayStr: string): boolean {
+  if (!dateStr || typeof dateStr !== 'string') return false;
+  // If YYYY-MM-DD format
+  const trimmed = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed < cairoTodayStr;
   }
+  // If M/D/YYYY or MM/DD/YYYY format (e.g. "9/10/2026 10:45 AM")
+  const firstPart = trimmed.split(' ')[0];
+  const parts = firstPart.split('/');
+  if (parts.length === 3) {
+    const m = parts[0].padStart(2, '0');
+    const d = parts[1].padStart(2, '0');
+    const y = parts[2];
+    const formatted = `${y}-${m}-${d}`;
+    return formatted < cairoTodayStr;
+  }
+  return false;
 }
 
 function isProcedureOrTemporaryRoom(room: string): boolean {
@@ -800,13 +932,14 @@ function isProcedureOrTemporaryRoom(room: string): boolean {
          low.includes("recovery");
 }
 
-function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string }[] {
+function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }[] {
   if (!data || !Array.isArray(data)) return [];
-  let startIdx = 3;
+  let startIdx = 0;
   for (let i = 0; i < Math.min(data.length, 10); i++) {
+    const r0 = String(data[i][0] || "").toLowerCase();
     const r1 = String(data[i][1] || "").toLowerCase();
     const r3 = String(data[i][3] || "").toLowerCase();
-    if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+    if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
       startIdx = i + 1;
       break;
     }
@@ -814,19 +947,39 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
 
   // Deduplicate by patient within the same sheet:
   // If a patient is listed in an OR/procedure room AND an inpatient room, their inpatient room is their primary bed.
-  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string }>();
+  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }>();
 
   data.slice(startIdx).forEach(r => {
-    const rawRoom = cleanRoomStr(String(r[1] || "").trim());
-    const rawMrn = String(r[2] || "").trim().replace(/^0+/, "");
-    const rawName = String(r[3] || "").trim();
-    const rawPhysician = String(r[22] || "").trim();
-    const rawContractor = String(r[12] || "").trim();
-    const rawDate = cleanAdmissionDateStr(r[0]);
+    let rawRoom = "";
+    let rawMrn = "";
+    let rawName = "";
+    let rawPhysician = "";
+    let rawContractor = "";
+    let rawDateStr = "";
+
+    // Detect layout: 39-column unified format vs 5/6-column formatted occupancy
+    if (r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))))) {
+      rawDateStr = String(r[0] || "").trim();
+      rawRoom = cleanRoomStr(String(r[1] || "").trim());
+      rawMrn = String(r[2] || "").trim().replace(/^0+/, "");
+      rawName = String(r[3] || "").trim();
+      rawContractor = String(r[12] || "").trim();
+      rawPhysician = String(r[22] || "").trim();
+    } else {
+      rawRoom = cleanRoomStr(String(r[0] || "").trim());
+      rawName = String(r[1] || "").trim();
+      rawPhysician = String(r[2] || "").trim();
+      rawContractor = String(r[3] || "").trim();
+      rawDateStr = String(r[4] || "").trim();
+      rawMrn = String(r[5] || "").trim().replace(/^0+/, "");
+    }
+
+    const cleanDate = cleanAdmissionDateStr(rawDateStr);
 
     if (!rawName || !rawRoom) return;
     const lowName = rawName.toLowerCase();
-    if (lowName === "patient" || lowName === "المريض" || lowName === "name" || lowName === "اسم المريض") return;
+    if (lowName === "patient" || lowName === "المريض" || lowName === "name" || lowName === "اسم المريض" || lowName === "patient name") return;
+    if (isManuallyDischarged(rawName)) return;
 
     const patientKey = rawMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
     const isProc = isProcedureOrTemporaryRoom(rawRoom);
@@ -836,7 +989,8 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
       room: rawRoom,
       physician: rawPhysician,
       contractor: rawContractor,
-      date: rawDate
+      date: cleanDate,
+      rawDate: rawDateStr
     };
 
     if (patientMap.has(patientKey)) {
@@ -919,7 +1073,11 @@ function processPatientTransfers(
       const normPrev = normalizeRoom(prevRoom);
       const normCurr = normalizeRoom(rawRoom);
 
-      if (normPrev && normCurr && normPrev !== normCurr) {
+      const isPrevProc = isProcedureOrTemporaryRoom(prevRoom);
+      const isCurrProc = isProcedureOrTemporaryRoom(rawRoom);
+
+      // Only track transfers between genuine inpatient rooms, ignoring procedure rooms
+      if (!isPrevProc && !isCurrProc && normPrev && normCurr && normPrev !== normCurr) {
         console.log(`[Patient Transfer] "${rawName}" (MRN: ${rawMrn}) moved from "${prevRoom}" to "${rawRoom}"`);
 
         // Look for existing record
@@ -951,6 +1109,7 @@ function processPatientTransfers(
           };
           cumulativeTransfers.unshift(transferRecord);
           transfersModified = true;
+          lastTransfersDate = getCairoDateTime().dateStr;
         } else {
           // Check if already in current room or duplicate step
           if (!Array.isArray(transferRecord.journey)) {
@@ -981,9 +1140,12 @@ function processPatientTransfers(
             if (p.physician) transferRecord.physician = p.physician;
             if (p.contractor) transferRecord.contractor = p.contractor;
             transfersModified = true;
+            lastTransfersDate = getCairoDateTime().dateStr;
           }
         }
+      }
 
+      if (!isCurrProc) {
         matchedRegistryItem.lastRoom = rawRoom;
         if (p.physician) matchedRegistryItem.physician = p.physician;
         if (p.contractor) matchedRegistryItem.contractor = p.contractor;
@@ -1030,11 +1192,11 @@ function sanitizeAndDeduplicateTransfers(): boolean {
       ? t.journey
       : [t.initialRoom || t.fromRoom, t.currentRoom || t.toRoom].filter(Boolean);
 
-    // Deduplicate consecutive identical rooms
+    // Deduplicate consecutive identical rooms and ignore procedure rooms
     const dedupedJourney: string[] = [];
     rawJourney.forEach((r: any) => {
       const cleanR = cleanRoomStr(String(r || "").trim());
-      if (!cleanR) return;
+      if (!cleanR || isProcedureOrTemporaryRoom(cleanR)) return;
       if (dedupedJourney.length === 0 || normalizeRoom(dedupedJourney[dedupedJourney.length - 1]) !== normalizeRoom(cleanR)) {
         dedupedJourney.push(cleanR);
       }
@@ -1138,7 +1300,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const newEntries: any[] = [];
   entryPatients.forEach(p => {
     if (isToday(p.date) || isToday(p.date.split(" ")[0])) {
-      if (!newEntries.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!newEntries.some(existing => isPatientMatch(existing, p))) {
         newEntries.push(p);
       }
     }
@@ -1148,7 +1310,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     cumulativeEntries = newEntries;
   } else {
     newEntries.forEach(p => {
-      if (!cumulativeEntries.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!cumulativeEntries.some(existing => isPatientMatch(existing, p))) {
         cumulativeEntries.push(p);
       }
     });
@@ -1163,9 +1325,8 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     date: cleanAdmissionDateStr(row[0]),
   })).filter(p => {
     if (!p.room || !p.name) return false;
-    const roomLower = p.room.toLowerCase();
+    const isDialysis = isDialysisRoom(p.room);
     const rowAsString = Object.values(p).join(" ").toLowerCase();
-    const isDialysis = roomLower.includes("dialysis") || roomLower.includes("diyalsis") || roomLower.includes("غسيل");
     const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
     return isDialysis && !isGloballyExcluded;
   });
@@ -1310,8 +1471,13 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   cumulativeLOS = losSheetRaw;
 }
 
+let lastKnownDatabaseUpdatedAt: string | null = null;
+let lastServerFetchTimestamp: number = Date.now();
+let isServerAutoSyncing = false;
+
 // Persistence Helpers
-async function loadData() {
+async function loadData(force = false) {
+  if (isServerAutoSyncing && !force) return;
   try {
     // 1. Try to load local disk cache first for fast immediate recovery
     if (fs.existsSync(DATA_FILE)) {
@@ -1335,114 +1501,317 @@ async function loadData() {
       manuallyDischargedNames = parsed.manuallyDischargedNames || [];
       cumulativeTransfers = parsed.transfers || [];
       patientRoomRegistry = parsed.patientRoomRegistry || {};
+      if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
+      if (parsed.lastActiveDate) lastActiveDate = String(parsed.lastActiveDate);
+      if (parsed.lastTransfersDate) lastTransfersDate = String(parsed.lastTransfersDate);
       console.log('Hospital data loaded from local disk cache.');
     }
   } catch (err) {
     console.error('Failed to load local data:', err);
   }
 
-  // 2. Load/override with Supabase dataset as the primary durable source of truth
+  // 2. Load/override with Supabase dataset using granular structured schema (state/*) as the primary durable source of truth
   try {
-    console.log('Fetching latest durable dataset state from Supabase rtdb_nodes (state/dataset)...');
-    const { data: supabaseNode, error: sbErr } = await supabaseAdmin
+    console.log('Fetching durable dataset state from Supabase rtdb_nodes (granular state/* nodes)...');
+
+    const parseMaybeJson = (val: any) => {
+      if (!val) return null;
+      if (typeof val === 'string') {
+        try { return JSON.parse(val); } catch (e) { return val; }
+      }
+      return val;
+    };
+
+    const normalizeRowsArray = (rows: any): any[][] | null => {
+      const raw = parseMaybeJson(rows);
+      if (!raw || !Array.isArray(raw) || raw.length === 0) return null;
+
+      // If it's already a 2D array of arrays, return as is
+      if (Array.isArray(raw[0])) {
+        return raw;
+      }
+
+      // If items are objects with "No filters applied", "Unnamed: 1", etc. (RTDB format), map to 2D array
+      const keys = [
+        "No filters applied", "Unnamed: 1", "Unnamed: 2", "Unnamed: 3", "Unnamed: 4",
+        "Unnamed: 5", "Unnamed: 6", "Unnamed: 7", "Unnamed: 8", "Unnamed: 9",
+        "Unnamed: 10", "Unnamed: 11", "Unnamed: 12", "Unnamed: 13", "Unnamed: 14",
+        "Unnamed: 15", "Unnamed: 16", "Unnamed: 17", "Unnamed: 18", "Unnamed: 19",
+        "Unnamed: 20", "Unnamed: 21", "Unnamed: 22", "Unnamed: 23", "Unnamed: 24",
+        "Unnamed: 25", "Unnamed: 26", "Unnamed: 27", "Unnamed: 28", "Unnamed: 29",
+        "Unnamed: 30", "Unnamed: 31", "Unnamed: 32", "Unnamed: 33", "Unnamed: 34",
+        "Unnamed: 35", "Unnamed: 36", "Unnamed: 37", "Unnamed: 38"
+      ];
+
+      return raw.map(item => {
+        if (Array.isArray(item)) return item;
+        if (item && typeof item === 'object') {
+          return keys.map(k => (item[k] !== undefined && item[k] !== null) ? item[k] : "");
+        }
+        return [];
+      });
+    };
+
+    // Query granular state nodes
+    const { data: stateNodes, error: sbErr } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('*')
-      .eq('path', 'state/dataset')
-      .maybeSingle();
+      .like('path', 'state/%');
 
-    if (!sbErr && supabaseNode && supabaseNode.data) {
-      const parsed = supabaseNode.data;
-      console.log("Supabase dataset found! Restoring state from Supabase database.");
-
-      const parseMaybeJson = (val: any) => {
-        if (!val) return null;
-        if (typeof val === 'string') {
-          try { return JSON.parse(val); } catch (e) { return val; }
+    const stateMap: Record<string, any> = {};
+    let latestNodeUpdated: string | null = null;
+    if (stateNodes && Array.isArray(stateNodes)) {
+      for (const node of stateNodes) {
+        stateMap[node.path] = node.data;
+        if (node.updated_at && (!latestNodeUpdated || node.updated_at > latestNodeUpdated)) {
+          latestNodeUpdated = node.updated_at;
         }
-        return val;
-      };
+      }
+    }
 
-      const normalizeRowsArray = (rows: any): any[][] | null => {
-        const raw = parseMaybeJson(rows);
-        if (!raw || !Array.isArray(raw) || raw.length === 0) return null;
+    if (latestNodeUpdated) {
+      lastKnownDatabaseUpdatedAt = String(latestNodeUpdated);
+    }
+    lastServerFetchTimestamp = Date.now();
 
-        // If it's already a 2D array of arrays, return as is
-        if (Array.isArray(raw[0])) {
-          return raw;
+    const hasGranularData = stateMap['state/occupancy'] || stateMap['state/metadata'] || stateMap['state/discharged'];
+
+    if (hasGranularData) {
+      console.log(`Supabase granular state loaded across ${Object.keys(stateMap).length} individual rows.`);
+
+      // 1. Occupancy & Beds
+      if (stateMap['state/occupancy']) {
+        const occData = stateMap['state/occupancy'];
+        const cloudCurrent = normalizeRowsArray(occData.current || occData.beds);
+        if (cloudCurrent && cloudCurrent.length > 0) {
+          hospitalData = cloudCurrent;
         }
+        const cloudPrev = normalizeRowsArray(occData.previous);
+        if (cloudPrev && cloudPrev.length > 0) {
+          previousHospitalData = cloudPrev;
+        }
+      }
 
-        // If items are objects with "No filters applied", "Unnamed: 1", etc. (RTDB format), map to 2D array
-        const keys = [
-          "No filters applied", "Unnamed: 1", "Unnamed: 2", "Unnamed: 3", "Unnamed: 4",
-          "Unnamed: 5", "Unnamed: 6", "Unnamed: 7", "Unnamed: 8", "Unnamed: 9",
-          "Unnamed: 10", "Unnamed: 11", "Unnamed: 12", "Unnamed: 13", "Unnamed: 14",
-          "Unnamed: 15", "Unnamed: 16", "Unnamed: 17", "Unnamed: 18", "Unnamed: 19",
-          "Unnamed: 20", "Unnamed: 21", "Unnamed: 22", "Unnamed: 23", "Unnamed: 24",
-          "Unnamed: 25", "Unnamed: 26", "Unnamed: 27", "Unnamed: 28", "Unnamed: 29",
-          "Unnamed: 30", "Unnamed: 31", "Unnamed: 32", "Unnamed: 33", "Unnamed: 34",
-          "Unnamed: 35", "Unnamed: 36", "Unnamed: 37", "Unnamed: 38"
-        ];
+      // 2. Discharged patients
+      if (stateMap['state/discharged']) {
+        const discData = stateMap['state/discharged'];
+        const parsedDisc = parseMaybeJson(discData.patients !== undefined ? discData.patients : (discData.items !== undefined ? discData.items : discData));
+        if (Array.isArray(parsedDisc)) cumulativeDischarged = parsedDisc;
+      }
 
-        return raw.map(item => {
-          if (Array.isArray(item)) return item;
-          if (item && typeof item === 'object') {
-            return keys.map(k => (item[k] !== undefined && item[k] !== null) ? item[k] : "");
-          }
-          return [];
-        });
-      };
+      // 3. Entries
+      if (stateMap['state/entries']) {
+        const entData = stateMap['state/entries'];
+        const parsedEnt = parseMaybeJson(entData.items !== undefined ? entData.items : entData);
+        if (Array.isArray(parsedEnt)) cumulativeEntries = parsedEnt;
+      }
 
+      // 4. Transfers
+      if (stateMap['state/transfers']) {
+        const transData = stateMap['state/transfers'];
+        const parsedTrans = parseMaybeJson(transData.items !== undefined ? transData.items : transData);
+        if (Array.isArray(parsedTrans)) cumulativeTransfers = parsedTrans;
+      }
+
+      // 5. Dialysis
+      if (stateMap['state/dialysis']) {
+        const dialData = stateMap['state/dialysis'];
+        const parsedDial = parseMaybeJson(dialData.items || dialData);
+        if (Array.isArray(parsedDial)) cumulativeDialysis = parsedDial;
+      }
+
+      // 6. Debts
+      if (stateMap['state/debts']) {
+        const debtsData = stateMap['state/debts'];
+        const parsedDebts = parseMaybeJson(debtsData.items || debtsData);
+        if (Array.isArray(parsedDebts)) cumulativeDebts = parsedDebts;
+      }
+
+      // 7. Insured Debts
+      if (stateMap['state/insured_debts']) {
+        const insData = stateMap['state/insured_debts'];
+        const parsedIns = parseMaybeJson(insData.items || insData);
+        if (Array.isArray(parsedIns)) cumulativeInsuredDebts = parsedIns;
+      }
+
+      // 8. Medical Plans
+      if (stateMap['state/medical_plans']) {
+        const medData = stateMap['state/medical_plans'];
+        const parsedMed = parseMaybeJson(medData.items || medData);
+        if (Array.isArray(parsedMed)) cumulativeMedicalPlans = parsedMed;
+      }
+
+      // 9. Companion Status
+      if (stateMap['state/companion_status']) {
+        const compData = stateMap['state/companion_status'];
+        const parsedComp = parseMaybeJson(compData.items || compData);
+        if (Array.isArray(parsedComp)) cumulativeCompanionStatus = parsedComp;
+      }
+
+      // 10. LOS Data
+      if (stateMap['state/los_data']) {
+        const losData = stateMap['state/los_data'];
+        const parsedLOS = parseMaybeJson(losData.items || losData);
+        if (Array.isArray(parsedLOS)) cumulativeLOS = parsedLOS;
+      }
+
+      // 11. OR List
+      if (stateMap['state/or_list']) {
+        const orData = stateMap['state/or_list'];
+        const parsedOR = parseMaybeJson(orData.items || orData);
+        if (Array.isArray(parsedOR)) cumulativeORList = parsedOR;
+      }
+
+      // 12. Registry
+      if (stateMap['state/registry']) {
+        const regData = stateMap['state/registry'];
+        const parsedReg = parseMaybeJson(regData.patientRoomRegistry || regData);
+        if (parsedReg && typeof parsedReg === 'object') patientRoomRegistry = parsedReg;
+      }
+
+      // 13. Metadata
+      if (stateMap['state/metadata']) {
+        const meta = stateMap['state/metadata'];
+        if (meta.uploadedAt) uploadedAt = typeof meta.uploadedAt === 'number' ? meta.uploadedAt : new Date(meta.uploadedAt).getTime();
+        if (meta.lastResetDate) lastEgyptianAutoResetDate = String(meta.lastResetDate);
+        if (meta.lastActiveDate) lastActiveDate = String(meta.lastActiveDate);
+        if (meta.lastTransfersDate) lastTransfersDate = String(meta.lastTransfersDate);
+        if (Array.isArray(meta.manuallyDischargedNames)) manuallyDischargedNames = meta.manuallyDischargedNames;
+      }
+    } else if (stateMap['state/dataset']) {
+      // Fallback for legacy state/dataset single row if present
+      console.log('Restoring from legacy state/dataset node...');
+      const parsed = stateMap['state/dataset'];
       const cloudCurrent = normalizeRowsArray(parsed.current);
       if (cloudCurrent && cloudCurrent.length > 0) hospitalData = cloudCurrent;
-
       const cloudPrev = normalizeRowsArray(parsed.previous);
       if (cloudPrev && cloudPrev.length > 0) previousHospitalData = cloudPrev;
-
       const cloudDischarged = parseMaybeJson(parsed.discharged);
-      if (Array.isArray(cloudDischarged) && cloudDischarged.length > 0) cumulativeDischarged = cloudDischarged;
-
+      if (Array.isArray(cloudDischarged)) cumulativeDischarged = cloudDischarged;
       const cloudEntries = parseMaybeJson(parsed.entries);
       if (Array.isArray(cloudEntries)) cumulativeEntries = cloudEntries;
-
       const cloudDialysis = parseMaybeJson(parsed.dialysis);
       if (Array.isArray(cloudDialysis)) cumulativeDialysis = cloudDialysis;
-
       const cloudDebts = parseMaybeJson(parsed.debts);
       if (Array.isArray(cloudDebts)) cumulativeDebts = cloudDebts;
-
       const cloudInsuredDebts = parseMaybeJson(parsed.insuredDebts);
       if (Array.isArray(cloudInsuredDebts)) cumulativeInsuredDebts = cloudInsuredDebts;
-
       const cloudMedicalPlans = parseMaybeJson(parsed.medicalPlans);
       if (Array.isArray(cloudMedicalPlans)) cumulativeMedicalPlans = cloudMedicalPlans;
-
       const cloudCompanionStatus = parseMaybeJson(parsed.companionStatus);
       if (Array.isArray(cloudCompanionStatus)) cumulativeCompanionStatus = cloudCompanionStatus;
-
       const cloudLOS = parseMaybeJson(parsed.losData);
       if (Array.isArray(cloudLOS)) cumulativeLOS = cloudLOS;
-
       const cloudORList = parseMaybeJson(parsed.orList);
-      if (Array.isArray(cloudORList) && cloudORList.length > 0) cumulativeORList = cloudORList;
-
+      if (Array.isArray(cloudORList)) cumulativeORList = cloudORList;
       if (parsed.vipCasesText !== undefined && parsed.vipCasesText !== null) vipCasesText = String(parsed.vipCasesText);
       if (parsed.earlyDischargeRoomsText !== undefined && parsed.earlyDischargeRoomsText !== null) earlyDischargeRoomsText = String(parsed.earlyDischargeRoomsText);
       if (parsed.pendingDischargePatientsText !== undefined && parsed.pendingDischargePatientsText !== null) pendingDischargePatientsText = String(parsed.pendingDischargePatientsText);
-
       const cloudManualDisc = parseMaybeJson(parsed.manuallyDischargedNames);
       if (Array.isArray(cloudManualDisc)) manuallyDischargedNames = cloudManualDisc;
-
       const cloudTransfers = parseMaybeJson(parsed.transfers);
-      if (Array.isArray(cloudTransfers) && cloudTransfers.length > 0) cumulativeTransfers = cloudTransfers;
-
+      if (Array.isArray(cloudTransfers)) cumulativeTransfers = cloudTransfers;
       const cloudRegistry = parseMaybeJson(parsed.patientRoomRegistry);
       if (cloudRegistry && typeof cloudRegistry === 'object') patientRoomRegistry = cloudRegistry;
+      if (parsed.uploadedAt) uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
+      if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
+      if (parsed.lastActiveDate) lastActiveDate = String(parsed.lastActiveDate);
+      if (parsed.lastTransfersDate) lastTransfersDate = String(parsed.lastTransfersDate);
+    }
 
-      if (parsed.uploadedAt) {
-        uploadedAt = typeof parsed.uploadedAt === 'number' ? parsed.uploadedAt : new Date(parsed.uploadedAt).getTime();
+    // Load dedicated settings nodes in parallel
+    try {
+      const { data: settingNodes } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .select('path, data')
+        .like('path', 'settings/%');
+
+      if (settingNodes && Array.isArray(settingNodes)) {
+        for (const sNode of settingNodes) {
+          if (sNode.path === 'settings/vip_cases' && sNode.data && typeof sNode.data.text === 'string') {
+            if (sNode.data.text.trim().length > 0 || !vipCasesText) {
+              vipCasesText = sNode.data.text;
+            }
+          } else if (sNode.path === 'settings/early_discharge_rooms' && sNode.data && typeof sNode.data.text === 'string') {
+            if (sNode.data.text.trim().length > 0 || !earlyDischargeRoomsText) {
+              earlyDischargeRoomsText = sNode.data.text;
+            }
+          } else if (sNode.path === 'settings/pending_discharges' && sNode.data && typeof sNode.data.text === 'string') {
+            if (sNode.data.text.trim().length > 0 || !pendingDischargePatientsText) {
+              pendingDischargePatientsText = sNode.data.text;
+            }
+          }
+        }
       }
-    } else {
-      console.log("No Supabase dataset node found yet; will sync current memory state to Supabase.");
+    } catch (setErr) {
+      // Non-blocking
+    }
+
+    // Snapshot fallbacks: Ensure active data for today is NEVER lost on database restart
+    const cairoNow = getCairoDateTime();
+
+    // 1. Occupancy snapshot fallback if empty
+    if (!hospitalData || hospitalData.length === 0) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
+        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 0) {
+          console.log(`[loadData] Restored occupancy data from today's snapshot (${cairoNow.dateStr})`);
+          hospitalData = todaySnap.hospitalData;
+        }
+      } catch (snapErr) {
+        console.error('[loadData] Failed to check today occupancy snapshot fallback:', snapErr);
+      }
+    }
+
+    // 2. Discharged cases snapshot fallback: Ensure discharged cases for today are NEVER lost on database restart
+    if (!cumulativeDischarged || cumulativeDischarged.length === 0) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
+        if (todaySnap && Array.isArray(todaySnap.cumulativeDischarged) && todaySnap.cumulativeDischarged.length > 0) {
+          console.log(`[loadData] Restored ${todaySnap.cumulativeDischarged.length} discharged cases from today's snapshot (${cairoNow.dateStr})`);
+          cumulativeDischarged = todaySnap.cumulativeDischarged;
+          if (Array.isArray(todaySnap.manuallyDischargedNames) && todaySnap.manuallyDischargedNames.length > 0) {
+            manuallyDischargedNames = todaySnap.manuallyDischargedNames;
+          }
+        }
+      } catch (discSnapErr) {
+        console.error('[loadData] Failed to restore discharged snapshot fallback:', discSnapErr);
+      }
+    }
+
+    // 3. Dialysis snapshot fallback: Ensure dialysis cases for today are NEVER lost on database restart
+    if (!cumulativeDialysis || cumulativeDialysis.length === 0) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
+        if (todaySnap && Array.isArray(todaySnap.cumulativeDialysis) && todaySnap.cumulativeDialysis.length > 0) {
+          console.log(`[loadData] Restored ${todaySnap.cumulativeDialysis.length} dialysis cases from today's snapshot (${cairoNow.dateStr})`);
+          cumulativeDialysis = todaySnap.cumulativeDialysis;
+        }
+      } catch (dialSnapErr) {
+        console.error('[loadData] Failed to restore dialysis snapshot fallback:', dialSnapErr);
+      }
+    }
+
+    // OR List Snapshot fallback: Since OR cases are persistent across days, restore from latest OR snapshot if empty
+    if (!cumulativeORList || cumulativeORList.length === 0) {
+      try {
+        let orSnap = await getORSnapshot(cairoNow.dateStr);
+        if (!orSnap || !Array.isArray(orSnap.orList) || orSnap.orList.length === 0) {
+          const availableORDates = await getAvailableDates('or');
+          if (availableORDates && availableORDates.length > 0) {
+            const latestORDate = typeof availableORDates[0] === 'string' ? availableORDates[0] : (availableORDates[0] as any).date;
+            if (latestORDate) {
+              orSnap = await getORSnapshot(latestORDate);
+            }
+          }
+        }
+        if (orSnap && Array.isArray(orSnap.orList) && orSnap.orList.length > 0) {
+          console.log(`[loadData] Restored ${orSnap.orList.length} persistent OR cases from snapshot (${orSnap.date})`);
+          cumulativeORList = orSnap.orList;
+        }
+      } catch (orSnapErr) {
+        console.error('[loadData] Failed to restore OR snapshot fallback:', orSnapErr);
+      }
     }
   } catch (err) {
     console.error('Failed to restore database state from Supabase:', err);
@@ -1507,46 +1876,53 @@ async function loadData() {
       needsSave = true;
     }
 
-    if (previousHospitalData && previousHospitalData.length > 1 && cumulativeDischarged.length === 0) {
-      // Find discharges between previous and current
-      let oldStartIdx = 3;
-      for (let i = 0; i < Math.min(previousHospitalData.length, 10); i++) {
-        const r1 = String(previousHospitalData[i][1] || "").toLowerCase();
-        const r3 = String(previousHospitalData[i][3] || "").toLowerCase();
-        if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
-          oldStartIdx = i + 1;
-          break;
-        }
-      }
-      let currStartIdx = 3;
-      for (let i = 0; i < Math.min(hospitalData.length, 10); i++) {
-        const r1 = String(hospitalData[i][1] || "").toLowerCase();
-        const r3 = String(hospitalData[i][3] || "").toLowerCase();
-        if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
-          currStartIdx = i + 1;
-          break;
-        }
-      }
-      const oldPts = previousHospitalData.slice(oldStartIdx).map(r => ({
-        room: cleanRoomStr(String(r[1] || "").trim()),
-        name: String(r[3] || "").trim(),
-        physician: String(r[22] || "").trim(),
-        contractor: String(r[12] || "").trim(),
-        date: cleanAdmissionDateStr(r[0]),
-      })).filter(p => p.name && !KEYWORDS_TO_EXCLUDE.some(kw => Object.values(p).join(" ").toLowerCase().includes(kw)));
+    // Always ensure all of today's admissions from hospitalData are included in cumulativeEntries
+    const rawActivePatients = extractRawPatientsFromRows(hospitalData);
+    const activeTodayAdmissions = rawActivePatients.filter(p => {
+      if (!p.room || !p.name) return false;
+      const isOR = isOperatingRoom(p.room);
+      const rowAsString = Object.values(p).join(" ").toLowerCase();
+      const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
+      return !isExcluded && !isOR && (isToday(p.date || "") || isToday((p.date || "").split(" ")[0]));
+    });
 
-      const currPts = hospitalData.slice(currStartIdx).map(r => ({
-        name: String(r[3] || "").trim(),
-      })).filter(p => p.name);
+    activeTodayAdmissions.forEach(p => {
+      if (!cumulativeEntries.some(existing => isPatientMatch(existing, p))) {
+        cumulativeEntries.push(p);
+        needsSave = true;
+      }
+    });
 
-      const newlyDischarged = oldPts.filter(oldP => !currPts.some(currP => isNameMatch(oldP.name, currP.name)));
-      newlyDischarged.forEach(p => {
-        if (!cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name))) {
-          (p as any).dischargeDate = getTodayRiyadhDateStr();
-          cumulativeDischarged.push(p);
-          needsSave = true;
-        }
-      });
+    if (previousHospitalData && previousHospitalData.length > 1 && hospitalData && hospitalData.length > 1) {
+      const oldActivePatients = extractRawPatientsFromRows(previousHospitalData);
+      const currActivePatients = extractRawPatientsFromRows(hospitalData);
+
+      const prevOpDate = getDatasetOperationalDateStr(oldActivePatients);
+      const currOpDate = getDatasetOperationalDateStr(currActivePatients);
+
+      if (prevOpDate && currOpDate && prevOpDate !== currOpDate) {
+        // Different days: update previousHospitalData without fabricating discharges
+        previousHospitalData = hospitalData;
+        needsSave = true;
+      } else {
+        const newlyDischarged = oldActivePatients.filter(oldP => {
+          const roomStr = oldP.room || "";
+          if (isProcedureOrTemporaryRoom(roomStr)) return false;
+          const rowStr = Object.values(oldP).join(" ").toLowerCase();
+          if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return false;
+
+          return !currActivePatients.some(currP => isPatientMatch(oldP, currP) || isNameMatch(oldP.name, currP.name));
+        });
+
+        newlyDischarged.forEach(p => {
+          if (!cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+            (p as any).dischargeDate = getTodayRiyadhDateStr();
+            (p as any).dischargeType = 'auto';
+            cumulativeDischarged.push(p);
+            needsSave = true;
+          }
+        });
+      }
     }
 
     if (needsSave) {
@@ -1556,7 +1932,6 @@ async function loadData() {
   }
 
   console.log('Durable room-name sanitization done.');
-  ensureDefaultTransfersSeed();
   if (hospitalData && Array.isArray(hospitalData) && Object.keys(patientRoomRegistry).length === 0) {
     const rawOccupancy = extractRawPatientsFromRows(hospitalData);
     rawOccupancy.forEach(p => {
@@ -1579,6 +1954,13 @@ async function loadData() {
     console.log('[Transfers] Sanitized and removed corrupted ping-pong duplicates on startup.');
     saveData().catch(e => console.error('Error saving cleaned transfers:', e));
   }
+
+  // Check if daily reset or day-rollover is needed
+  try {
+    await checkEgyptianDailyReset();
+  } catch (resetErr) {
+    console.error('Error during initial daily reset check:', resetErr);
+  }
 }
 
 // Health Check & Database Status
@@ -1594,12 +1976,22 @@ app.get('/api/health', (req, res) => {
 // Parity verification endpoint comparing Supabase vs Firestore
 app.get('/api/db-parity', async (req, res) => {
   try {
-    // 1. Fetch Supabase state
-    const { data: sbDatasetNode, error: sbErr } = await supabaseAdmin
+    // 1. Fetch Supabase state nodes
+    const { data: stateNodes, error: sbErr } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('*')
-      .eq('path', 'state/dataset')
-      .maybeSingle();
+      .like('path', 'state/%');
+
+    const stateMap: Record<string, any> = {};
+    let latestUpdatedAt: string | null = null;
+    if (stateNodes && Array.isArray(stateNodes)) {
+      for (const n of stateNodes) {
+        stateMap[n.path] = n.data;
+        if (n.updated_at && (!latestUpdatedAt || n.updated_at > latestUpdatedAt)) {
+          latestUpdatedAt = n.updated_at;
+        }
+      }
+    }
 
     const { data: sbProfiles, count: profilesCount } = await supabaseAdmin
       .from('profiles')
@@ -1611,7 +2003,6 @@ app.get('/api/db-parity', async (req, res) => {
       .eq('path', 'audit_logs')
       .maybeSingle();
 
-    const sbData = sbDatasetNode?.data || {};
     const parseMaybe = (v: any) => {
       if (!v) return [];
       if (typeof v === 'string') {
@@ -1620,24 +2011,36 @@ app.get('/api/db-parity', async (req, res) => {
       return Array.isArray(v) ? v : [];
     };
 
+    const occCurrent = stateMap['state/occupancy']?.current || stateMap['state/occupancy']?.beds || stateMap['state/dataset']?.current;
+    const discPatients = stateMap['state/discharged']?.patients || stateMap['state/discharged'] || stateMap['state/dataset']?.discharged;
+    const transItems = stateMap['state/transfers']?.items || stateMap['state/transfers'] || stateMap['state/dataset']?.transfers;
+    const orItems = stateMap['state/or_list']?.items || stateMap['state/or_list'] || stateMap['state/dataset']?.orList;
+    const entItems = stateMap['state/entries']?.items || stateMap['state/entries'] || stateMap['state/dataset']?.entries;
+    const dialItems = stateMap['state/dialysis']?.items || stateMap['state/dialysis'] || stateMap['state/dataset']?.dialysis;
+    const debtsItems = stateMap['state/debts']?.items || stateMap['state/debts'] || stateMap['state/dataset']?.debts;
+    const insItems = stateMap['state/insured_debts']?.items || stateMap['state/insured_debts'] || stateMap['state/dataset']?.insuredDebts;
+    const medItems = stateMap['state/medical_plans']?.items || stateMap['state/medical_plans'] || stateMap['state/dataset']?.medicalPlans;
+    const compItems = stateMap['state/companion_status']?.items || stateMap['state/companion_status'] || stateMap['state/dataset']?.companionStatus;
+    const losItems = stateMap['state/los_data']?.items || stateMap['state/los_data'] || stateMap['state/dataset']?.losData;
+
     const supabaseStats = {
       connected: !sbErr,
       provider: 'Supabase PostgreSQL Cloud',
       endpoint: SUPABASE_URL,
       table: 'rtdb_nodes',
-      updatedAt: sbDatasetNode?.updated_at || null,
+      updatedAt: latestUpdatedAt,
       records: {
-        inpatientPatients: parseMaybe(sbData.current).length,
-        dischargedPatients: parseMaybe(sbData.discharged).length,
-        transfers: parseMaybe(sbData.transfers).length,
-        orList: parseMaybe(sbData.orList).length,
-        entries: parseMaybe(sbData.entries).length,
-        dialysis: parseMaybe(sbData.dialysis).length,
-        debts: parseMaybe(sbData.debts).length,
-        insuredDebts: parseMaybe(sbData.insuredDebts).length,
-        medicalPlans: parseMaybe(sbData.medicalPlans).length,
-        companionStatus: parseMaybe(sbData.companionStatus).length,
-        losData: parseMaybe(sbData.losData).length,
+        inpatientPatients: parseMaybe(occCurrent).length || (Array.isArray(hospitalData) ? hospitalData.length : 0),
+        dischargedPatients: parseMaybe(discPatients).length || (Array.isArray(cumulativeDischarged) ? cumulativeDischarged.length : 0),
+        transfers: parseMaybe(transItems).length || (Array.isArray(cumulativeTransfers) ? cumulativeTransfers.length : 0),
+        orList: parseMaybe(orItems).length || (Array.isArray(cumulativeORList) ? cumulativeORList.length : 0),
+        entries: parseMaybe(entItems).length || (Array.isArray(cumulativeEntries) ? cumulativeEntries.length : 0),
+        dialysis: parseMaybe(dialItems).length || (Array.isArray(cumulativeDialysis) ? cumulativeDialysis.length : 0),
+        debts: parseMaybe(debtsItems).length || (Array.isArray(cumulativeDebts) ? cumulativeDebts.length : 0),
+        insuredDebts: parseMaybe(insItems).length || (Array.isArray(cumulativeInsuredDebts) ? cumulativeInsuredDebts.length : 0),
+        medicalPlans: parseMaybe(medItems).length || (Array.isArray(cumulativeMedicalPlans) ? cumulativeMedicalPlans.length : 0),
+        companionStatus: parseMaybe(compItems).length || (Array.isArray(cumulativeCompanionStatus) ? cumulativeCompanionStatus.length : 0),
+        losData: parseMaybe(losItems).length || (Array.isArray(cumulativeLOS) ? cumulativeLOS.length : 0),
         profilesCount: profilesCount || (sbProfiles?.length || 0),
         auditLogsCount: Array.isArray(sbAuditNode?.data) ? sbAuditNode.data.length : 0
       }
@@ -1731,15 +2134,32 @@ app.get('/api/db-parity', async (req, res) => {
       tables: [
         {
           name: 'rtdb_nodes',
-          type: 'PostgreSQL Table (JSONB Document Store)',
-          purpose: 'Stores full structured hospital application dataset, patient registries, and audit logs with real-time replication.',
+          type: 'PostgreSQL Granular Multi-Row Table (Key-Value JSONB)',
+          purpose: 'Stores full structured hospital application dataset across granular individual rows, discrete patient registries, multi-part snapshots, and audit logs with real-time replication.',
           columns: [
-            { name: 'path', type: 'text', constraint: 'PRIMARY KEY', description: 'Unique path identifier (e.g., state/dataset, audit_logs)' },
-            { name: 'data', type: 'jsonb', constraint: 'NOT NULL', description: 'Complete nested JSON payload (patients, transfers, OR list, medical plans, etc.)' },
+            { name: 'path', type: 'text', constraint: 'PRIMARY KEY', description: 'Unique granular path identifier (e.g., state/occupancy, state/discharged, history/occupancy/2026-09-15/hospital_data, audit_logs)' },
+            { name: 'data', type: 'jsonb', constraint: 'NOT NULL', description: 'Targeted domain JSON payload for that specific slice/row' },
             { name: 'updated_at', type: 'timestamptz', constraint: 'DEFAULT now()', description: 'Timestamp of last modification for real-time synchronization' }
           ],
           storedDocuments: [
-            { path: 'state/dataset', recordsCount: supabaseStats.records.inpatientPatients, description: 'Active hospital dataset with all clinical & administrative sheets' },
+            { path: 'state/metadata', recordsCount: 1, description: 'Timestamp metadata, auto-reset dates, and fast summary counts' },
+            { path: 'state/occupancy', recordsCount: supabaseStats.records.inpatientPatients, description: 'Active inpatient occupied and vacant bed rows' },
+            { path: 'state/discharged', recordsCount: supabaseStats.records.dischargedPatients, description: 'Discharged patient records' },
+            { path: 'state/transfers', recordsCount: supabaseStats.records.transfers, description: 'Room transfers and bed movement registry' },
+            { path: 'state/or_list', recordsCount: supabaseStats.records.orList, description: 'Operating Room daily operative schedule cases' },
+            { path: 'state/entries', recordsCount: supabaseStats.records.entries, description: 'Daily admitted entries' },
+            { path: 'state/dialysis', recordsCount: supabaseStats.records.dialysis, description: 'Hemodialysis case schedule' },
+            { path: 'state/debts', recordsCount: supabaseStats.records.debts, description: 'Cash / self-pay debt tracking' },
+            { path: 'state/insured_debts', recordsCount: supabaseStats.records.insuredDebts, description: 'Insurance authorization debts' },
+            { path: 'state/medical_plans', recordsCount: supabaseStats.records.medicalPlans, description: 'Medical Director clinical care plans' },
+            { path: 'state/companion_status', recordsCount: supabaseStats.records.companionStatus, description: 'Patient companion presence status' },
+            { path: 'state/los_data', recordsCount: supabaseStats.records.losData, description: 'Length of Stay clinical records' },
+            { path: 'state/registry', recordsCount: 1, description: 'Patient room mapping index' },
+            { path: 'settings/vip_cases', recordsCount: 1, description: 'Permanent VIP cases configuration' },
+            { path: 'history/occupancy/{date}/summary', recordsCount: 1, description: 'Daily occupancy snapshot summary row' },
+            { path: 'history/occupancy/{date}/hospital_data', recordsCount: supabaseStats.records.inpatientPatients, description: 'Daily occupancy inpatient beds row' },
+            { path: 'history/occupancy/{date}/discharged', recordsCount: supabaseStats.records.dischargedPatients, description: 'Daily occupancy discharged cases row' },
+            { path: 'history/or/{date}/cases', recordsCount: supabaseStats.records.orList, description: 'Daily OR cases history row' },
             { path: 'audit_logs', recordsCount: supabaseStats.records.auditLogsCount, description: 'Audit trail of administrative and user login sessions' }
           ]
         },
@@ -1812,7 +2232,7 @@ app.get('/api/db-parity', async (req, res) => {
 app.post('/api/db-resync', async (req, res) => {
   try {
     await saveData();
-    res.json({ success: true, message: 'Database state successfully synchronized across Supabase and local persistence.' });
+    res.json({ success: true, message: 'Database state successfully synchronized across Supabase and local persistence across granular multi-row nodes.' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1820,18 +2240,19 @@ app.post('/api/db-resync', async (req, res) => {
 
 app.get('/api/db-status', async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data: nodes, error } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('path, updated_at')
-      .eq('path', 'state/dataset')
-      .maybeSingle();
+      .like('path', 'state/%');
 
     res.json({
       status: error ? 'error' : 'connected',
       provider: 'Supabase PostgreSQL',
       endpoint: SUPABASE_URL,
       table: 'rtdb_nodes',
-      record: data || null,
+      schemaType: 'Granular Multi-Row Scheme',
+      stateRowsCount: nodes?.length || 0,
+      records: nodes || [],
       error: error ? error.message : null,
       memoryStatus: {
         patientsCount: Array.isArray(hospitalData) ? hospitalData.length : 0,
@@ -1953,6 +2374,17 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 async function saveData() {
   try {
+    const cairo = getCairoDateTime();
+    if (
+      (hospitalData && hospitalData.length > 0) ||
+      (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+      (cumulativeEntries && cumulativeEntries.length > 0) ||
+      (cumulativeDialysis && cumulativeDialysis.length > 0) ||
+      (cumulativeTransfers && cumulativeTransfers.length > 0)
+    ) {
+      lastActiveDate = cairo.dateStr;
+    }
+
     const data = {
       current: hospitalData,
       previous: previousHospitalData,
@@ -1971,7 +2403,10 @@ async function saveData() {
       uploadedAt: uploadedAt,
       manuallyDischargedNames: manuallyDischargedNames,
       transfers: cumulativeTransfers,
-      patientRoomRegistry: patientRoomRegistry
+      patientRoomRegistry: patientRoomRegistry,
+      lastResetDate: lastEgyptianAutoResetDate,
+      lastActiveDate: lastActiveDate,
+      lastTransfersDate: lastTransfersDate
     };
     
     // 1. Save locally fast sync
@@ -1982,18 +2417,179 @@ async function saveData() {
       console.error('Failed to save local data (might be read-only env)', e); 
     }
 
-    // 2. Synchronize to Supabase (Primary Cloud Database)
+    // 2. Synchronize to Supabase (Primary Cloud Database - Granular Multi-Row Scheme)
     try {
-      console.log('Synchronizing hospital dataset to Supabase rtdb_nodes (state/dataset)...');
-      const { error: sbErr } = await supabaseAdmin.from('rtdb_nodes').upsert({
-        path: 'state/dataset',
-        data: data,
-        updated_at: new Date().toISOString()
-      });
+      const nowIso = new Date().toISOString();
+      lastKnownDatabaseUpdatedAt = nowIso;
+      lastServerFetchTimestamp = Date.now();
+      console.log('Synchronizing hospital dataset to Supabase rtdb_nodes (granular multi-row scheme)...');
+
+      const granularNodes = [
+        {
+          path: 'state/metadata',
+          data: {
+            uploadedAt: uploadedAt,
+            lastResetDate: lastEgyptianAutoResetDate,
+            lastActiveDate: lastActiveDate,
+            lastTransfersDate: lastTransfersDate,
+            manuallyDischargedNames: manuallyDischargedNames || [],
+            counts: {
+              occupiedBeds: (hospitalData || []).length,
+              discharged: (cumulativeDischarged || []).length,
+              entries: (cumulativeEntries || []).length,
+              transfers: (cumulativeTransfers || []).length,
+              dialysis: (cumulativeDialysis || []).length,
+              debts: (cumulativeDebts || []).length,
+              insuredDebts: (cumulativeInsuredDebts || []).length,
+              medicalPlans: (cumulativeMedicalPlans || []).length,
+              companionStatus: (cumulativeCompanionStatus || []).length,
+              losData: (cumulativeLOS || []).length,
+              orList: (cumulativeORList || []).length
+            }
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/occupancy',
+          data: {
+            current: hospitalData || [],
+            previous: previousHospitalData || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/discharged',
+          data: {
+            patients: cumulativeDischarged || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/entries',
+          data: {
+            items: cumulativeEntries || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/transfers',
+          data: {
+            items: cumulativeTransfers || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/dialysis',
+          data: {
+            items: cumulativeDialysis || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/debts',
+          data: {
+            items: cumulativeDebts || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/insured_debts',
+          data: {
+            items: cumulativeInsuredDebts || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/medical_plans',
+          data: {
+            items: cumulativeMedicalPlans || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/companion_status',
+          data: {
+            items: cumulativeCompanionStatus || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/los_data',
+          data: {
+            items: cumulativeLOS || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/or_list',
+          data: {
+            items: cumulativeORList || []
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'state/registry',
+          data: {
+            patientRoomRegistry: patientRoomRegistry || {}
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'settings/vip_cases',
+          data: {
+            text: vipCasesText || ''
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'settings/early_discharge_rooms',
+          data: {
+            text: earlyDischargeRoomsText || ''
+          },
+          updated_at: nowIso
+        },
+        {
+          path: 'settings/pending_discharges',
+          data: {
+            text: pendingDischargePatientsText || ''
+          },
+          updated_at: nowIso
+        },
+        // Also keep state/dataset updated for backwards compatibility
+        {
+          path: 'state/dataset',
+          data: data,
+          updated_at: nowIso
+        }
+      ];
+
+      const { error: sbErr } = await supabaseAdmin.from('rtdb_nodes').upsert(granularNodes);
       if (sbErr) {
-        console.error('Supabase state/dataset upsert error:', sbErr);
+        console.error('Supabase granular nodes upsert error:', sbErr);
       } else {
-        console.log('Hospital Supabase cloud database synchronization completed.');
+        console.log(`Hospital Supabase cloud database synchronization completed (${granularNodes.length} individual rows written).`);
+      }
+
+      // 3. Automatically create/update the database snapshot for the active date on every change
+      try {
+        const cairo = getCairoDateTime();
+        const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
+        if (
+          (hospitalData && hospitalData.length > 0) ||
+          (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+          (cumulativeDialysis && cumulativeDialysis.length > 0) ||
+          (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+          (cumulativeEntries && cumulativeEntries.length > 0)
+        ) {
+          await takeOccupancySnapshotHelper(activeDateStr);
+          console.log(`Automatic occupancy database snapshot saved for date ${activeDateStr}.`);
+        }
+        if (cumulativeORList && cumulativeORList.length > 0) {
+          await takeORSnapshotHelper(activeDateStr);
+          console.log(`Automatic OR list database snapshot saved for date ${activeDateStr}.`);
+        }
+      } catch (snapErr) {
+        console.error('Error auto-saving database snapshot in saveData():', snapErr);
       }
     } catch (sbEx) {
       console.error('Supabase sync exception:', sbEx);
@@ -2003,10 +2599,63 @@ async function saveData() {
   }
 }
 
+// Background auto-fetch schedule from database on update
+let serverAutoSyncDebounceTimer: NodeJS.Timeout | null = null;
+
+function triggerServerAutoFetchFromDatabase(reason: string) {
+  if (serverAutoSyncDebounceTimer) clearTimeout(serverAutoSyncDebounceTimer);
+  serverAutoSyncDebounceTimer = setTimeout(async () => {
+    try {
+      console.log(`[Auto-Fetch Schedule] Triggering server reload from database (${reason})...`);
+      isServerAutoSyncing = true;
+      await loadData(true);
+      console.log(`[Auto-Fetch Schedule] Server in-memory state successfully synchronized from database.`);
+    } catch (err) {
+      console.error(`[Auto-Fetch Schedule] Failed to reload state from database:`, err);
+    } finally {
+      isServerAutoSyncing = false;
+    }
+  }, 350);
+}
+
+// Check database updated_at on scheduled interval (every 60s) as a reliable background fallback
+async function checkDatabaseSyncSchedule() {
+  try {
+    const { data: node, error } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('updated_at')
+      .eq('path', 'state/metadata')
+      .maybeSingle();
+
+    if (!error && node && node.updated_at) {
+      const cloudUpdated = String(node.updated_at);
+      if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
+        console.log(`[Auto-Fetch Schedule] Newer database version detected in Supabase (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
+        lastKnownDatabaseUpdatedAt = cloudUpdated;
+        triggerServerAutoFetchFromDatabase('schedule-periodic-check');
+      }
+    }
+  } catch (e: any) {
+    // Non-blocking log
+  }
+}
+
+// Supabase background sync scheduler
+function setupServerDatabaseAutoSync() {
+  try {
+    // Run scheduled background check every 60 seconds
+    setInterval(checkDatabaseSyncSchedule, 60000);
+  } catch (err) {
+    console.error('[Auto-Fetch Schedule] Failed to setup server database sync schedule:', err);
+  }
+}
 
 // Trigger loadData asynchronously during startup
-loadData().catch(err => {
+loadData().then(() => {
+  setupServerDatabaseAutoSync();
+}).catch(err => {
   console.error("Async startup data load failed:", err);
+  setupServerDatabaseAutoSync();
 });
 
 const GLOBAL_EXCLUSIONS = [
@@ -2024,6 +2673,8 @@ const KEYWORDS_TO_EXCLUDE = [...GLOBAL_EXCLUSIONS, ...DIALYSIS_KEYWORDS];
 async function handleUnifiedUpload(req: any, res: any) {
   console.log('handleUnifiedUpload received (Unified Debts Sheet)');
   try {
+    await loadData();
+
     if (!req.file) {
       console.log('No file in request');
       return res.status(400).json({ error: 'No file uploaded' });
@@ -2084,11 +2735,7 @@ async function handleUnifiedUpload(req: any, res: any) {
         }
     }
 
-    const actualUploadedNames = rows.slice(startIdx).map(r => String(r[3] || "").trim()).filter(Boolean);
-    manuallyDischargedNames = manuallyDischargedNames.filter(mName => {
-      return actualUploadedNames.some(uName => isNameMatch(mName, uName));
-    });
-
+    // CRITICAL: manuallyDischargedNames are persistent per day and must NOT be wiped when uploading a sheet
     const headerRow = rows.slice(0, startIdx);
     const dataRowsFiltered = rows.slice(startIdx).filter(row => {
       const patientName = String(row[3] || "").trim();
@@ -2104,6 +2751,7 @@ async function handleUnifiedUpload(req: any, res: any) {
         physician: String(row[22] || "").trim(), // Col W Treating Physician
         contractor: String(row[12] || "").trim(), // Col M Contractor name
         date: cleanAdmissionDateStr(row[0]), // Col A Admission date
+        rawDate: String(row[0] || "").trim(), // Col A raw string
       })).filter(p => {
         if (!p.room || !p.name) return false;
         const rowAsString = Object.values(p).join(" ").toLowerCase();
@@ -2115,22 +2763,14 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     const newRows = extractRowsFromData(rows, startIdx);
     
-    // Map of ALL patients in the current sheet (even in excluded rooms) to check for truly discharged or dialysis ones
-    const currentSheetPatientsRaw = rows.slice(startIdx).map(r => ({
-      room: String(r[1] || "").trim(),
-      name: String(r[3] || "").trim(),
-      physician: String(r[22] || "").trim(),
-      contractor: String(r[12] || "").trim(),
-      date: cleanAdmissionDateStr(r[0]),
-    })).filter(p => p.name);
-    
-    const currentSheetNames = new Set(currentSheetPatientsRaw.map(p => p.name.toLowerCase().trim()));
-    const isNewSheetLikelyEmpty = currentSheetNames.size === 0;
+    // Map of ALL active patients in the current sheet using structured deduplicated extraction
+    const currentSheetPatientsRaw = extractRawPatientsFromRows(rows);
+    const isNewSheetLikelyEmpty = currentSheetPatientsRaw.length === 0;
 
-    // CLEANUP: If a patient is in the hospital (any room), they are NOT discharged.
+    // CLEANUP: If a patient is actively in the hospital in the new sheet, they are currently admitted (not discharged).
     if (!isNewSheetLikelyEmpty) {
-      cumulativeDischarged = cumulativeDischarged.filter(p => {
-        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(p.name, currentP.name));
+      cumulativeDischarged = (cumulativeDischarged || []).filter(p => {
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(p, currentP) || isNameMatch(p.name, currentP.name));
         return !isStillPresent;
       });
     }
@@ -2138,17 +2778,15 @@ async function handleUnifiedUpload(req: any, res: any) {
     const extractDialysisRows = (sourceData: any[][], skip: number) => {
       if (!sourceData || sourceData.length <= skip) return [];
       return sourceData.slice(skip).map(row => ({
-        room: String(row[1] || "").trim(),
+        room: cleanRoomStr(String(row[1] || "").trim()),
         name: String(row[3] || "").trim(),
         physician: String(row[22] || "").trim(),
         contractor: String(row[12] || "").trim(),
         date: cleanAdmissionDateStr(row[0]),
       })).filter(p => {
         if (!p.room || !p.name) return false;
-        const roomLower = p.room.toLowerCase();
+        const isDialysis = isDialysisRoom(p.room);
         const rowAsString = Object.values(p).join(" ").toLowerCase();
-        
-        const isDialysis = roomLower.includes("dialysis") || roomLower.includes("diyalsis");
         const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
         
         return isDialysis && !isGloballyExcluded;
@@ -2156,8 +2794,50 @@ async function handleUnifiedUpload(req: any, res: any) {
     };
 
     const dialRowsNew = extractDialysisRows(rows, startIdx);
-    
-    // For Dialysis: Keep all dialysis cases cumulatively
+
+    // Determine previous patient baseline: use active hospitalData or previousHospitalData
+    const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
+
+    const cairo = getCairoDateTime();
+    const activePrevDate = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || "");
+    const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
+
+    if (isDifferentDay) {
+      console.log(`[Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Initializing fresh daily occupancy baseline.`);
+      cumulativeDischarged = [];
+      cumulativeEntries = [];
+      cumulativeDialysis = [];
+      cumulativeTransfers = [];
+      manuallyDischargedNames = [];
+      patientRoomRegistry = {};
+      previousHospitalData = rows;
+    } else if (baselineData && !isNewSheetLikelyEmpty) {
+      const oldActivePatients = extractRawPatientsFromRows(baselineData);
+      
+      // Identify new discharges: in baseline data but NO LONGER in current sheet
+      const newlyDischarged = oldActivePatients.filter(oldP => {
+        const roomStr = oldP.room || "";
+        if (isProcedureOrTemporaryRoom(roomStr)) return false;
+        const rowStr = Object.values(oldP).join(" ").toLowerCase();
+        if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return false;
+
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(oldP, currentP) || isNameMatch(oldP.name, currentP.name));
+        return !isStillPresent;
+      });
+
+      newlyDischarged.forEach(p => {
+        const alreadyExists = cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
+          (p as any).dischargeDate = getTodayRiyadhDateStr();
+          (p as any).dischargeType = 'auto';
+          cumulativeDischarged.push(p);
+        }
+      });
+
+      previousHospitalData = baselineData;
+    }
+
+    // For Dialysis: Keep all dialysis cases cumulatively throughout the day
     if (!isNewSheetLikelyEmpty) {
       dialRowsNew.forEach(p => {
         const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
@@ -2169,73 +2849,14 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     // Update cumulative entries (today's entries)
     newRows.forEach(p => {
-      if (isToday(p.date)) {
-        const alreadyExists = cumulativeEntries.some(existing => isNameMatch(existing.name, p.name));
+      const isEntryToday = isToday(p.date) || isToday(p.rawDate) || isToday((p.date || "").split(" ")[0]) || isToday((p.rawDate || "").split(" ")[0]);
+      if (isEntryToday) {
+        const alreadyExists = cumulativeEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
         if (!alreadyExists) {
           cumulativeEntries.push(p);
         }
       }
     });
-
-    if (hospitalData && !isNewSheetLikelyEmpty) {
-      // Find the old starting row
-      let oldStartIdx = 3;
-      for(let i = 0; i < Math.min(hospitalData.length, 10); i++) {
-        const r1 = String(hospitalData[i][1] || "").toLowerCase();
-        const r3 = String(hospitalData[i][3] || "").toLowerCase();
-        if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name")) {
-            oldStartIdx = i + 1;
-            break;
-        }
-      }
-      
-      const oldRows = extractRowsFromData(hospitalData, oldStartIdx);
-      
-      // Identify new discharges: in old data (filtered) but NOT in current data (at all)
-      const newlyDischarged = oldRows.filter(oldP => {
-        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
-        return !isStillPresent;
-      });
-      
-      // Also identify any OR patients that are no longer in the current sheet at all
-      const oldORPatients: any[] = [];
-      const oldORBody = hospitalData.slice(oldStartIdx);
-      oldORBody.forEach(row => {
-        const room = String(row[1] || "").trim();
-        const name = String(row[3] || "").trim();
-        if (isOrXRoom(room) && name) {
-          oldORPatients.push({
-            room,
-            name,
-            physician: String(row[22] || "").trim(),
-            contractor: String(row[12] || "").trim(),
-            date: cleanAdmissionDateStr(row[0])
-          });
-        }
-      });
-      const newlyDischargedOR = oldORPatients.filter(oldP => {
-        const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
-        return !isStillPresent;
-      });
-
-      newlyDischarged.forEach(p => {
-        const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
-        if (!alreadyExists) {
-          (p as any).dischargeDate = getTodayRiyadhDateStr();
-          cumulativeDischarged.push(p);
-        }
-      });
-
-      newlyDischargedOR.forEach(p => {
-        const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
-        if (!alreadyExists) {
-          (p as any).dischargeDate = getTodayRiyadhDateStr();
-          cumulativeDischarged.push(p);
-        }
-      });
-
-      previousHospitalData = hospitalData;
-    }
     
     // Track and record patient room transfers
     const deduplicatedPatients = extractRawPatientsFromRows(rows);
@@ -2393,6 +3014,7 @@ async function handleUnifiedUpload(req: any, res: any) {
     cumulativeLOS = losSheetRaw;
 
     uploadedAt = Date.now();
+    lastActiveDate = getCairoDateTime().dateStr;
     await saveData();
 
     res.json({ 
@@ -2410,42 +3032,70 @@ async function handleUnifiedUpload(req: any, res: any) {
   }
 }
 
-app.post('/api/upload', upload.single('file'), (req: any, res, next) => {
+app.post('/api/upload', handleUploadSingle, (req: any, res, next) => {
   handleUnifiedUpload(req, res);
 });
 
-app.post('/api/upload-debts', upload.single('file'), (req: any, res, next) => {
+app.post('/api/upload-debts', handleUploadSingle, (req: any, res, next) => {
   handleUnifiedUpload(req, res);
 });
 
-app.post('/api/upload-or-list', upload.single('file'), async (req: any, res) => {
+app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No file uploaded or file buffer is empty' });
     }
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true, cellNF: true, cellText: true });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = xlsx.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" }) as any[][];
     
-    if (!rows || rows.length < 2) {
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      return res.status(400).json({ error: 'Uploaded workbook contains no sheets.' });
+    }
+
+    // Find the best sheet that contains OR schedule data
+    let targetSheetName = workbook.SheetNames[0];
+    let targetRows: any[][] = [];
+    let bestStartIdx = -1;
+
+    for (const sheetName of workbook.SheetNames) {
+      const ws = workbook.Sheets[sheetName];
+      if (!ws) continue;
+      const rows = xlsx.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }) as any[][];
+      if (!rows || rows.length < 2) continue;
+
+      for (let i = 0; i < Math.min(rows.length, 15); i++) {
+        const rowStr = rows[i].map(c => String(c || "").trim().toLowerCase()).join(" ");
+        if (
+          rowStr.includes("start time") || 
+          rowStr.includes("patient name") || 
+          rowStr.includes("eng operation") || 
+          rowStr.includes("ar operation") || 
+          rowStr.includes("surgeon name") ||
+          rowStr.includes("اسم المريض") ||
+          rowStr.includes("or room")
+        ) {
+          targetSheetName = sheetName;
+          targetRows = rows;
+          bestStartIdx = i;
+          break;
+        }
+      }
+      if (bestStartIdx !== -1) break;
+    }
+
+    // If no sheet had recognizable header keywords, fallback to first sheet
+    if (targetRows.length === 0) {
+      const firstWs = workbook.Sheets[workbook.SheetNames[0]];
+      targetRows = xlsx.utils.sheet_to_json(firstWs, { header: 1, raw: false, defval: "" }) as any[][];
+      bestStartIdx = 1;
+    }
+    
+    if (!targetRows || targetRows.length < 2) {
       return res.status(400).json({ error: 'Sheet appears to be empty or has insufficient rows.' });
     }
     
-    // Find header row dynamically
-    let startIdx = -1;
-    for (let i = 0; i < Math.min(rows.length, 12); i++) {
-      const rowStr = rows[i].map(c => String(c || "").trim().toLowerCase()).join(" ");
-      if (rowStr.includes("start time") || rowStr.includes("patient name") || rowStr.includes("eng operation") || rowStr.includes("ar operation") || rowStr.includes("surgeon name")) {
-        startIdx = i;
-        break;
-      }
-    }
+    const startIdx = bestStartIdx >= 0 ? bestStartIdx : 1;
+    const headerRow = targetRows[startIdx] || [];
     
-    if (startIdx === -1) {
-      startIdx = 1; // fallback
-    }
-    
-    const headerRow = rows[startIdx];
     const getIndex = (keywords: string[], defaultIdx: number) => {
       const idx = headerRow.findIndex(cell => {
         const s = String(cell || "").trim().toLowerCase();
@@ -2454,56 +3104,58 @@ app.post('/api/upload-or-list', upload.single('file'), async (req: any, res) => 
       return idx !== -1 ? idx : defaultIdx;
     };
     
-    const idxSerial = getIndex(["column 1", "sr", "#", "no"], 0);
-    const idxStartTime = getIndex(["start time", "start"], 1);
-    const idxEndTime = getIndex(["end time", "end"], 2);
-    const idxPatientName = getIndex(["patient name", "patient", "اسم المريض"], 3);
-    const idxMRN = getIndex(["mrn", "id"], 4);
-    const idxEngOp = getIndex(["eng col", "eng operation", "english operation", "العملية (انجليزي)"], 5);
+    const idxSerial = getIndex(["column 1", "sr", "#", "no", "مسلسل"], 0);
+    const idxStartTime = getIndex(["start time", "start", "بداية"], 1);
+    const idxEndTime = getIndex(["end time", "end", "نهاية"], 2);
+    const idxPatientName = getIndex(["patient name", "patient", "اسم المريض", "المريض"], 3);
+    const idxMRN = getIndex(["mrn", "id", "رقم الملف", "ملف"], 4);
+    const idxEngOp = getIndex(["eng col", "eng operation", "english operation", "العملية (انجليزي)", "operation"], 5);
     const idxArOp = getIndex(["ar col", "ar operation", "arabic operation", "العملية (عربي)"], 6);
-    const idxSurgeon = getIndex(["surgeon name", "surgeon", "اسم الطبيب", "الجراح"], 7);
-    const idxColumn2 = getIndex(["column2", "equipment", "الأجهزة", "تاور"], 8);
-    const idxORRoom = getIndex(["or room", "room", "الغرفة"], 9);
+    const idxSurgeon = getIndex(["surgeon name", "surgeon", "اسم الطبيب", "الجراح", "طبيب"], 7);
+    const idxColumn2 = getIndex(["column2", "equipment", "الأجهزة", "تاور", "tower"], 8);
+    const idxORRoom = getIndex(["or room", "room", "الغرفة", "غرفة العمليات", "غرفة"], 9);
     const idxColumn3 = getIndex(["column3", "status", "الحالة"], 10);
-    const idxContractor = getIndex(["contractorname", "contractor", "التعاقد"], 11);
+    const idxContractor = getIndex(["contractorname", "contractor", "التعاقد", "جهة"], 11);
     const idxPaidBy = getIndex(["paidby", "paid", "الدافع"], 12);
-    const idxPostC = getIndex(["post c", "postop"], 13);
-    const idxVT = getIndex(["vt", "visittype"], 14);
-    const idxComment = getIndex(["operativecomment", "comment"], 15);
-    const idxClass = getIndex(["flclassname"], 16);
-    const idxFinancial = getIndex(["financial status", "financial"], 17);
+    const idxPostC = getIndex(["post c", "postop", "عناية"], 13);
+    const idxVT = getIndex(["vt", "visittype", "نوع الزيارة"], 14);
+    const idxComment = getIndex(["operativecomment", "comment", "ملاحظات"], 15);
+    const idxClass = getIndex(["flclassname", "class", "الدرجة"], 16);
+    const idxFinancial = getIndex(["financial status", "financial", "المالي"], 17);
     
-    const dataRows = rows.slice(startIdx + 1);
+    const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
     
     let dateStr = "";
-    const titleRowVal = String(rows[0]?.[0] || "");
-    const datePattern = /(\d{1,2})\/(\d{1,2})\/(\d{4})/;
-    const dateMatch = titleRowVal.match(datePattern);
-    if (dateMatch) {
-      dateStr = dateMatch[0];
-    } else {
-      const secondRowVal = String(rows[1]?.[0] || "");
-      const dateMatch2 = secondRowVal.match(datePattern);
-      if (dateMatch2) {
-        dateStr = dateMatch2[0];
+    // Check first few rows for date patterns
+    for (let r = 0; r < Math.min(targetRows.length, 5); r++) {
+      const rowVal = targetRows[r].map(c => String(c || "")).join(" ");
+      const datePattern = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/;
+      const dateMatch = rowVal.match(datePattern);
+      if (dateMatch) {
+        dateStr = dateMatch[0];
+        break;
       }
     }
     
     dataRows.forEach((row, i) => {
       const patientName = String(row[idxPatientName] || "").trim();
-      const orRoom = String(row[idxORRoom] || row[idxORRoom + 1] || "").trim();
-      if (!patientName && !orRoom) return;
+      const orRoom = String(row[idxORRoom] || (idxORRoom >= 0 && row[idxORRoom + 1]) || "").trim();
+      const mrn = String(row[idxMRN] || "").trim();
+      const surgeon = String(row[idxSurgeon] || "").trim();
+      
+      // Keep row if it has either patient name, mrn, or room
+      if (!patientName && !orRoom && !mrn && !surgeon) return;
       
       parsedData.push({
         serial: String(row[idxSerial] || i + 1).trim(),
         startTime: String(row[idxStartTime] || "").trim(),
         endTime: String(row[idxEndTime] || "").trim(),
         patientName: patientName,
-        mrn: String(row[idxMRN] || "").trim(),
+        mrn: mrn,
         engOperationName: String(row[idxEngOp] || "").trim(),
         arOperationName: String(row[idxArOp] || "").trim(),
-        surgeonName: String(row[idxSurgeon] || "").trim(),
+        surgeonName: surgeon,
         column2: String(row[idxColumn2] || "").trim(),
         orRoom: orRoom,
         column3: String(row[idxColumn3] || "").trim(),
@@ -2522,15 +3174,16 @@ app.post('/api/upload-or-list', upload.single('file'), async (req: any, res) => 
     uploadedAt = Date.now();
     await saveData();
     
-    res.json({
+    return res.status(200).json({
       success: true,
       count: parsedData.length,
       uploadedAt: uploadedAt,
-      date: dateStr
+      date: dateStr,
+      sheet: targetSheetName
     });
   } catch (error: any) {
     console.error('OR List Upload Error:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ success: false, error: error.message || 'Failed to process OR List file' });
   }
 });
 
@@ -2922,15 +3575,15 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'خروج', 8);
+  await applyRefinedHeader(workbook, sheet, 'خروج', 7);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Admission Date / تاريخ الدخول', 'VIP STATUS', 'Status / الحالة'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Admission Date / تاريخ الدخول', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -3029,8 +3682,8 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
     
     // Add colored department separator row
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '']); // allocate row slots (8 columns)
-    sheet.mergeCells(startRow, 1, startRow, 8);
+    sheet.addRow(['', '', '', '', '', '', '']); // allocate row slots (7 columns)
+    sheet.mergeCells(startRow, 1, startRow, 7);
     const separatorCell = sheet.getCell(startRow, 1);
     const displayGroupName = group.groupName === "VIP" ? "VIP ICU" : group.groupName;
     separatorCell.value = `■  ${displayGroupName}  ■`;
@@ -3041,7 +3694,6 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
 
     // Add patients rows
     group.items.forEach((p) => {
-      const isOrPt = cumulativeORList.some(orPt => isNameMatch(p.name, orPt.patientName));
       const rowValues = [
         serial++, 
         p.room, 
@@ -3049,8 +3701,7 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
         p.physician, 
         p.contractor, 
         cleanAdmissionDateStr(p.date), 
-        isPatientVip(p.name) ? "VIP" : "",
-        isOrPt ? "Discharged OR Patient" : ""
+        isPatientVip(p.name) ? "VIP" : ""
       ];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
@@ -3078,7 +3729,6 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 25; // date
   sheet.getColumn(7).width = 15; // VIP Status
-  sheet.getColumn(8).width = 25; // Status
 }
 
 async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
@@ -4333,17 +4983,17 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
     return a.room.localeCompare(b.room);
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:F1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'خروج';
   titleCell.font = { name: 'Arial', size: 36, bold: true };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 6.0);
 
   const headerRow = sheet.getRow(2);
-  headerRow.values = ['', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الدخول', 'الحالة / Status'];
+  headerRow.values = ['', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الدخول'];
   headerRow.eachCell((cell) => {
     cell.font = { name: 'Arial', size: 10, bold: true };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4B084' } }; 
@@ -4357,7 +5007,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
   });
 
   sheet.columns = [
-    { width: 4 }, { width: 14 }, { width: 35 }, { width: 35 }, { width: 22 }, { width: 25 }, { width: 25 }
+    { width: 4 }, { width: 14 }, { width: 35 }, { width: 35 }, { width: 22 }, { width: 25 }
   ];
 
   let currentRowIdx = 3;
@@ -4388,15 +5038,13 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
       currentGroup = group;
     }
     const row = sheet.getRow(currentRowIdx);
-    const isOrPt = cumulativeORList.some(orPt => isNameMatch(patient.name, orPt.patientName));
     row.values = [
       serialNum++, 
       patient.room, 
       patient.name, 
       patient.physician, 
       patient.contractor, 
-      cleanAdmissionDateStr(patient.date || patient.admissionDate || ""),
-      isOrPt ? "Discharged OR Patient" : ""
+      cleanAdmissionDateStr(patient.date || patient.admissionDate || "")
     ];
     row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       cell.font = { name: 'Arial', size: 10, bold: true };
@@ -4695,6 +5343,16 @@ async function updateHospitalState(rows: any[][]) {
       }
   }
 
+  // Preserve manual discharges if sheet is re-uploaded
+  if (manuallyDischargedNames.length > 0) {
+    const headerPrefix = rows.slice(0, startIdx);
+    const dataRowsFiltered = rows.slice(startIdx).filter(row => {
+      const patientName = String(row[3] || "").trim();
+      return !isManuallyDischarged(patientName);
+    });
+    rows = [...headerPrefix, ...dataRowsFiltered];
+  }
+
   const extractRowsFromData = (sourceData: any[][], skip: number) => {
     if (!sourceData || sourceData.length <= skip) return [];
     return sourceData.slice(skip).map(row => ({
@@ -4703,6 +5361,7 @@ async function updateHospitalState(rows: any[][]) {
       physician: String(row[22] || "").trim(), // Col W Treating Physician
       contractor: String(row[12] || "").trim(), // Col M Contractor name
       date: cleanAdmissionDateStr(row[0]), // Col A Admission date
+      rawDate: String(row[0] || "").trim(), // Col A raw string
     })).filter(p => {
       if (!p.room || !p.name) return false;
       const rowAsString = Object.values(p).join(" ").toLowerCase();
@@ -4714,22 +5373,14 @@ async function updateHospitalState(rows: any[][]) {
 
   const newRows = extractRowsFromData(rows, startIdx);
   
-  // Map of ALL patients in the current sheet (even in excluded rooms) to check for truly discharged or dialysis ones
-  const currentSheetPatientsRaw = rows.slice(startIdx).map(r => ({
-    room: String(r[1] || "").trim(),
-    name: String(r[3] || "").trim(),
-    physician: String(r[22] || "").trim(),
-    contractor: String(r[12] || "").trim(),
-    date: cleanAdmissionDateStr(r[0]),
-  })).filter(p => p.name);
-  
-  const currentSheetNames = new Set(currentSheetPatientsRaw.map(p => p.name.toLowerCase().trim()));
-  const isNewSheetLikelyEmpty = currentSheetNames.size === 0;
+  // Map of ALL active patients in the current sheet using structured deduplicated extraction
+  const currentSheetPatientsRaw = extractRawPatientsFromRows(rows);
+  const isNewSheetLikelyEmpty = currentSheetPatientsRaw.length === 0;
 
   // CLEANUP: If a patient is in the hospital (any room), they are NOT discharged.
   if (!isNewSheetLikelyEmpty) {
-    cumulativeDischarged = cumulativeDischarged.filter(p => {
-      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(p.name, currentP.name));
+    cumulativeDischarged = (cumulativeDischarged || []).filter(p => {
+      const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(p, currentP) || isNameMatch(p.name, currentP.name));
       return !isStillPresent;
     });
   }
@@ -4737,17 +5388,15 @@ async function updateHospitalState(rows: any[][]) {
   const extractDialysisRows = (sourceData: any[][], skip: number) => {
     if (!sourceData || sourceData.length <= skip) return [];
     return sourceData.slice(skip).map(row => ({
-      room: String(row[1] || "").trim(),
+      room: cleanRoomStr(String(row[1] || "").trim()),
       name: String(row[3] || "").trim(),
       physician: String(row[22] || "").trim(),
       contractor: String(row[12] || "").trim(),
       date: cleanAdmissionDateStr(row[0]),
     })).filter(p => {
       if (!p.room || !p.name) return false;
-      const roomLower = p.room.toLowerCase();
+      const isDialysis = isDialysisRoom(p.room);
       const rowAsString = Object.values(p).join(" ").toLowerCase();
-      
-      const isDialysis = roomLower.includes("dialysis") || roomLower.includes("diyalsis");
       const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
       
       return isDialysis && !isGloballyExcluded;
@@ -4755,8 +5404,47 @@ async function updateHospitalState(rows: any[][]) {
   };
 
   const dialRowsNew = extractDialysisRows(rows, startIdx);
-  
-  // For Dialysis: Keep all dialysis cases cumulatively
+
+  const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
+
+  const baselineOpDate = baselineData ? getDatasetOperationalDateStr(extractRawPatientsFromRows(baselineData)) : "";
+  const currentOpDate = getDatasetOperationalDateStr(currentSheetPatientsRaw);
+  const isDifferentDay = baselineOpDate && currentOpDate && (baselineOpDate !== currentOpDate);
+
+  if (isDifferentDay) {
+    // New operational day upload: reset daily cumulative datasets
+    cumulativeDischarged = [];
+    cumulativeEntries = [];
+    cumulativeDialysis = [];
+    cumulativeTransfers = [];
+    previousHospitalData = rows;
+  } else if (baselineData && !isNewSheetLikelyEmpty) {
+    const oldActivePatients = extractRawPatientsFromRows(baselineData);
+    
+    // Identify new discharges: in baseline data but NO LONGER in current sheet
+    const newlyDischarged = oldActivePatients.filter(oldP => {
+      const roomStr = oldP.room || "";
+      if (isProcedureOrTemporaryRoom(roomStr)) return false;
+      const rowStr = Object.values(oldP).join(" ").toLowerCase();
+      if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return false;
+
+      const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(oldP, currentP) || isNameMatch(oldP.name, currentP.name));
+      return !isStillPresent;
+    });
+
+    newlyDischarged.forEach(p => {
+      const alreadyExists = cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
+        (p as any).dischargeDate = getTodayRiyadhDateStr();
+        (p as any).dischargeType = 'auto';
+        cumulativeDischarged.push(p);
+      }
+    });
+
+    previousHospitalData = baselineData;
+  }
+
+  // For Dialysis: Keep all dialysis cases cumulatively throughout the day
   if (!isNewSheetLikelyEmpty) {
     dialRowsNew.forEach(p => {
       const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
@@ -4768,72 +5456,36 @@ async function updateHospitalState(rows: any[][]) {
 
   // Update cumulative entries (today's entries)
   newRows.forEach(p => {
-    if (isToday(p.date)) {
-      const alreadyExists = cumulativeEntries.some(existing => isNameMatch(existing.name, p.name));
+    const isEntryToday = isToday(p.date) || isToday(p.rawDate) || isToday((p.date || "").split(" ")[0]) || isToday((p.rawDate || "").split(" ")[0]);
+    if (isEntryToday) {
+      const alreadyExists = cumulativeEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
       if (!alreadyExists) {
         cumulativeEntries.push(p);
       }
     }
   });
 
-  if (hospitalData && !isNewSheetLikelyEmpty) {
-    // Find the old starting row
-    let oldStartIdx = 3;
-    for(let i = 0; i < Math.min(hospitalData.length, 10); i++) {
-      const r1 = String(hospitalData[i][1] || "").toLowerCase();
-      const r3 = String(hospitalData[i][3] || "").toLowerCase();
-      if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name")) {
-          oldStartIdx = i + 1;
-          break;
-      }
-    }
-    
-    const oldRows = extractRowsFromData(hospitalData, oldStartIdx);
-    
-    // Identify new discharges: in old data (filtered) but NOT in current data (at all)
-    const newlyDischarged = oldRows.filter(oldP => {
-      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
-      return !isStillPresent;
-    });
-    
-    // Also identify any OR patients that are no longer in the current sheet at all
-    const oldORPatients: any[] = [];
-    const oldORBody = hospitalData.slice(oldStartIdx);
-    oldORBody.forEach(row => {
-      const room = String(row[1] || "").trim();
-      const name = String(row[3] || "").trim();
-      if (isOrXRoom(room) && name) {
-        oldORPatients.push({
-          room,
-          name,
-          physician: String(row[22] || "").trim(),
-          contractor: String(row[12] || "").trim(),
-          date: cleanAdmissionDateStr(row[0])
-        });
+  // Also check patient registry: Any patient active earlier today who is absent from the current sheet is discharged
+  if (!isDifferentDay && !isNewSheetLikelyEmpty && patientRoomRegistry && typeof patientRoomRegistry === 'object') {
+    Object.values(patientRoomRegistry).forEach(regP => {
+      const lastRoom = regP.lastRoom || (regP as any).room || "";
+      const rowStr = Object.values(regP).join(" ").toLowerCase();
+      if (regP && regP.name && !isProcedureOrTemporaryRoom(lastRoom) && !KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) {
+        const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(regP as any, currentP) || isNameMatch(regP.name, currentP.name));
+        if (!isStillPresent && !isManuallyDischarged(regP.name)) {
+          const alreadyExists = cumulativeDischarged.some(existing => isPatientMatch(existing, regP as any) || isNameMatch(existing.name, regP.name));
+          if (!alreadyExists) {
+            const discObj = {
+              ...regP,
+              room: lastRoom,
+              dischargeDate: getTodayRiyadhDateStr(),
+              dischargeType: 'auto'
+            };
+            cumulativeDischarged.push(discObj);
+          }
+        }
       }
     });
-    const newlyDischargedOR = oldORPatients.filter(oldP => {
-      const isStillPresent = currentSheetPatientsRaw.some(currentP => isNameMatch(oldP.name, currentP.name));
-      return !isStillPresent;
-    });
-
-    newlyDischarged.forEach(p => {
-      const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
-      if (!alreadyExists) {
-        (p as any).dischargeDate = getTodayRiyadhDateStr();
-        cumulativeDischarged.push(p);
-      }
-    });
-
-    newlyDischargedOR.forEach(p => {
-      const alreadyExists = cumulativeDischarged.some(existing => isNameMatch(existing.name, p.name));
-      if (!alreadyExists) {
-        (p as any).dischargeDate = getTodayRiyadhDateStr();
-        cumulativeDischarged.push(p);
-      }
-    });
-
-    previousHospitalData = hospitalData;
   }
   
   // Track and record patient room transfers
@@ -5072,18 +5724,45 @@ function areRowsDifferent(rowsA: any[][] | null, rowsB: any[][] | null): boolean
 
 // Helper to classify IN/OUT as a fallback using string matching
 function classifyInOutFallback(p: any): 'IN' | 'OUT' {
+  if (!p) return 'OUT';
   const vt = String(p.vt || "").toUpperCase().trim();
   const column3 = String(p.column3 || "").toUpperCase().trim();
   const flClassName = String(p.flClassName || "").toUpperCase().trim();
   const postC = String(p.postC || "").toUpperCase().trim();
+  const orRoom = String(p.orRoom || p.room || "").toUpperCase().trim();
 
-  // Explicit Day Case/Outpatient checking (DC, DayCase, Outpatient, etc.)
-  if (vt === "DC" || vt.includes("DAY") || vt.includes("DAYCASE") || vt.includes("OUT")) {
-    return 'OUT';
+  // Hospital ward accommodation classes (319, 325, 401-B, اولي عاديه, اولي مميزه, جناح, حسب التعاقد, حسب المريض, etc.)
+  const isHospitalClass = 
+    /\b\d{3}\b/.test(flClassName) || 
+    flClassName.includes("اولي") || 
+    flClassName.includes("أولي") || 
+    flClassName.includes("مميز") || 
+    flClassName.includes("جناح") || 
+    flClassName.includes("حسب التعاقد") || 
+    flClassName.includes("حسب المريض") ||
+    flClassName.includes("درجة") ||
+    flClassName.includes("درجه") ||
+    flClassName.includes("عادية") ||
+    flClassName.includes("عاديه") ||
+    flClassName.includes("شمالي") ||
+    flClassName.includes("جنوبي") ||
+    flClassName.includes("HC") ||
+    flClassName.includes("IP") ||
+    flClassName.includes("IN") ||
+    flClassName.includes("PRIVATECREDIT") ||
+    flClassName.includes("CREDIT");
+
+  if (isHospitalClass) {
+    return 'IN';
   }
 
-  // Explicit Hospital Case/Inpatient checking (HC, Inpatient)
-  if (vt === "HC" || vt.includes("HOSPITAL") || vt === "INPATIENT") {
+  // Scheduled in an Operating Room suite (OR - 1 to OR - 8)
+  if (isOperatingRoom(orRoom) || /^OR\s*[-]?\s*\d+/i.test(orRoom) || orRoom.includes("OR")) {
+    return 'IN';
+  }
+
+  // Explicit Hospital Case/Inpatient checking (HC, Inpatient, PrivateCredit)
+  if (vt === "HC" || vt.includes("HOSPITAL") || vt === "INPATIENT" || vt === "PRIVATECREDIT" || column3.includes("INSURED") || column3.includes("HC") || column3.includes("IN")) {
     return 'IN';
   }
 
@@ -5093,18 +5772,12 @@ function classifyInOutFallback(p: any): 'IN' | 'OUT' {
     return 'IN';
   }
 
-  // Look for implicit keywords in Arabic/English classes while avoiding loose substrings like 'INSURED' -> 'IN'
-  const combinedNorm = ` ${column3} ${flClassName} `.replace(/\bINSURED\b/g, " ").toUpperCase();
-  if (combinedNorm.includes(" OUT ") || combinedNorm.includes(" DAY ") || combinedNorm.includes(" DC ")) {
+  // Explicit Day Case/Outpatient checking (DC, DayCase, Outpatient, etc.) only if not in OR suite or hospital class
+  if (vt === "DC" || vt.includes("DAY") || vt.includes("DAYCASE") || vt.includes("OUT")) {
     return 'OUT';
   }
 
-  if (combinedNorm.includes(" IN ") || combinedNorm.includes(" HC ") || combinedNorm.includes(" HOSPITAL ") || combinedNorm.includes(" IP ")) {
-    return 'IN';
-  }
-
-  // Default fallback if unknown
-  return 'OUT'; 
+  return 'IN'; 
 }
 
 // Helper to enrich OR list with accurate IN/OUT status by matching against current occupancy rows
@@ -5112,14 +5785,18 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
   if (!orList || orList.length === 0) return [];
   if (!occRows || occRows.length === 0) {
     return orList.map(p => {
+      const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
       const matchingDischargedObj = cumulativeDischarged.find(discPt => {
-        const matchByName = isNameMatch(p.patientName, discPt.name || "");
-        const matchByMrn = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-        return matchByName || matchByMrn;
+        const discRoom = String(discPt.room || discPt.colB || "").toLowerCase();
+        if (discRoom.includes("dialysis") || discRoom.includes("غسيل") || isOperatingRoom(discRoom)) return false;
+        const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
+        const matchByMrn = pMrn && discMrn && isMRNMatch(pMrn, discMrn);
+        const matchByName = isWholeNameMatch(p.patientName, discPt.name || "");
+        return matchByMrn || matchByName;
       });
       const isDischarged = !!matchingDischargedObj;
       const fallbackStatus = classifyInOutFallback(p);
-      const isAdmitted = fallbackStatus === 'IN' || isDischarged;
+      const isCurrentlyAdmitted = !isDischarged && fallbackStatus === 'IN';
       
       const dischargedFromRoom = matchingDischargedObj ? (matchingDischargedObj.room || matchingDischargedObj.id || '') : '';
       const dischargeStatusText = isDischarged
@@ -5128,10 +5805,11 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 
       return { 
         ...p, 
-        realStatus: isAdmitted ? 'IN' : 'OUT',
+        realStatus: isCurrentlyAdmitted ? 'IN' : 'OUT',
+        isCurrentlyAdmitted,
         isDischarged,
         dischargedFromRoom,
-        dischargeStatus: isDischarged ? dischargeStatusText : (fallbackStatus === 'IN' ? 'Admitted / منوم' : 'Not Admitted / غير منوم'),
+        dischargeStatus: isDischarged ? dischargeStatusText : (isCurrentlyAdmitted ? 'Admitted / منوم' : 'Not Admitted / غير منوم'),
         listType: 'on-list',
         admissionDate: matchingDischargedObj ? (matchingDischargedObj.date || matchingDischargedObj.admissionDate || '') : ''
       };
@@ -5150,13 +5828,17 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
                         postC.includes("OUT") || postC.includes("DC");
 
     const occPatient = findOccupancyPatient(p.patientName, occRows, isTaggedOut, p.mrn, p.surgeonName);
+    const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
     const matchingDischargedObj = cumulativeDischarged.find(discPt => {
-      const matchByName = isNameMatch(p.patientName, discPt.name || "");
-      const matchByMrn = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-      return matchByName || matchByMrn;
+      const discRoom = String(discPt.room || discPt.colB || "").toLowerCase();
+      if (discRoom.includes("dialysis") || discRoom.includes("غسيل") || isOperatingRoom(discRoom)) return false;
+      const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
+      const matchByMrn = pMrn && discMrn && isMRNMatch(pMrn, discMrn);
+      const matchByName = isWholeNameMatch(p.patientName, discPt.name || "");
+      return matchByMrn || matchByName;
     });
     const isDischarged = !!matchingDischargedObj;
-    const isAdmitted = occPatient || isDischarged;
+    const isCurrentlyAdmitted = !isDischarged && !!occPatient;
 
     const dischargedFromRoom = matchingDischargedObj ? (matchingDischargedObj.room || matchingDischargedObj.id || '') : '';
     const dischargeStatusText = isDischarged
@@ -5165,11 +5847,13 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 
     return {
       ...p,
-      patientName: occPatient ? (occPatient.patientName || p.patientName) : p.patientName,
-      realStatus: isAdmitted ? 'IN' : 'OUT',
+      patientName: p.patientName,
+      realStatus: isCurrentlyAdmitted ? 'IN' : 'OUT',
+      isCurrentlyAdmitted,
       isDischarged,
       dischargedFromRoom,
-      dischargeStatus: isDischarged ? dischargeStatusText : (occPatient ? 'Currently Admitted / منوم حالياً' : 'Not Admitted / غير منوم'),
+      admittedRoom: isCurrentlyAdmitted ? (occPatient?.room || '') : '',
+      dischargeStatus: isDischarged ? dischargeStatusText : (isCurrentlyAdmitted ? `Currently Admitted (${occPatient?.room}) / منوم حالياً` : 'Not Admitted / غير منوم'),
       listType: 'on-list',
       admissionDate: occPatient ? occPatient.admissionDate : (matchingDischargedObj ? (matchingDischargedObj.date || matchingDischargedObj.admissionDate || '') : '')
     };
@@ -5177,10 +5861,12 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 }
 
 app.get('/api/occupancy/data', async (req, res) => {
-  try {
-    await loadData();
-  } catch (err) {
-    console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
+  if (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0)) {
+    try {
+      await loadData();
+    } catch (err) {
+      console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
+    }
   }
 
   const filterHelper = (list: any[]) => {
@@ -5195,35 +5881,74 @@ app.get('/api/occupancy/data', async (req, res) => {
   const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
   const enrichedOrList = getEnrichedOrListForStats(cumulativeORList, occRows);
+  const activePatients = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
+
+  // Calculate operational dataset reference date (e.g. latest admission date present in sheet)
+  const operationalDateStr = getDatasetOperationalDateStr(activePatients);
 
   const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
-    const isStillPresent = occRowsUnfiltered.some(activePt => {
-      const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
-      return activeName ? isNameMatch(discPt.name, activeName) : false;
-    });
-    return !isStillPresent;
+    const isStillPresent = activePatients.some(activePt => 
+      isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+    );
+    if (isStillPresent) return false;
+
+    const roomVal = discPt.room || discPt.colB || "";
+    if (isProcedureOrTemporaryRoom(roomVal)) return false;
+
+    const rowAsString = Object.values(discPt).join(" ").toLowerCase();
+    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
+    if (isExcluded) return false;
+
+    if (discPt.dischargeDate && !isToday(discPt.dischargeDate, operationalDateStr)) {
+      return false;
+    }
+
+    return true;
   });
 
   const uniqueCleanDischarged: any[] = [];
   cleanDischarged.forEach(p => {
-    if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+    if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
       uniqueCleanDischarged.push(p);
     }
   });
 
-  const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+  const activeEntries = (activePatients || []).filter(p => 
+    isToday(p.date, operationalDateStr) || 
+    isToday(p.rawDate, operationalDateStr) || 
+    isToday((p.date || "").split(" ")[0], operationalDateStr) || 
+    isToday((p.rawDate || "").split(" ")[0], operationalDateStr)
+  );
+  const allEntriesSource = [...(cumulativeEntries || []), ...activeEntries];
   const uniqueTodayEntries: any[] = [];
-  todayEntries.forEach(p => {
-    if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
-      uniqueTodayEntries.push(p);
+  allEntriesSource.forEach(p => {
+    if (
+      isToday(p.date, operationalDateStr) || 
+      isToday(p.rawDate, operationalDateStr) || 
+      isToday((p.date || "").split(" ")[0], operationalDateStr) || 
+      isToday((p.rawDate || "").split(" ")[0], operationalDateStr)
+    ) {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+        uniqueTodayEntries.push(p);
+      }
     }
   });
+
+  const allFilteredDischarged = filterHelper(uniqueCleanDischarged);
+  const autoDischargedRows = allFilteredDischarged.filter(p => p.dischargeType !== 'manual' && !isManuallyDischarged(p.name));
+  const manualDischargedRows = allFilteredDischarged.filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name));
 
   if (!hospitalData) {
     return res.json({ 
       rows: [], 
       previousRows: [], 
-      dischargedRows: filterHelper(uniqueCleanDischarged),
+      dischargedRows: allFilteredDischarged,
+      autoDischargedRows,
+      manualDischargedRows,
+      manuallyDischargedNames,
+      dischargesCount: allFilteredDischarged.length,
+      autoDischargesCount: autoDischargedRows.length,
+      manualDischargesCount: manualDischargedRows.length,
       entryRows: filterHelper(uniqueTodayEntries),
       dialysisRows: cumulativeDialysis,
       debtRows: cumulativeDebts,
@@ -5248,7 +5973,13 @@ app.get('/api/occupancy/data', async (req, res) => {
   res.json({ 
     rows: occRowsUnfiltered, 
     previousRows: hospitalData ? getOccupancyRowsUnfiltered(previousHospitalData) : [],
-    dischargedRows: filterHelper(uniqueCleanDischarged),
+    dischargedRows: allFilteredDischarged,
+    autoDischargedRows,
+    manualDischargedRows,
+    manuallyDischargedNames,
+    dischargesCount: allFilteredDischarged.length,
+    autoDischargesCount: autoDischargedRows.length,
+    manualDischargesCount: manualDischargedRows.length,
     entryRows: filterHelper(uniqueTodayEntries),
     dialysisRows: cumulativeDialysis,
     debtRows: cumulativeDebts,
@@ -5378,7 +6109,18 @@ app.all('/api/vip-cases/formatted', (req, res) => {
 });
 
 app.post('/api/vip-cases', async (req, res) => {
-  vipCasesText = req.body.text || "";
+  const newText = typeof req.body.text === 'string' ? req.body.text : (req.body.text || "");
+  vipCasesText = newText;
+  try {
+    const nowIso = new Date().toISOString();
+    await supabaseAdmin.from('rtdb_nodes').upsert({
+      path: 'settings/vip_cases',
+      data: { text: vipCasesText },
+      updated_at: nowIso
+    });
+  } catch (err) {
+    console.error('Failed to persist VIP cases to settings/vip_cases in Supabase:', err);
+  }
   await saveData();
   res.json({ success: true, text: vipCasesText });
 });
@@ -5463,14 +6205,22 @@ app.post('/api/pending-discharge', async (req, res) => {
           physician: docVal,
           contractor: contVal,
           date: dateVal,
-          dischargeDate: getTodayRiyadhDateStr()
+          dischargeDate: getTodayRiyadhDateStr(),
+          dischargeType: 'manual' as const
         };
         
-        if (!cumulativeDischarged.some(p => isNameMatch(p.name, patientName))) {
+        const existingDiscIdx = cumulativeDischarged.findIndex(p => isNameMatch(p.name, patientName));
+        if (existingDiscIdx >= 0) {
+          cumulativeDischarged[existingDiscIdx] = {
+            ...cumulativeDischarged[existingDiscIdx],
+            ...discObj,
+            dischargeType: 'manual'
+          };
+        } else {
           cumulativeDischarged.push(discObj);
         }
 
-        if (!manuallyDischargedNames.includes(patientName)) {
+        if (!manuallyDischargedNames.some(m => isNameMatch(m, patientName))) {
           manuallyDischargedNames.push(patientName);
         }
         
@@ -5489,11 +6239,52 @@ app.post('/api/pending-discharge', async (req, res) => {
     hospitalData = [...headerPrefix, ...remainingRows];
   }
 
+  // Also check if any input names match patientRoomRegistry or existing sheets even if not currently in hospitalData
+  for (const inputName of namesToDischarge) {
+    if (processedNames.some(p => isNameMatch(p, inputName))) continue;
+    
+    // Check registry
+    const regMatch = Object.values(patientRoomRegistry).find(r => isNameMatch(r.name, inputName));
+    if (regMatch) {
+      matchedCount++;
+      processedNames.push(inputName);
+      if (!manuallyDischargedNames.some(m => isNameMatch(m, regMatch.name))) {
+        manuallyDischargedNames.push(regMatch.name);
+      }
+      const discObj = {
+        room: regMatch.lastRoom || '',
+        name: regMatch.name,
+        physician: regMatch.physician || '',
+        contractor: regMatch.contractor || '',
+        date: regMatch.date || '',
+        dischargeDate: getTodayRiyadhDateStr(),
+        dischargeType: 'manual' as const
+      };
+      const existingDiscIdx = cumulativeDischarged.findIndex(p => isNameMatch(p.name, regMatch.name));
+      if (existingDiscIdx >= 0) {
+        cumulativeDischarged[existingDiscIdx] = {
+          ...cumulativeDischarged[existingDiscIdx],
+          ...discObj,
+          dischargeType: 'manual'
+        };
+      } else {
+        cumulativeDischarged.push(discObj);
+      }
+      cumulativeLOS = (cumulativeLOS || []).filter(p => !isNameMatch(p.colD, regMatch.name));
+      cumulativeDialysis = (cumulativeDialysis || []).filter(p => !p.name || !isNameMatch(p.name, regMatch.name));
+      cumulativeDebts = (cumulativeDebts || []).filter(p => !p.colD || !isNameMatch(p.colD, regMatch.name));
+      cumulativeInsuredDebts = (cumulativeInsuredDebts || []).filter(p => !p.colD || !isNameMatch(p.colD, regMatch.name));
+      cumulativeMedicalPlans = (cumulativeMedicalPlans || []).filter(p => !p.colD || !isNameMatch(p.colD, regMatch.name));
+      cumulativeCompanionStatus = (cumulativeCompanionStatus || []).filter(p => !p.colD || !isNameMatch(p.colD, regMatch.name));
+    }
+  }
+
   const lowercaseProcessed = processedNames.map(n => n.toLowerCase());
   const remainingInputNames = namesToDischarge.filter(n => !lowercaseProcessed.includes(n.toLowerCase()));
   
   // Reconstruct textbox with remaining/unmatched names so user has immediate feedback! 
   pendingDischargePatientsText = remainingInputNames.join("\n");
+  lastActiveDate = getCairoDateTime().dateStr;
 
   await saveData();
 
@@ -5542,34 +6333,365 @@ app.get('/api/auth/status', (req, res) => {
   res.json({ authenticated: true }); // Bypass auth for local mode
 });
 
-app.post('/api/reset', async (req, res) => {
-  console.log('Reset request received');
-  hospitalData = null;
-  previousHospitalData = null;
-  // Keep discharged patients in OR-x rooms (overlist patients)
-  cumulativeDischarged = (cumulativeDischarged || []).filter(p => isOrXRoom(p.room));
-  cumulativeEntries = [];
-  cumulativeDialysis = [];
-  cumulativeDebts = [];
-  cumulativeInsuredDebts = [];
-  cumulativeMedicalPlans = [];
-  cumulativeCompanionStatus = [];
-  cumulativeLOS = [];
-  pendingDischargePatientsText = "";
-  manuallyDischargedNames = [];
+// Helper to snapshot occupancy
+async function takeOccupancySnapshotHelper(customDate?: string) {
+  if (
+    (!hospitalData || hospitalData.length === 0) &&
+    (!cumulativeTransfers || cumulativeTransfers.length === 0) &&
+    (!cumulativeDischarged || cumulativeDischarged.length === 0) &&
+    (!cumulativeEntries || cumulativeEntries.length === 0)
+  ) return null;
+  const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+  const occBodyRows = occRows.length > 3 ? occRows.slice(3) : occRows;
+  const cairo = getCairoDateTime();
+  const dateStr = customDate || (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr));
+  
+  const autoList = (cumulativeDischarged || []).filter(p => 
+    p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
+  );
+  const manualList = (cumulativeDischarged || []).filter(p => 
+    p.dischargeType === 'manual' || isManuallyDischarged(p.name)
+  );
+
+  const summary = {
+    totalOccupancy: occBodyRows.length,
+    entriesCount: (cumulativeEntries || []).length,
+    dischargesCount: (cumulativeDischarged || []).length,
+    autoDischargesCount: autoList.length,
+    manualDischargesCount: manualList.length,
+    dialysisCount: (cumulativeDialysis || []).length,
+    debtsCount: (cumulativeDebts || []).length,
+    insuredDebtsCount: (cumulativeInsuredDebts || []).length,
+    transfersCount: (cumulativeTransfers || []).length
+  };
+
+  return await saveOccupancySnapshot({
+    date: dateStr,
+    hospitalData,
+    previousHospitalData,
+    cumulativeEntries,
+    cumulativeDialysis,
+    cumulativeDebts,
+    cumulativeInsuredDebts,
+    cumulativeMedicalPlans,
+    cumulativeCompanionStatus,
+    cumulativeLOS,
+    cumulativeDischarged,
+    automaticallyDischarged: autoList,
+    manuallyDischarged: manualList,
+    manuallyDischargedNames,
+    cumulativeTransfers,
+    vipCasesText,
+    earlyDischargeRoomsText,
+    summary
+  });
+}
+
+// Helper to snapshot OR List
+async function takeORSnapshotHelper(customDate?: string) {
+  if (!cumulativeORList || cumulativeORList.length === 0) return null;
+  const cairo = getCairoDateTime();
+  const dateStr = customDate || cairo.dateStr;
+  const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+  const enriched = getEnrichedOrListForStats(cumulativeORList, occRows);
+  
+  const summary = {
+    totalCases: cumulativeORList.length,
+    matched: enriched.filter(p => p.realStatus === 'IN').length,
+    outpatients: enriched.filter(p => p.realStatus === 'OUT').length
+  };
+
+  return await saveORSnapshot({
+    date: dateStr,
+    orList: cumulativeORList,
+    summary
+  });
+}
+
+// Helper to resolve Occupancy dataset (either live or historical by date)
+async function resolveOccupancyDataset(reqDate?: string | null) {
+  if (!reqDate || reqDate === 'current' || reqDate === 'today') {
+    const autoList = (cumulativeDischarged || []).filter(p => 
+      p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
+    );
+    const manualList = (cumulativeDischarged || []).filter(p => 
+      p.dischargeType === 'manual' || isManuallyDischarged(p.name)
+    );
+    return {
+      hospitalData,
+      previousHospitalData,
+      cumulativeDischarged,
+      automaticallyDischarged: autoList,
+      manuallyDischarged: manualList,
+      manuallyDischargedNames,
+      cumulativeEntries,
+      cumulativeDialysis,
+      cumulativeDebts,
+      cumulativeInsuredDebts,
+      cumulativeMedicalPlans,
+      cumulativeCompanionStatus,
+      cumulativeLOS,
+      cumulativeTransfers,
+      vipCasesText,
+      dateLabel: getCairoDateTime().dateStr,
+      isHistorical: false
+    };
+  }
+
+  const cleanDate = String(reqDate).trim();
+  const snapshot = await getOccupancySnapshot(cleanDate);
+  if (snapshot && snapshot.hospitalData) {
+    const rawDisc = snapshot.cumulativeDischarged || [];
+    const manualNames = snapshot.manuallyDischargedNames || [];
+    const autoList = snapshot.automaticallyDischarged || rawDisc.filter(p => 
+      p.dischargeType !== 'manual' && (!p.name || !manualNames.some((m: string) => isNameMatch(m, p.name)))
+    );
+    const manualList = snapshot.manuallyDischarged || rawDisc.filter(p => 
+      p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => isNameMatch(m, p.name)))
+    );
+
+    return {
+      hospitalData: snapshot.hospitalData,
+      previousHospitalData: snapshot.previousHospitalData,
+      cumulativeDischarged: rawDisc,
+      automaticallyDischarged: autoList,
+      manuallyDischarged: manualList,
+      manuallyDischargedNames: manualNames,
+      cumulativeEntries: snapshot.cumulativeEntries || [],
+      cumulativeDialysis: snapshot.cumulativeDialysis || [],
+      cumulativeDebts: snapshot.cumulativeDebts || [],
+      cumulativeInsuredDebts: snapshot.cumulativeInsuredDebts || [],
+      cumulativeMedicalPlans: snapshot.cumulativeMedicalPlans || [],
+      cumulativeCompanionStatus: snapshot.cumulativeCompanionStatus || [],
+      cumulativeLOS: snapshot.cumulativeLOS || [],
+      cumulativeTransfers: snapshot.cumulativeTransfers || [],
+      vipCasesText: snapshot.vipCasesText || vipCasesText || "",
+      dateLabel: cleanDate,
+      isHistorical: true
+    };
+  }
+
+  // Fallback to live if snapshot for that date was not found
+  const autoList = (cumulativeDischarged || []).filter(p => 
+    p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
+  );
+  const manualList = (cumulativeDischarged || []).filter(p => 
+    p.dischargeType === 'manual' || isManuallyDischarged(p.name)
+  );
+  return {
+    hospitalData,
+    previousHospitalData,
+    cumulativeDischarged,
+    automaticallyDischarged: autoList,
+    manuallyDischarged: manualList,
+    manuallyDischargedNames,
+    cumulativeEntries,
+    cumulativeDialysis,
+    cumulativeDebts,
+    cumulativeInsuredDebts,
+    cumulativeMedicalPlans,
+    cumulativeCompanionStatus,
+    cumulativeLOS,
+    cumulativeTransfers,
+    vipCasesText,
+    dateLabel: cleanDate,
+    isHistorical: false
+  };
+}
+
+// Helper to resolve OR dataset (either live or historical by date)
+async function resolveORDataset(reqDate?: string | null) {
+  if (!reqDate || reqDate === 'current' || reqDate === 'today') {
+    return {
+      orList: cumulativeORList,
+      dateLabel: getCairoDateTime().dateStr,
+      isHistorical: false
+    };
+  }
+
+  const cleanDate = String(reqDate).trim();
+  const snapshot = await getORSnapshot(cleanDate);
+  if (snapshot && Array.isArray(snapshot.orList)) {
+    return {
+      orList: snapshot.orList,
+      dateLabel: cleanDate,
+      isHistorical: true
+    };
+  }
+
+  return {
+    orList: cumulativeORList,
+    dateLabel: cleanDate,
+    isHistorical: false
+  };
+}
+
+// Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
+let lastEgyptianAutoResetDate = '';
+
+async function checkEgyptianDailyReset() {
   try {
+    const cairo = getCairoDateTime();
+    // 1. Scheduled check at 11:59 PM (23:59) Cairo time
+    if (cairo.hours === 23 && cairo.minutes === 59) {
+      if (lastEgyptianAutoResetDate !== cairo.dateStr) {
+        lastEgyptianAutoResetDate = cairo.dateStr;
+        console.log(`[Scheduled Reset] 11:59 PM Egyptian time reached for date ${cairo.dateStr}. Archiving history reference and resetting occupancy, patient transfers, dialysis & discharged cases...`);
+        
+        // 1. Snapshot occupancy, discharged cases, dialysis, and transfers if data exists
+        if ((hospitalData && hospitalData.length > 0) || (cumulativeTransfers && cumulativeTransfers.length > 0) || (cumulativeDischarged && cumulativeDischarged.length > 0) || (cumulativeDialysis && cumulativeDialysis.length > 0)) {
+          await takeOccupancySnapshotHelper(cairo.dateStr);
+        }
+
+        // 2. Snapshot OR list if data exists (archived as daily reference, but cumulativeORList is NOT reset!)
+        if (cumulativeORList && cumulativeORList.length > 0) {
+          await takeORSnapshotHelper(cairo.dateStr);
+        }
+
+        // 3. Reset daily datasets (occupancy data, entries, dialysis, debts, transfers, discharged cases)
+        hospitalData = null;
+        previousHospitalData = null;
+        cumulativeEntries = [];
+        cumulativeDialysis = [];
+        cumulativeDebts = [];
+        cumulativeInsuredDebts = [];
+        cumulativeMedicalPlans = [];
+        cumulativeCompanionStatus = [];
+        cumulativeLOS = [];
+        cumulativeTransfers = [];
+        cumulativeDischarged = [];
+        manuallyDischargedNames = [];
+        patientRoomRegistry = {};
+        uploadedAt = null;
+        pendingDischargePatientsText = "";
+        lastActiveDate = "";
+        lastTransfersDate = "";
+
+        // CRITICAL PERSISTENCE RULES:
+        // - vipCasesText is PERSISTENT day by day!
+        // - cumulativeORList is PERSISTENT and NOT reset until the user clicks "Reset OR Data" button!
+        // - OCCUPANCY, PATIENT TRANSFERS, DIALYSIS, AND DISCHARGED CASES ARE RESET DAILY AT 11:59 PM CAIRO TIME!
+
+        await saveData();
+        console.log(`[Scheduled Reset] 11:59 PM Egyptian auto-reset completed for date ${cairo.dateStr}. Daily datasets reset, snapshots saved. VIP cases and OR data remain intact.`);
+      }
+    }
+
+    // 2. Day-Rollover check: If the container was asleep or idle at 23:59 and a new day has arrived
+    let needsDayRolloverSave = false;
+
+    // Check if active data belongs to a previous calendar day.
+    // If data was updated/recorded today (lastActiveDate === cairo.dateStr), it belongs to TODAY and is preserved until 23:59!
+    if (
+      lastActiveDate &&
+      lastActiveDate < cairo.dateStr &&
+      lastEgyptianAutoResetDate !== lastActiveDate &&
+      ((hospitalData && hospitalData.length > 0) || (cumulativeDischarged && cumulativeDischarged.length > 0) || (cumulativeDialysis && cumulativeDialysis.length > 0) || (cumulativeTransfers && cumulativeTransfers.length > 0))
+    ) {
+      console.log(`[Day-Rollover Reset] Detected data from previous day (${lastActiveDate}). Current date is ${cairo.dateStr}. Archiving reference snapshot for ${lastActiveDate} and resetting daily datasets...`);
+      
+      // Take snapshot for that previous day
+      await takeOccupancySnapshotHelper(lastActiveDate);
+      
+      // If OR list exists, also snapshot it for that previous day as historical record without clearing it
+      if (cumulativeORList && cumulativeORList.length > 0) {
+        await takeORSnapshotHelper(lastActiveDate);
+      }
+
+      // Reset daily datasets for the new day
+      hospitalData = null;
+      previousHospitalData = null;
+      cumulativeEntries = [];
+      cumulativeDialysis = [];
+      cumulativeDebts = [];
+      cumulativeInsuredDebts = [];
+      cumulativeMedicalPlans = [];
+      cumulativeCompanionStatus = [];
+      cumulativeLOS = [];
+      cumulativeTransfers = [];
+      cumulativeDischarged = [];
+      manuallyDischargedNames = [];
+      patientRoomRegistry = {};
+      uploadedAt = null;
+      pendingDischargePatientsText = "";
+      lastEgyptianAutoResetDate = lastActiveDate;
+      lastActiveDate = "";
+      lastTransfersDate = "";
+      needsDayRolloverSave = true;
+    }
+
+    if (needsDayRolloverSave) {
+      await saveData();
+      console.log(`[Day-Rollover Reset] Daily reset completed for new day ${cairo.dateStr}. Discharged cases, dialysis, occupancy, and transfers reset for new day. VIP cases and OR data preserved.`);
+    }
+  } catch (err) {
+    console.error('[Scheduled Reset] Error executing checkEgyptianDailyReset:', err);
+  }
+}
+
+// Check every 20 seconds
+setInterval(checkEgyptianDailyReset, 20000);
+
+app.post('/api/reset', async (req, res) => {
+  console.log('Reset request received: removing today\'s occupancy state and snapshot from database');
+  const cairo = getCairoDateTime();
+  try {
+    const targetDatesToDelete = new Set<string>();
+    targetDatesToDelete.add(cairo.dateStr);
+    if (uploadedAt) {
+      targetDatesToDelete.add(getCairoDateFromTimestamp(uploadedAt));
+    }
+    if (lastActiveDate) {
+      targetDatesToDelete.add(lastActiveDate);
+    }
+
+    // 1. Delete today's / active date's occupancy snapshot completely from database and disk
+    for (const d of targetDatesToDelete) {
+      await deleteOccupancySnapshot(d);
+    }
+
+    // 2. Reset occupancy data and discharged cases
+    hospitalData = null;
+    previousHospitalData = null;
+    cumulativeEntries = [];
+    cumulativeDialysis = [];
+    cumulativeDebts = [];
+    cumulativeInsuredDebts = [];
+    cumulativeMedicalPlans = [];
+    cumulativeCompanionStatus = [];
+    cumulativeLOS = [];
+    cumulativeTransfers = [];
+    cumulativeDischarged = [];
+    manuallyDischargedNames = [];
+    patientRoomRegistry = {};
+    uploadedAt = null;
+    pendingDischargePatientsText = "";
+    earlyDischargeRoomsText = "";
+    lastActiveDate = "";
+    lastTransfersDate = "";
+
     await saveData();
-    res.json({ success: true, message: 'Data reset successfully.' });
+    res.json({
+      success: true,
+      message: `Today's occupancy state and snapshot for ${cairo.dateStr} have been completely removed from the database.`,
+      archivedDate: cairo.dateStr
+    });
   } catch (err: any) {
-    console.error('Failed to save reset data:', err);
+    console.error('Failed to reset occupancy & discharged data:', err);
     res.status(500).json({ error: 'Failed to reset data: ' + err.message });
   }
 });
 
 app.post('/api/reset-vip', async (req, res) => {
-  console.log('Reset VIP cases requested');
+  console.log('Reset VIP cases requested manually by user');
   vipCasesText = "";
   try {
+    const nowIso = new Date().toISOString();
+    await supabaseAdmin.from('rtdb_nodes').upsert({
+      path: 'settings/vip_cases',
+      data: { text: "" },
+      updated_at: nowIso
+    });
     await saveData();
     res.json({ success: true, message: 'VIP cases reset successfully.' });
   } catch (err: any) {
@@ -5580,16 +6702,309 @@ app.post('/api/reset-vip', async (req, res) => {
 
 app.post('/api/reset-or', async (req, res) => {
   console.log('Reset OR list requested');
-  cumulativeORList = [];
-  // Clear discharged overlist patients as part of manual OR reset
-  cumulativeDischarged = (cumulativeDischarged || []).filter(p => !isOrXRoom(p.room));
+  const cairo = getCairoDateTime();
   try {
+    // 1. Take a history of OR list before resetting, saved at database by date
+    if (cumulativeORList && cumulativeORList.length > 0) {
+      console.log(`[Reset] Taking reference snapshot of OR dashboard for date ${cairo.dateStr} before reset...`);
+      await takeORSnapshotHelper(cairo.dateStr);
+    }
+
+    // 2. Reset OR list
+    cumulativeORList = [];
+    // Note: Discharged patients remain persistent!
+
     await saveData();
-    res.json({ success: true, message: 'OR list and overlist data reset successfully.' });
+    res.json({
+      success: true,
+      message: `OR dashboard history reference archived for date ${cairo.dateStr} in database. OR data reset successfully.`,
+      archivedDate: cairo.dateStr
+    });
   } catch (err: any) {
     console.error('Failed to reset OR list data:', err);
     res.status(500).json({ error: 'Failed to reset OR list data: ' + err.message });
   }
+});
+
+// History API Endpoints
+app.get('/api/history/occupancy/dates', async (req, res) => {
+  try {
+    let dates = await getAvailableDates('occupancy');
+    // If empty and current hospitalData exists, take an initial reference snapshot for today
+    if (dates.length === 0 && hospitalData && hospitalData.length > 0) {
+      const snap = await takeOccupancySnapshotHelper();
+      if (snap) {
+        dates = await getAvailableDates('occupancy');
+      }
+    }
+    res.json({ dates });
+  } catch (err: any) {
+    console.error('Failed to get occupancy history dates:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function getFloorFromRoom(roomStr: string): string {
+  if (!roomStr) return 'N/A';
+  const numMatch = roomStr.match(/\d+/);
+  if (!numMatch) return 'Other';
+  const num = parseInt(numMatch[0], 10);
+  if (num >= 100 && num < 200) return '1st Floor';
+  if (num >= 200 && num < 300) return '2nd Floor';
+  if (num >= 300 && num < 400) return '3rd Floor';
+  if (num >= 400 && num < 500) return '4th Floor';
+  if (num >= 500 && num < 600) return '5th Floor';
+  return 'Floor ' + Math.floor(num / 100);
+}
+
+function computeLOSFromDate(admDateStr: string): number | string {
+  if (!admDateStr) return '-';
+  try {
+    const adm = new Date(admDateStr);
+    if (isNaN(adm.getTime())) return '-';
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - adm.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays;
+  } catch (e) {
+    return '-';
+  }
+}
+
+app.get('/api/history/occupancy/detail', async (req, res) => {
+  try {
+    const dateStr = req.query.date ? String(req.query.date).trim() : getCairoDateTime().dateStr;
+    const ds = await resolveOccupancyDataset(dateStr);
+    const occRows = ds.hospitalData ? getOccupancyRows(ds.hospitalData) : [];
+    const bodyRows = occRows.slice(3);
+    
+    // Map preview rows matching standard Occupancy column indices
+    const patients = bodyRows.map((row: any, idx: number) => {
+      const room = String(row[0] || '').trim();
+      const admDate = String(row[4] || '').trim();
+      return {
+        id: idx + 1,
+        room,
+        name: String(row[1] || '').trim(),
+        doctor: String(row[2] || '').trim(),
+        contractor: String(row[3] || '').trim(),
+        dateOfAdmission: admDate,
+        mrn: String(row[5] || '').trim(),
+        floor: getFloorFromRoom(room),
+        category: getAccommodationCategory(room),
+        los: computeLOSFromDate(admDate)
+      };
+    }).filter(p => p.name && p.room);
+
+    const manualNames = ds.manuallyDischargedNames || [];
+    const rawDischarged = (ds.cumulativeDischarged || []).map((p: any, idx: number) => {
+      const isManual = p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => isNameMatch(m, p.name)));
+      return {
+        id: idx + 1,
+        room: p.room || '',
+        name: p.name || '',
+        doctor: p.physician || p.doctor || '',
+        contractor: p.contractor || '',
+        admissionDate: cleanAdmissionDateStr(p.date),
+        dischargeDate: p.dischargeDate || ds.dateLabel,
+        dischargeType: isManual ? 'manual' : 'auto',
+        mrn: p.mrn || '',
+        isVip: isPatientVip(p.name)
+      };
+    });
+
+    const autoList = (ds.automaticallyDischarged && Array.isArray(ds.automaticallyDischarged) && ds.automaticallyDischarged.length > 0)
+      ? ds.automaticallyDischarged.map((p: any, idx: number) => ({
+          id: idx + 1,
+          room: p.room || '',
+          name: p.name || '',
+          doctor: p.physician || p.doctor || '',
+          contractor: p.contractor || '',
+          admissionDate: cleanAdmissionDateStr(p.date),
+          dischargeDate: p.dischargeDate || ds.dateLabel,
+          dischargeType: 'auto' as const,
+          mrn: p.mrn || '',
+          isVip: isPatientVip(p.name)
+        }))
+      : rawDischarged.filter((p: any) => p.dischargeType === 'auto');
+
+    const manualList = (ds.manuallyDischarged && Array.isArray(ds.manuallyDischarged) && ds.manuallyDischarged.length > 0)
+      ? ds.manuallyDischarged.map((p: any, idx: number) => ({
+          id: idx + 1,
+          room: p.room || '',
+          name: p.name || '',
+          doctor: p.physician || p.doctor || '',
+          contractor: p.contractor || '',
+          admissionDate: cleanAdmissionDateStr(p.date),
+          dischargeDate: p.dischargeDate || ds.dateLabel,
+          dischargeType: 'manual' as const,
+          mrn: p.mrn || '',
+          isVip: isPatientVip(p.name)
+        }))
+      : rawDischarged.filter((p: any) => p.dischargeType === 'manual');
+
+    res.json({
+      date: ds.dateLabel,
+      isHistorical: ds.isHistorical,
+      totalOccupancy: patients.length,
+      patients,
+      entriesCount: (ds.cumulativeEntries || []).length,
+      dischargesCount: rawDischarged.length,
+      autoDischargesCount: autoList.length,
+      manualDischargesCount: manualList.length,
+      dischargedPatients: rawDischarged,
+      automaticallyDischarged: autoList,
+      manuallyDischarged: manualList,
+      manuallyDischargedNames: manualNames,
+      dialysisCount: (ds.cumulativeDialysis || []).length,
+      debtsCount: (ds.cumulativeDebts || []).length,
+      insuredDebtsCount: (ds.cumulativeInsuredDebts || []).length,
+      transfersCount: (ds.cumulativeTransfers || []).length,
+      transfers: ds.cumulativeTransfers || [],
+      vipCasesText: ds.vipCasesText || ""
+    });
+  } catch (err: any) {
+    console.error('Failed to get occupancy history detail:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/history/occupancy/snapshot', async (req, res) => {
+  try {
+    const customDate = req.body?.date ? String(req.body.date).trim() : undefined;
+    const snap = await takeOccupancySnapshotHelper(customDate);
+    if (!snap) {
+      return res.status(400).json({ error: 'No occupancy data currently loaded to snapshot.' });
+    }
+    res.json({
+      success: true,
+      message: `Occupancy reference snapshot saved successfully for date: ${snap.date}`,
+      snapshot: {
+        date: snap.date,
+        timestamp: snap.timestamp,
+        cairoTime: snap.cairoTime,
+        summary: snap.summary
+      }
+    });
+  } catch (err: any) {
+    console.error('Failed to take occupancy snapshot:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/history/or/dates', async (req, res) => {
+  try {
+    let dates = await getAvailableDates('or');
+    if (dates.length === 0 && cumulativeORList && cumulativeORList.length > 0) {
+      const snap = await takeORSnapshotHelper();
+      if (snap) {
+        dates = await getAvailableDates('or');
+      }
+    }
+    res.json({ dates });
+  } catch (err: any) {
+    console.error('Failed to get OR history dates:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/history/or/detail', async (req, res) => {
+  try {
+    const dateStr = req.query.date ? String(req.query.date).trim() : getCairoDateTime().dateStr;
+    const ds = await resolveORDataset(dateStr);
+    const occDs = await resolveOccupancyDataset(dateStr);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    const enriched = getEnrichedOrListForStats(ds.orList, occRows);
+
+    res.json({
+      date: ds.dateLabel,
+      isHistorical: ds.isHistorical,
+      totalCases: ds.orList.length,
+      matched: enriched.filter(p => p.realStatus === 'IN').length,
+      outpatients: enriched.filter(p => p.realStatus === 'OUT').length,
+      orList: enriched
+    });
+  } catch (err: any) {
+    console.error('Failed to get OR history detail:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/history/or/snapshot', async (req, res) => {
+  try {
+    const customDate = req.body?.date ? String(req.body.date).trim() : undefined;
+    const snap = await takeORSnapshotHelper(customDate);
+    if (!snap) {
+      return res.status(400).json({ error: 'No OR list data currently loaded to snapshot.' });
+    }
+    res.json({
+      success: true,
+      message: `OR reference snapshot saved successfully for date: ${snap.date}`,
+      snapshot: {
+        date: snap.date,
+        timestamp: snap.timestamp,
+        cairoTime: snap.cairoTime,
+        summary: snap.summary
+      }
+    });
+  } catch (err: any) {
+    console.error('Failed to take OR snapshot:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Database Auto-Fetch & Synchronization Status Endpoint
+app.get('/api/database/auto-sync-status', async (req, res) => {
+  try {
+    const cairo = getCairoDateTime();
+    res.json({
+      status: 'active',
+      autoFetchActive: true,
+      lastDatabaseUpdate: lastKnownDatabaseUpdatedAt,
+      lastServerFetchTimestamp: lastServerFetchTimestamp,
+      lastServerFetchFormatted: new Date(lastServerFetchTimestamp).toISOString(),
+      serverCurrentCairoTime: `${cairo.dateStr} ${cairo.timeStr}`,
+      databaseEngine: 'supabase',
+      databaseEndpoint: SUPABASE_URL,
+      realtimeEnabled: true,
+      syncScheduleIntervalMs: 25000,
+      isCurrentlySyncing: isServerAutoSyncing,
+      hasHospitalData: !!(hospitalData && hospitalData.length > 0)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual force auto-fetch trigger endpoint
+app.post('/api/database/trigger-fetch', async (req, res) => {
+  try {
+    console.log('[Auto-Fetch Schedule] Manual database reload requested via API');
+    isServerAutoSyncing = true;
+    await loadData(true);
+    isServerAutoSyncing = false;
+    res.json({
+      success: true,
+      message: 'State successfully re-fetched and updated from database.',
+      lastDatabaseUpdate: lastKnownDatabaseUpdatedAt,
+      lastServerFetchTimestamp: lastServerFetchTimestamp
+    });
+  } catch (err: any) {
+    isServerAutoSyncing = false;
+    console.error('[Auto-Fetch Schedule] Manual trigger failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/history/status', (req, res) => {
+  const cairo = getCairoDateTime();
+  res.json({
+    cairoTime: cairo.fullStr,
+    cairoDate: cairo.dateStr,
+    nextAutoResetSchedule: 'Every day at 11:59 PM Egyptian Time (Africa/Cairo)',
+    timezone: 'Africa/Cairo',
+    lastAutoResetDate: lastEgyptianAutoResetDate || 'None today'
+  });
 });
 
 app.post('/api/or-list/sync', async (req, res) => {
@@ -5754,12 +7169,16 @@ app.get('/api/reports/unified', async (req, res) => {
 
 
 app.get('/api/reports/occupancy_formatted', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ error: `No data available for date: ${reqDate || 'current'}.` });
+  }
   try {
     const workbook = new ExcelJS.Workbook();
-    addOccupancySheet(workbook, getOccupancyRows(hospitalData));
+    addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Occupancy.xlsx');
+    res.setHeader('Content-Disposition', `attachment; filename=Formatted_Occupancy_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -5771,12 +7190,16 @@ app.get('/api/reports/occupancy_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/preview_occupancy_formatted', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ error: `No data available for date: ${reqDate || 'current'}.` });
+  }
   try {
     const workbook = new ExcelJS.Workbook();
-    await addGridOccupancySheet(workbook, getOccupancyRows(hospitalData));
+    await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=Colored_Structured_Grid_Occupancy.xlsx');
+    res.setHeader('Content-Disposition', `attachment; filename=Colored_Structured_Grid_Occupancy_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -5877,7 +7300,6 @@ app.delete('/api/header-background', (req, res) => {
 
 // Patient Transfers API Endpoints
 app.get('/api/transfers', (req, res) => {
-  ensureDefaultTransfersSeed();
   const cleaned = sanitizeAndDeduplicateTransfers();
   if (cleaned) {
     saveData().catch(e => console.error('Save error after transfers sanitization:', e));
@@ -5891,7 +7313,6 @@ app.get('/api/transfers', (req, res) => {
 
 app.post('/api/transfers/cleanup', async (req, res) => {
   try {
-    ensureDefaultTransfersSeed();
     const changed = sanitizeAndDeduplicateTransfers();
     if (changed) {
       await saveData();
@@ -5964,6 +7385,7 @@ app.post('/api/transfers', async (req, res) => {
       date: transferDateStr
     };
 
+    lastTransfersDate = getCairoDateTime().dateStr;
     await saveData();
     res.json({ success: true, transfers: cumulativeTransfers, record });
   } catch (error: any) {
@@ -5987,21 +7409,95 @@ app.post('/api/transfers/reset', async (req, res) => {
   try {
     cumulativeTransfers = [];
     patientRoomRegistry = {};
-    ensureDefaultTransfersSeed();
+    lastTransfersDate = "";
     await saveData();
-    res.json({ success: true, transfers: cumulativeTransfers });
+    res.json({ success: true, transfers: [] });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Reconcile and detect transfers by comparing current occupancy against previous occupancy or snapshots
+app.post('/api/transfers/sync-from-occupancy', async (req, res) => {
+  try {
+    let sourceData = previousHospitalData;
+    let sourceDateStr = "";
+
+    // If previousHospitalData is not in memory or has no body rows, check the latest occupancy history snapshot
+    const prevRows = sourceData ? getOccupancyRows(sourceData).slice(3) : [];
+    if (prevRows.length === 0) {
+      const dates = await getAvailableDates('occupancy');
+      if (dates && dates.length > 0) {
+        // Look for the most recent historical date
+        const dateKey = typeof dates[0] === 'string' ? dates[0] : (dates[0] as any).date;
+        const latestSnap = await getOccupancySnapshot(dateKey);
+        if (latestSnap && latestSnap.hospitalData) {
+          sourceData = latestSnap.hospitalData;
+          sourceDateStr = latestSnap.date;
+        }
+      }
+    }
+
+    if (!sourceData || !hospitalData) {
+      return res.json({
+        success: false,
+        message: 'Insufficient comparative occupancy data available to detect transfers.',
+        transfersCount: (cumulativeTransfers || []).length,
+        transfers: cumulativeTransfers
+      });
+    }
+
+    // Populate registry with previous baseline if registry was empty
+    const baselineRows = getOccupancyRows(sourceData).slice(3);
+    for (const r of baselineRows) {
+      const room = String(r[0] || '').trim();
+      const name = String(r[1] || '').trim();
+      const doctor = String(r[2] || '').trim();
+      const contractor = String(r[3] || '').trim();
+      if (name && room) {
+        const normKey = normalizeArabicName(name);
+        if (!patientRoomRegistry[normKey]) {
+          patientRoomRegistry[normKey] = {
+            name,
+            lastRoom: room,
+            physician: doctor,
+            contractor,
+            date: sourceDateStr || getCairoDateTime().dateStr
+          };
+        }
+      }
+    }
+
+    // Now process current hospitalData patients against registry
+    const currentRows = getOccupancyRows(hospitalData).slice(3);
+    const currentPatients = currentRows.map((r: any) => ({
+      room: String(r[0] || '').trim(),
+      name: String(r[1] || '').trim(),
+      doctor: String(r[2] || '').trim(),
+      contractor: String(r[3] || '').trim()
+    })).filter((p: any) => p.name && p.room);
+
+    const cairo = getCairoDateTime();
+    processPatientTransfers(currentPatients, cairo.dateStr);
+    sanitizeAndDeduplicateTransfers();
+    await saveData();
+
+    res.json({
+      success: true,
+      message: `Transfers synced successfully. Total transfers: ${cumulativeTransfers.length}`,
+      transfersCount: cumulativeTransfers.length,
+      transfers: cumulativeTransfers
+    });
+  } catch (err: any) {
+    console.error('Failed to sync transfers:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/reports/transfers_formatted', async (req, res) => {
   try {
-    if (!cumulativeTransfers || cumulativeTransfers.length === 0) {
-      ensureDefaultTransfersSeed();
-    }
     const workbook = new ExcelJS.Workbook();
-    await addRefinedTransfersSheet(workbook, cumulativeTransfers);
+    await addRefinedTransfersSheet(workbook, cumulativeTransfers || []);
     const filename = `Transferred_Patients_Refined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -6120,10 +7616,10 @@ app.get('/api/reports/entry_formatted', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
   try {
     const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
-    const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+    const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]));
     const uniqueTodayEntries: any[] = [];
     todayEntries.forEach(p => {
-      if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
         uniqueTodayEntries.push(p);
       }
     });
@@ -9773,13 +11269,16 @@ async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[]
 }
 
 app.get('/api/reports/or_timeline_refined', async (req, res) => {
-  if (cumulativeORList.length === 0) return res.status(400).json({ error: 'No OR list data available. Please upload the OR list sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-    await addRefinedORTimelineSheet(workbook, cumulativeORList, occRows);
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    await addRefinedORTimelineSheet(workbook, ds.orList, occRows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Timeline_Graphics_${new Date().toISOString().split('T')[0]}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Timeline_Graphics_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -9789,13 +11288,16 @@ app.get('/api/reports/or_timeline_refined', async (req, res) => {
 });
 
 app.get('/api/reports/or_list_refined', async (req, res) => {
-  if (cumulativeORList.length === 0) return res.status(400).json({ error: 'No OR list data available. Please upload the OR list sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-    await addRefinedORListSheet(workbook, cumulativeORList, occRows);
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    await addRefinedORListSheet(workbook, ds.orList, occRows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=Operating_Room_Schedule_Refined.xlsx');
+    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Schedule_Refined_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -9805,17 +11307,48 @@ app.get('/api/reports/or_list_refined', async (req, res) => {
 });
 
 app.get('/api/reports/or_list_simple_refined', async (req, res) => {
-  if (cumulativeORList.length === 0) return res.status(400).json({ error: 'No OR list data available. Please upload the OR list sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-    await addRefinedORListSimpleSheet(workbook, cumulativeORList, occRows);
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    await addRefinedORListSimpleSheet(workbook, ds.orList, occRows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_List_Refined_${new Date().toISOString().split('T')[0]}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_List_Refined_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
     console.error('Refined Simple OR List Report Error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reports/or_combined', async (req, res) => {
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  if (!ds.orList || ds.orList.length === 0) {
+    return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}. Please upload OR list first or choose a historical date.` });
+  }
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    const overList = getOverListPatients(occDs.hospitalData, ds.orList);
+
+    await addRefinedORListSheet(workbook, ds.orList, occRows);
+    await addRefinedORTimelineSheet(workbook, ds.orList, occRows);
+    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList);
+    await addRefinedOROverListSheet(workbook, overList);
+
+    const filename = `Combined_OR_Refined_Report_${ds.dateLabel}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('Refined OR Combined Report Error:', error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });
@@ -10188,13 +11721,16 @@ async function addRefinedORReconciliationSheet(
 }
 
 app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
   try {
     const workbook = new ExcelJS.Workbook();
-    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-    const overList = getOverListPatients(hospitalData, cumulativeORList);
-    await addRefinedORReconciliationSheet(workbook, cumulativeORList, occRows, overList);
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    const overList = getOverListPatients(occDs.hospitalData, ds.orList);
+    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Reconciliation_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Reconciliation_Report_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -10204,12 +11740,15 @@ app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
 });
 
 app.get('/api/reports/or_over_list_refined', async (req, res) => {
-  const overList = getOverListPatients(hospitalData, cumulativeORList);
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  const occDs = await resolveOccupancyDataset(reqDate);
+  const overList = getOverListPatients(occDs.hospitalData, ds.orList);
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedOROverListSheet(workbook, overList);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=Over_Listed_OR_Cases_${new Date().toISOString().split('T')[0]}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=Over_Listed_OR_Cases_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -10397,7 +11936,7 @@ function isMRNMatch(mrn1: string, mrn2: string): boolean {
   return clean1 === clean2;
 }
 
-// Helper to search for and find actual admitted room of an "IN" patient using MRN match, Physician + First Name match, or whole name match
+// Helper to search for and find actual admitted room of an "IN" patient using whole name match, robust MRN match, or physician-correlated match
 function findAdmittedRoomForInPatient(pName: string, occRows: any[][], mrn?: string, surgeonName?: string): string {
   if (!occRows || occRows.length === 0) return "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال";
   
@@ -10408,32 +11947,35 @@ function findAdmittedRoomForInPatient(pName: string, occRows: any[][], mrn?: str
 
   const rows = occRows.slice(3);
 
-  // 1. Try matching by MRN first! (highest accuracy)
-  if (searchMRN) {
+  // 1. Try robust whole-name comparison first (highest accuracy)
+  if (searchName) {
     for (const row of rows) {
-      const occMRN = String(row[5] || "").trim();
-      if (isMRNMatch(searchMRN, occMRN)) {
+      const occName = String(row[1] || "").trim();
+      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, false)) {
         return String(row[0] || "").trim(); // Return room number
       }
     }
   }
 
-  // 2. Try matching by First Name + Physician Match (high accuracy)
+  // 2. Try matching by MRN (verifying name compatibility)
+  if (searchMRN) {
+    for (const row of rows) {
+      const occMRN = String(row[5] || "").trim();
+      const occName = String(row[1] || "").trim();
+      if (isMRNMatch(searchMRN, occMRN)) {
+        if (!searchName || isNameMatch(searchName, occName) || isPatientFirstNameMatch(searchName, occName)) {
+          return String(row[0] || "").trim(); // Return room number
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: Matching by Physician + Name Match (requiring isNameMatch, NEVER first name alone)
   if (searchName && searchSurgeonName) {
     for (const row of rows) {
       const occName = String(row[1] || "").trim();
       const occPhysician = String(row[2] || "").trim();
-      if (isPhysicianMatch(searchSurgeonName, occPhysician) && isPatientFirstNameMatch(searchName, occName)) {
-        return String(row[0] || "").trim(); // Return room number
-      }
-    }
-  }
-  
-  // 3. Fallback to exact or robust whole-name comparison
-  if (searchName) {
-    for (const row of rows) {
-      const occName = String(row[1] || "").trim();
-      if (isWholeNameMatch(searchName, occName, false)) {
+      if (isPhysicianMatch(searchSurgeonName, occPhysician) && isNameMatch(searchName, occName)) {
         return String(row[0] || "").trim(); // Return room number
       }
     }
@@ -10442,7 +11984,7 @@ function findAdmittedRoomForInPatient(pName: string, occRows: any[][], mrn?: str
   return "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال";
 }
 
-// Helper to lookup room number and patient data from source occupancy sheet using robust MRN, Physician + First Name, or whole-name comparison
+// Helper to lookup room number and patient data from source occupancy sheet using whole name match, robust MRN, or physician-correlated match
 function findOccupancyPatient(pName: string, occRows: any[][], isTaggedOut: boolean = false, mrn?: string, surgeonName?: string) {
   if (!occRows || occRows.length === 0) return null;
   
@@ -10453,39 +11995,18 @@ function findOccupancyPatient(pName: string, occRows: any[][], isTaggedOut: bool
 
   const rows = occRows.slice(3);
   
-  // 1. Try matching by MRN first! (highest accuracy, skipping OR rooms)
-  if (searchMRN) {
+  // 1. Check exact/strong whole-name comparison first (highest accuracy, skipping OR rooms)
+  if (searchName) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
       if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
       
-      const occMRN = String(row[5] || "").trim();
-      if (isMRNMatch(searchMRN, occMRN)) {
-        return {
-          room: roomStr,
-          patientName: String(row[1] || "").trim(),
-          physician: String(row[2] || "").trim(),
-          contractor: String(row[3] || "").trim(),
-          admissionDate: String(row[4] || "").trim(),
-          mrn: occMRN
-        };
-      }
-    }
-  }
-
-  // 2. Try matching by First Name + Physician Match (high accuracy, skipping OR rooms)
-  if (searchName && searchSurgeonName) {
-    for (const row of rows) {
-      const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
-
       const occName = String(row[1] || "").trim();
-      const occPhysician = String(row[2] || "").trim();
-      if (isPhysicianMatch(searchSurgeonName, occPhysician) && isPatientFirstNameMatch(searchName, occName)) {
+      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut)) {
         return {
           room: roomStr,
           patientName: occName,
-          physician: occPhysician,
+          physician: String(row[2] || "").trim(),
           contractor: String(row[3] || "").trim(),
           admissionDate: String(row[4] || "").trim(),
           mrn: String(row[5] || "").trim()
@@ -10494,18 +12015,42 @@ function findOccupancyPatient(pName: string, occRows: any[][], isTaggedOut: bool
     }
   }
 
-  // 3. Fallback to exact or robust whole-name comparison (skipping operating rooms)
-  if (searchName) {
+  // 2. Try matching by MRN (verifying name compatibility, skipping OR rooms)
+  if (searchMRN) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
       if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
       
+      const occMRN = String(row[5] || "").trim();
       const occName = String(row[1] || "").trim();
-      if (isWholeNameMatch(searchName, occName, isTaggedOut)) {
+      if (isMRNMatch(searchMRN, occMRN)) {
+        if (!searchName || isNameMatch(searchName, occName) || isPatientFirstNameMatch(searchName, occName)) {
+          return {
+            room: roomStr,
+            patientName: occName,
+            physician: String(row[2] || "").trim(),
+            contractor: String(row[3] || "").trim(),
+            admissionDate: String(row[4] || "").trim(),
+            mrn: occMRN
+          };
+        }
+      }
+    }
+  }
+
+  // 3. Try matching by Physician + Patient Name Match (requiring isNameMatch, NEVER first name alone)
+  if (searchName && searchSurgeonName) {
+    for (const row of rows) {
+      const roomStr = String(row[0] || "").trim();
+      if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
+
+      const occName = String(row[1] || "").trim();
+      const occPhysician = String(row[2] || "").trim();
+      if (isPhysicianMatch(searchSurgeonName, occPhysician) && isNameMatch(searchName, occName)) {
         return {
           room: roomStr,
           patientName: occName,
-          physician: String(row[2] || "").trim(),
+          physician: occPhysician,
           contractor: String(row[3] || "").trim(),
           admissionDate: String(row[4] || "").trim(),
           mrn: String(row[5] || "").trim()
@@ -10666,7 +12211,7 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
       const dischargedFromRoom = matchingDischargedObj ? (matchingDischargedObj.room || matchingDischargedObj.id || '') : '';
       inPatients.push({
         ...p,
-        patientName: occPatient ? (occPatient.patientName || p.patientName) : p.patientName,
+        patientName: p.patientName,
         roomDisplay: occPatient ? occPatient.room : (dischargedFromRoom ? `Discharged / تم الخروج (غرفة ${dischargedFromRoom})` : "Discharged / تم الخروج"),
         surgeonName: occPatient ? (occPatient.physician || p.surgeonName) : p.surgeonName,
         contractorName: occPatient ? (occPatient.contractor || p.contractorName) : p.contractorName,
@@ -11870,18 +13415,17 @@ app.get('/api/reports/inpatient_summary', async (req, res) => {
 app.get('/api/reports/exit_formatted', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'Please upload a sheet first.' });
   try {
-    const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
+    const activePatients = extractRawPatientsFromRows(hospitalData);
     const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
-      const isStillPresent = occRowsUnfiltered.some(activePt => {
-        const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
-        return activeName ? isNameMatch(discPt.name, activeName) : false;
-      });
+      const isStillPresent = activePatients.some(activePt => 
+        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+      );
       return !isStillPresent;
     });
 
     const uniqueCleanDischarged: any[] = [];
     cleanDischarged.forEach(p => {
-      if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
         uniqueCleanDischarged.push(p);
       }
     });
@@ -11901,31 +13445,34 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/combined', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No data available.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ error: `No occupancy data available for date: ${reqDate || 'current'}.` });
+  }
   try {
-    const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
+    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
     
     // Clean exits
-    const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
-      const isStillPresent = occRowsUnfiltered.some(activePt => {
-        const activeName = Array.isArray(activePt) ? String(activePt[3] || "").trim() : "";
-        return activeName ? isNameMatch(discPt.name, activeName) : false;
-      });
+    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = activePatients.some(activePt => 
+        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+      );
       return !isStillPresent;
     });
 
     const uniqueCleanDischarged: any[] = [];
     cleanDischarged.forEach(p => {
-      if (!uniqueCleanDischarged.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
         uniqueCleanDischarged.push(p);
       }
     });
 
     // Clean entries
-    const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date));
+    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
     const uniqueTodayEntries: any[] = [];
     todayEntries.forEach(p => {
-      if (!uniqueTodayEntries.some(existing => isNameMatch(existing.name, p.name))) {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
         uniqueTodayEntries.push(p);
       }
     });
@@ -11935,38 +13482,38 @@ app.get('/api/reports/combined', async (req, res) => {
     
     // Add all sheets if data exists (except companion status sheets per user request)
     if (isRefined) {
-      await addGridOccupancySheet(workbook, getOccupancyRows(hospitalData));
+      await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
       await addRefinedEntrySheet(workbook, uniqueTodayEntries);
-      await addRefinedDialysisSheet(workbook, cumulativeDialysis);
+      await addRefinedDialysisSheet(workbook, ds.cumulativeDialysis);
       await addRefinedExitSheet(workbook, uniqueCleanDischarged);
-      if (cumulativeDebts && cumulativeDebts.length > 0) {
-        await addRefinedDebtsSheet(workbook, cumulativeDebts);
+      if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+        await addRefinedDebtsSheet(workbook, ds.cumulativeDebts);
       }
-      if (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0) {
-        await addRefinedInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
+      if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
+        await addRefinedInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
       }
-      if (cumulativeTransfers && cumulativeTransfers.length > 0) {
-        await addRefinedTransfersSheet(workbook, cumulativeTransfers);
+      if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+        await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers);
       }
     } else {
-      addOccupancySheet(workbook, getOccupancyRows(hospitalData));
+      addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
       addEntrySheet(workbook, uniqueTodayEntries);
-      addDialysisSheet(workbook, cumulativeDialysis);
+      addDialysisSheet(workbook, ds.cumulativeDialysis);
       addExitSheet(workbook, uniqueCleanDischarged);
-      if (cumulativeDebts && cumulativeDebts.length > 0) {
-        addDebtsSheet(workbook, cumulativeDebts);
+      if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+        addDebtsSheet(workbook, ds.cumulativeDebts);
       }
-      if (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0) {
-        addInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
+      if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
+        addInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
       }
-      if (cumulativeTransfers && cumulativeTransfers.length > 0) {
-        addTransfersSheet(workbook, cumulativeTransfers);
+      if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+        addTransfersSheet(workbook, ds.cumulativeTransfers);
       }
     }
 
     const filename = isRefined
-      ? `Combined_Hospital_Refined_Report_${new Date().toISOString().split('T')[0]}.xlsx`
-      : `Combined_Hospital_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      ? `Combined_Hospital_Refined_Report_${ds.dateLabel}.xlsx`
+      : `Combined_Hospital_Report_${ds.dateLabel}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -11981,10 +13528,14 @@ app.get('/api/reports/combined', async (req, res) => {
 });
 
 app.get('/api/reports/specialty_occupancy', async (req, res) => {
-  if (cumulativeMedicalPlans.length === 0) return res.status(400).json({ error: 'No data available. Please upload the debts source sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData && (!ds.cumulativeMedicalPlans || ds.cumulativeMedicalPlans.length === 0)) {
+    return res.status(400).json({ error: 'No data available. Please upload the source sheet first.' });
+  }
   try {
     const workbook = new ExcelJS.Workbook();
-    addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans, cumulativeLOS);
+    addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || cumulativeMedicalPlans, ds.cumulativeLOS || cumulativeLOS, ds.hospitalData || hospitalData);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Inpatients_By_Specialty.xlsx');
     await workbook.xlsx.write(res);
@@ -11996,37 +13547,41 @@ app.get('/api/reports/specialty_occupancy', async (req, res) => {
 });
 
 app.get('/api/reports/medical_director_combined', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No hospital data available. Please upload a sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ error: `No hospital data available for date: ${reqDate || 'current'}.` });
+  }
   try {
     const workbook = new ExcelJS.Workbook();
     
     // 1. Formatted Occupancy
-    addOccupancySheet(workbook, getOccupancyRows(hospitalData));
+    addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
     
     // 2. Inpatient Summary Sheet
-    addInpatientSummarySheet(workbook, getOccupancyRows(hospitalData));
+    addInpatientSummarySheet(workbook, getOccupancyRows(ds.hospitalData));
     
     // 3. Closed Units Occupancy Summary
-    addClosedUnitsSummarySheet(workbook, getOccupancyRows(hospitalData));
+    addClosedUnitsSummarySheet(workbook, getOccupancyRows(ds.hospitalData));
     
     // 4. Inpatients By Specialty
-    if (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0) {
-      addSpecialtyOccupancySheet(workbook, cumulativeMedicalPlans, cumulativeLOS);
+    if ((ds.cumulativeMedicalPlans && ds.cumulativeMedicalPlans.length > 0) || (ds.hospitalData && ds.hospitalData.length > 0)) {
+      addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || [], ds.cumulativeLOS || [], ds.hospitalData);
     } else {
       const sheet = workbook.addWorksheet('By Specialty');
-      sheet.addRow(['No specialty data available. Please upload the debts source sheet first.']);
+      sheet.addRow(['No specialty data available.']);
     }
     
     // 5. LOS Sheet
-    if (cumulativeLOS && cumulativeLOS.length > 0) {
-      addLOSSheet(workbook, cumulativeLOS);
+    if (ds.cumulativeLOS && ds.cumulativeLOS.length > 0) {
+      addLOSSheet(workbook, ds.cumulativeLOS);
     } else {
       const sheet = workbook.addWorksheet('LOS Sheet');
-      sheet.addRow(['No Length of Stay (LOS) data available. Please upload the debts source sheet first.']);
+      sheet.addRow(['No Length of Stay (LOS) data available.']);
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Medical_Director_Combined_Report_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Medical_Director_Combined_Report_${ds.dateLabel}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -12037,41 +13592,109 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
   }
 });
 
-function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[], losList: any[] = cumulativeLOS) {
+function addSpecialtyOccupancySheet(
+  workbook: ExcelJS.Workbook, 
+  plans: any[] = cumulativeMedicalPlans, 
+  losList: any[] = cumulativeLOS, 
+  occData: any[][] | null = hospitalData
+) {
   const sheet = workbook.addWorksheet('By Specialty', {
     views: [{ rightToLeft: false }]
   });
 
   // Group by Column X (Specialty)
   const groups: { [key: string]: any[] } = {};
-  plans.forEach(p => {
-    if (!p.colD || p.colD === "" || p.colD === "0") return; // Skip empty beds
-    
-    // Apply standard occupancy filters
-    const roomLower = String(p.colB || "").toLowerCase();
-    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => roomLower.includes(kw));
-    const isOR = isOperatingRoom(p.colB);
-    const isHeader = roomLower === "bed" || roomLower === "room" || roomLower === "الغرفة";
-    
-    if (isExcluded || isOR || isHeader) return;
 
-    const mappedP = { ...p };
-    let specialty = (mappedP.colX || "").trim() || "Other / غير محدد";
-    const specLower = specialty.toLowerCase();
-    
-    if (specLower === "pulmonology" || specLower === "haematology") {
-      specialty = "Internal Medicine";
-    } else if (specLower === "general surgery" || specLower === "git surgery") {
-      specialty = "General Surgery";
-    } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
-      specialty = "Orthopaedic surgery";
-    }
+  if (occData && occData.length > 0) {
+    // Ground truth: Use active occupancy rows so specialty sheet count matches occupancy count exactly
+    const activeOccRows = getOccupancyRows(occData).slice(3)
+      .map(row => ({
+        room: String(row[0] || "").trim(),
+        name: String(row[1] || "").trim(),
+        physician: String(row[2] || "").trim(),
+        contractor: String(row[3] || "").trim(),
+        date: cleanAdmissionDateStr(row[4]),
+        mrn: String(row[5] || "").trim(),
+      }))
+      .filter(p => {
+        if (!p.room || !p.name) return false;
+        const rowAsString = Object.values(p).join(" ").toLowerCase();
+        const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
+        const isOR = isOperatingRoom(p.room);
+        return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isManuallyDischarged(p.name);
+      });
 
-    mappedP.colX = specialty;
+    activeOccRows.forEach(occP => {
+      const plan = (plans || []).find(pl => {
+        if (pl.colD && occP.name && isNameMatch(pl.colD, occP.name)) return true;
+        if (pl.colB && occP.room && normalizeRoom(pl.colB) === normalizeRoom(occP.room)) return true;
+        return false;
+      });
 
-    if (!groups[specialty]) groups[specialty] = [];
-    groups[specialty].push(mappedP);
-  });
+      let specialty = (plan?.colX || "").trim() || "Other / غير محدد";
+      const specLower = specialty.toLowerCase();
+      
+      if (specLower === "pulmonology" || specLower === "haematology") {
+        specialty = "Internal Medicine";
+      } else if (specLower === "general surgery" || specLower === "git surgery") {
+        specialty = "General Surgery";
+      } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
+        specialty = "Orthopaedic surgery";
+      }
+
+      const item = {
+        colA: occP.date || (plan ? cleanAdmissionDateStr(plan.colA) : ""),
+        colB: occP.room,
+        colD: occP.name,
+        colM: occP.contractor || (plan ? plan.colM : ""),
+        colW: plan ? (plan.colW || "") : "",
+        colX: specialty,
+        colS: plan ? plan.colS : "",
+        colAL: plan ? plan.colAL : ""
+      };
+
+      if (!groups[specialty]) groups[specialty] = [];
+      groups[specialty].push(item);
+    });
+  } else {
+    // Fallback: If no occData, filter plans directly with full strict occupancy criteria
+    const uniquePlansMap = new Map<string, any>();
+    (plans || []).forEach(p => {
+      if (!p.colD || p.colD === "" || p.colD === "0") return;
+      const roomLower = String(p.colB || "").toLowerCase();
+      const nameLower = String(p.colD || "").toLowerCase();
+      const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => roomLower.includes(kw));
+      const isOR = isOperatingRoom(p.colB);
+      const isProc = isProcedureOrTemporaryRoom(p.colB);
+      const isHeader = roomLower === "bed" || roomLower === "room" || roomLower === "الغرفة" || nameLower === "patient" || nameLower === "name" || nameLower === "المريض";
+      if (isExcluded || isOR || isProc || isHeader || isManuallyDischarged(p.colD)) return;
+
+      const normRoom = normalizeRoom(p.colB);
+      if (normRoom === "330" && (plans.some(o => normalizeRoom(o.colB) === "330A" || normalizeRoom(o.colB) === "330B"))) return;
+      if (normRoom === "331" && (plans.some(o => normalizeRoom(o.colB) === "331A" || normalizeRoom(o.colB) === "331B"))) return;
+
+      let specialty = (p.colX || "").trim() || "Other / غير محدد";
+      const specLower = specialty.toLowerCase();
+      if (specLower === "pulmonology" || specLower === "haematology") {
+        specialty = "Internal Medicine";
+      } else if (specLower === "general surgery" || specLower === "git surgery") {
+        specialty = "General Surgery";
+      } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
+        specialty = "Orthopaedic surgery";
+      }
+
+      const pKey = `name:${normalizeArabicName(p.colD)}`;
+      if (!uniquePlansMap.has(pKey)) {
+        uniquePlansMap.set(pKey, { ...p, colX: specialty });
+      }
+    });
+
+    uniquePlansMap.forEach(mappedP => {
+      const specialty = mappedP.colX || "Other / غير محدد";
+      if (!groups[specialty]) groups[specialty] = [];
+      groups[specialty].push(mappedP);
+    });
+  }
 
   // Sort groups alphabetically
   const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
@@ -12159,9 +13782,26 @@ function addSpecialtyOccupancySheet(workbook: ExcelJS.Workbook, plans: any[], lo
   sheet.getColumn(9).width = 15;
 }
 
+// Catch-all for unknown /api routes - strictly return JSON 404
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.originalUrl || req.url} not found` });
+});
+
+// API Error Handler - strictly return JSON 500
+app.use('/api', (err: any, req: any, res: any, next: any) => {
+  console.error('API SERVER ERROR:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ 
+      error: 'Internal Server Error', 
+      details: err?.message || String(err),
+      path: req.originalUrl || req.url 
+    });
+  }
+});
+
 // Routes complete
 async function startServer() {
-  // Vite middleware for development
+  // Vite middleware for development (handles non-API routes)
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -12177,19 +13817,26 @@ async function startServer() {
     });
   }
 
+  // Global Error Handler fallback for static/SPA
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error('CRITICAL SERVER ERROR:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Internal Server Error', 
+        details: err?.message || String(err),
+        path: req.originalUrl || req.url 
+      });
+    }
+  });
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-// Global error handlers already registered above
+// Global process error handlers
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
-});
-
-// Catch-all for unknown /api routes
-app.all('/api/*', (req, res) => {
-  res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
 console.log('Registering routes complete, starting server...');
@@ -12198,18 +13845,6 @@ if (!process.env.VERCEL) {
     console.error('FAILED TO START SERVER:', err);
   });
 }
-
-// Final Error Handler
-app.use((err: any, req: any, res: any, next: any) => {
-  console.error('CRITICAL SERVER ERROR:', err);
-  if (!res.headersSent) {
-    res.status(500).json({ 
-      error: 'Internal Server Error', 
-      details: err.message,
-      path: req.url 
-    });
-  }
-});
 
 export default app;
 

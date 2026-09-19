@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Building2, 
   Users, 
@@ -33,7 +33,10 @@ import {
   Activity,
   Hotel,
   Percent,
-  Server
+  Zap,
+  Radio,
+  Timer,
+  Sparkles
 } from 'lucide-react';
 import { supabase, fetchSupabaseAuditLogs, logUserLogin } from './supabase';
 import { auth, googleProvider } from './firebase';
@@ -63,12 +66,15 @@ import {
   isCashPayment,
   extractDischargedPatients,
   getAccommodationCategory,
-  isOperatingRoom
+  isOperatingRoom,
+  isPatientOnORList
 } from './logic/occupancy.ts';
 import { PatientTransfersTable } from './components/PatientTransfersTable';
-import { DatabaseStatusParity } from './components/DatabaseStatusParity';
+import { OccupancyHistoryView } from './components/OccupancyHistoryView';
+import { ORHistoryView } from './components/ORHistoryView';
 
-type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'audit-logs';
+type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs';
+type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured';
 
 const isPrivateCreditCase = (p: any): boolean => {
@@ -211,9 +217,12 @@ export default function App() {
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [dutyManagerTab, setDutyManagerTab] = useState<'reports' | 'preview-occupancy'>('reports');
   const [vipCases, setVipCases] = useState<string>('');
+  const [vipSaveStatus, setVipSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'idle'>('idle');
+  const isVipFocusedRef = useRef(false);
+  const vipDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [earlyDischargeRooms, setEarlyDischargeRooms] = useState<string>('');
   const [pendingDischargePatients, setPendingDischargePatients] = useState<string>('');
-  const [mohanadSubTab, setMohanadSubTab] = useState<'downloads' | 'inputs' | 'transfers' | 'db-status'>('downloads');
+  const [mohanadSubTab, setMohanadSubTab] = useState<MohanadSubTab>('downloads');
   const [transfersList, setTransfersList] = useState<any[]>([]);
 
   const [loginLogs, setLoginLogs] = useState<{ id: string; userId: string; email: string; displayName: string; timestamp: string }[]>([]);
@@ -230,6 +239,8 @@ export default function App() {
   const [orSearchQuery, setOrSearchQuery] = useState('');
   const [entryRows, setEntryRows] = useState<any[]>([]);
   const [entrySearchQuery, setEntrySearchQuery] = useState('');
+  const [dialysisCount, setDialysisCount] = useState<number>(0);
+  const [dialysisRows, setDialysisRows] = useState<any[]>([]);
 
   const fetchLoginLogs = async () => {
     setLoadingLogs(true);
@@ -256,15 +267,40 @@ export default function App() {
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
   const [useAlternativeLogo, setUseAlternativeLogo] = useState(false);
 
-  const checkHeaderBgStatus = async () => {
+  // Auto-Fetch Schedule from Database State
+  const [autoFetchScheduleRate, setAutoFetchScheduleRate] = useState<string>(() => {
+    const saved = localStorage.getItem('elite_auto_fetch_rate');
+    return saved === '5m' ? '5m' : 'off';
+  });
+  const [nextFetchCountdown, setNextFetchCountdown] = useState<number>(300);
+  const [lastSyncedTimestamp, setLastSyncedTimestamp] = useState<number | null>(Date.now());
+  const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
+  const [dbUpdateMessage, setDbUpdateMessage] = useState<string | null>(null);
+  const [realtimeConnected, setRealtimeConnected] = useState<boolean>(true);
+
+  const lastDbTimestampRef = useRef<string | null>(null);
+  const realtimeDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isFetchingRef = useRef<boolean>(false);
+  const lastVisibilityFetchRef = useRef<number>(Date.now());
+
+  const checkHeaderBgStatus = async (options?: { retries?: number; delay?: number }): Promise<void> => {
+    const retries = typeof options?.retries === 'number' ? options.retries : 2;
+    const delay = typeof options?.delay === 'number' ? options.delay : 800;
     try {
       const response = await fetch('/api/header-background-info');
       if (response.ok) {
-        const data = await response.json();
-        setHasHeaderBg(data.exists);
+        const data = await response.json().catch(() => ({ exists: false }));
+        setHasHeaderBg(!!data?.exists);
+      } else if (retries > 0) {
+        await new Promise(r => setTimeout(r, delay));
+        return checkHeaderBgStatus({ retries: retries - 1, delay: delay * 1.5 });
       }
-    } catch (error) {
-      console.error('Error checking header background status:', error);
+    } catch (error: any) {
+      if (retries > 0) {
+        await new Promise(r => setTimeout(r, delay));
+        return checkHeaderBgStatus({ retries: retries - 1, delay: delay * 1.5 });
+      }
+      console.warn('Header background check note (using default style):', error?.message || error);
     }
   };
 
@@ -370,10 +406,10 @@ export default function App() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    console.log('Registering real-time Supabase listener for state/dataset...');
+    console.log('[Auto-Fetch Schedule] Registering real-time database listener & auto-fetch schedule...');
     fetchData();
 
-    // Supabase Realtime channel subscription on rtdb_nodes
+    // 1. Supabase Realtime channel subscription on rtdb_nodes (granular state/* nodes and general updates)
     const channel = supabase
       .channel('schema-db-changes')
       .on(
@@ -381,28 +417,97 @@ export default function App() {
         {
           event: '*',
           schema: 'public',
-          table: 'rtdb_nodes',
-          filter: 'path=eq.state/dataset'
+          table: 'rtdb_nodes'
         },
-        (payload) => {
-          console.log('Real-time database update detected from Supabase! Refreshing data...', payload);
-          fetchData();
+        (payload: any) => {
+          const path = payload?.new?.path || payload?.old?.path || '';
+          // Only trigger refresh if it's state, settings, or audit change
+          if (path && !path.startsWith('state/') && !path.startsWith('settings/') && path !== 'audit_logs') {
+            return;
+          }
+
+          const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
+          if (newUpdatedAt && newUpdatedAt === lastDbTimestampRef.current) {
+            // Already synced to this database snapshot, ignore echo
+            return;
+          }
+          if (newUpdatedAt) {
+            lastDbTimestampRef.current = String(newUpdatedAt);
+          }
+
+          if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
+          realtimeDebounceTimerRef.current = setTimeout(() => {
+            console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType, path);
+            setIsDbUpdatePulsing(true);
+            setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
+            fetchData({ silent: true });
+            setTimeout(() => {
+              setIsDbUpdatePulsing(false);
+            }, 3000);
+            setTimeout(() => {
+              setDbUpdateMessage(null);
+            }, 5000);
+          }, 500);
         }
       )
       .subscribe((status) => {
-        console.log('Supabase real-time subscription status:', status);
+        console.log('[Auto-Fetch Schedule] Supabase real-time subscription status:', status);
+        setRealtimeConnected(status === 'SUBSCRIBED');
       });
 
-    // Fallback periodic poll to guarantee freshness across all sessions
-    const pollInterval = setInterval(() => {
-      fetchData();
-    }, 15000);
+    // 2. Visibility change auto-fetch: when user switches back to tab after being away (> 60s), auto-fetch silently
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - lastVisibilityFetchRef.current > 60000) {
+          lastVisibilityFetchRef.current = now;
+          console.log('[Auto-Fetch Schedule] Tab became active after inactivity. Triggering silent auto-fetch...');
+          fetchData({ silent: true });
+        }
+      }
+    };
+    const handleOnline = () => {
+      console.log('[Auto-Fetch Schedule] Network online restored. Triggering auto-fetch...');
+      fetchData({ silent: true });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
 
     return () => {
       supabase.removeChannel(channel);
-      clearInterval(pollInterval);
+      if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
     };
   }, [isAuthenticated]);
+
+  // Scheduled Auto-Fetch Timer from Database on interval
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (autoFetchScheduleRate !== '5m') return;
+
+    const rateSeconds = 5 * 60; // 5 minutes (300 seconds)
+
+    setNextFetchCountdown(rateSeconds);
+
+    const timer = setInterval(() => {
+      setNextFetchCountdown((prev) => {
+        if (prev <= 1) {
+          fetchData({ silent: true });
+          return rateSeconds;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isAuthenticated, autoFetchScheduleRate]);
+
+  const handleUpdateScheduleRate = (newRate: string) => {
+    setAutoFetchScheduleRate(newRate);
+    localStorage.setItem('elite_auto_fetch_rate', newRate);
+  };
 
   const handleLogin = async () => {
     setLoading(true);
@@ -455,7 +560,7 @@ export default function App() {
     
     setLoading(true);
     setShowResetConfirm(false);
-    console.log('Resetting data...');
+    console.log('Resetting occupancy data and removing today\'s state from database...');
     try {
       const res = await fetch('/api/reset', { 
         method: 'POST',
@@ -463,18 +568,11 @@ export default function App() {
       });
       
       if (res.ok) {
-        console.log('Reset successful on server');
-        setIsDataLoaded(false);
-        setPatients([]);
-        setRawOccupancyRows([]);
-        setDischargedPatients([]);
-        setEmptyRoomsList([]);
-        setTodaysEntries(0);
-        setEntryRows([]);
-        setVipCount(0);
-        setLosData([]);
+        const resetRes = await res.json();
+        console.log('Reset successful on server:', resetRes);
+        await fetchData();
         setCurrentView('dashboard');
-        alert('All hospital records have been successfully reset.');
+        alert(resetRes.message || 'Today\'s occupancy state has been completely removed from the database.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('Reset failed on server:', errorData.error);
@@ -499,7 +597,7 @@ export default function App() {
     
     setLoading(true);
     setShowResetORConfirm(false);
-    console.log('Resetting OR List...');
+    console.log('Resetting OR List with history archive reference...');
     try {
       const res = await fetch('/api/reset-or', { 
         method: 'POST',
@@ -507,13 +605,10 @@ export default function App() {
       });
       
       if (res.ok) {
-        console.log('OR list reset successful on server');
-        setOrList([]);
-        setOrListCount(0);
-        setHasORList(false);
-        setOverList([]);
+        const resetRes = await res.json();
+        console.log('OR list reset successful on server:', resetRes);
         await fetchData();
-        alert('OR list data has been successfully reset.');
+        alert(resetRes.message || 'OR list data has been reset. Reference history snapshot saved to database.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('OR reset failed on server:', errorData.error);
@@ -560,21 +655,7 @@ export default function App() {
   };
 
   const checkDataStatus = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/occupancy/data');
-      if (res.ok) {
-        setIsDataLoaded(true);
-        await fetchData();
-      } else {
-        setIsDataLoaded(false);
-      }
-    } catch (err) {
-      console.log('No data yet or connection error');
-      setIsDataLoaded(false);
-    } finally {
-      setLoading(false);
-    }
+    await fetchData();
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -588,37 +669,34 @@ export default function App() {
     try {
       const res = await fetch('/api/upload', {
         method: 'POST',
+        headers: { 'Accept': 'application/json' },
         body: formData,
       });
-      if (!res.ok) {
-        const text = await res.text();
-        console.error('Upload failed with status:', res.status, 'Response:', text.substring(0, 100));
-        throw new Error(`Upload failed (${res.status}): ${text.substring(0, 50)}`);
-      }
       const text = await res.text();
-      let data;
+      let data: any;
       try {
         data = JSON.parse(text);
       } catch (parseErr) {
         console.error('Failed to parse upload response:', text.substring(0, 200));
-        throw new Error('Invalid JSON from server during upload.');
+        throw new Error('Server returned non-JSON response during file upload.');
       }
       
-      if (data.success) {
-        setIsDataLoaded(true);
-        fetchData();
-      } else {
-        alert(data.error || 'Upload failed');
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || `Upload failed (status ${res.status})`);
       }
+
+      setIsDataLoaded(true);
+      fetchData();
     } catch (err: any) {
       console.error('Upload error:', err);
-      if (err.message.includes('Unexpected token <')) {
-        alert('Error: Server returned HTML instead of JSON. This often means the API route was not found or the server is restarting. Please try again in 5-10 seconds.');
+      if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
+        alert('Error: Server returned HTML instead of JSON. The server may be restarting or the file format was unrecognized. Please try again.');
       } else {
         alert('Error uploading file: ' + err.message);
       }
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
   };
 
@@ -633,39 +711,35 @@ export default function App() {
     try {
       const res = await fetch('/api/upload-debts', {
         method: 'POST',
+        headers: { 'Accept': 'application/json' },
         body: formData,
       });
 
-      if (!res.ok) {
-        const text = await res.text();
-        console.error('Debts upload failed with status:', res.status, 'Response:', text.substring(0, 200));
-        throw new Error(`Server returned ${res.status}: ${text.substring(0, 50)}`);
-      }
-
       const text = await res.text();
-      let data;
+      let data: any;
       try {
         data = JSON.parse(text);
       } catch (parseErr) {
         console.error('Failed to parse debts upload response:', text.substring(0, 200));
-        throw new Error('Invalid JSON from server during debts upload.');
+        throw new Error('Server returned non-JSON response during debts upload.');
       }
       
-      if (data.success) {
-        alert(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
-        fetchData();
-      } else {
-        alert(data.error || 'Debts upload failed');
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || `Upload failed with status ${res.status}`);
       }
+
+      alert(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
+      fetchData();
     } catch (err: any) {
       console.error('Debts Upload error:', err);
-      if (err.message.includes('Unexpected token <')) {
-        alert('Error: Server returned HTML instead of JSON. This often means the API route was not found or the server is restarting. Please try again in 5-10 seconds.');
+      if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
+        alert('Error: Server returned HTML instead of JSON. The server may be restarting or the file format was unrecognized. Please try again.');
       } else {
         alert('Error uploading debts file: ' + err.message);
       }
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
   };
 
@@ -680,66 +754,78 @@ export default function App() {
     try {
       const res = await fetch('/api/upload-or-list', {
         method: 'POST',
+        headers: { 'Accept': 'application/json' },
         body: formData,
       });
 
-      if (!res.ok) {
-        const text = await res.text();
-        console.error('OR List upload failed with status:', res.status, 'Response:', text.substring(0, 200));
-        throw new Error(`Server returned ${res.status}: ${text.substring(0, 50)}`);
-      }
-
       const text = await res.text();
-      let data;
+      let data: any;
       try {
         data = JSON.parse(text);
       } catch (parseErr) {
         console.error('Failed to parse OR List upload response:', text.substring(0, 200));
-        throw new Error('Invalid JSON from server during OR List upload.');
+        throw new Error('Server returned non-JSON response during OR List upload.');
       }
       
-      if (data.success) {
-        const dateMsg = data.date ? ` for ${data.date}` : "";
-        alert(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
-        fetchData();
-      } else {
-        alert(data.error || 'OR List upload failed');
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || `OR List upload failed with status ${res.status}`);
       }
+
+      const dateMsg = data.date ? ` for ${data.date}` : "";
+      alert(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
+      fetchData();
     } catch (err: any) {
       console.error('OR List Upload error:', err);
-      if (err.message.includes('Unexpected token <')) {
-        alert('Error: Server returned HTML instead of JSON. This often means the API route was not found or the server is restarting. Please try again in 5-10 seconds.');
+      if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
+        alert('Error: Server returned non-JSON response during OR List upload. Please verify the spreadsheet format and try again.');
       } else {
         alert('Error uploading OR List file: ' + err.message);
       }
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
   };
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (options?: { silent?: boolean; retries?: number; delay?: number }): Promise<void> => {
+    const retries = typeof options?.retries === 'number' ? options.retries : 2;
+    const delay = typeof options?.delay === 'number' ? options.delay : 800;
+    const silent = !!options?.silent;
+
+    if (!silent) {
+      setLoading(true);
+    }
+    isFetchingRef.current = true;
+
     try {
-      console.log('Fetching occupancy data from /api/occupancy/data...');
       const res = await fetch('/api/occupancy/data');
       if (!res.ok) {
-        const text = await res.text();
-        console.error('Fetch /api/occupancy/data failed with status:', res.status, 'Response:', text.substring(0, 100));
-        throw new Error(`Server returned ${res.status}: ${text.substring(0, 50)}`);
+        if (retries > 0) {
+          await new Promise(r => setTimeout(r, delay));
+          return fetchData({ silent, retries: retries - 1, delay: delay * 1.5 });
+        }
+        const text = await res.text().catch(() => '');
+        console.warn('Fetch /api/occupancy/data returned status:', res.status, text.substring(0, 50));
+        return;
       }
       
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (parseErr) {
-        console.error('Failed to parse JSON from /api/occupancy/data. Body:', text.substring(0, 200));
-        throw new Error('Invalid JSON response from server. See console for details.');
-      }
+      const data = await res.json().catch(async () => null);
+      if (!data) return;
       
-      if (data.error) throw new Error(data.error);
+      if (data.error) {
+        console.warn('Occupancy data notice:', data.error);
+        return;
+      }
 
-      const filtered = filterPatientData(data.rows || []);
+      if (data.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+      }
+
+      const rawRows = data.rows || [];
+      const hasRows = rawRows.length > 0;
+      setIsDataLoaded(hasRows);
+
+      const filtered = filterPatientData(rawRows);
       const sorted = sortPatients(filtered);
 
       const discharged = data.dischargedRows || [];
@@ -751,6 +837,8 @@ export default function App() {
       setEmptyRoomsList(extractEmptyRooms(sorted));
       setTodaysEntries(entries.length);
       setEntryRows(entries);
+      setDialysisCount(data.dialysisCount !== undefined ? data.dialysisCount : (Array.isArray(data.dialysisRows) ? data.dialysisRows.length : 0));
+      setDialysisRows(data.dialysisRows || []);
       setVipCount(data.vipCount || 0);
       setLosData(data.losData || []);
       setUploadedAt(data.uploadedAt || null);
@@ -758,8 +846,9 @@ export default function App() {
       setOrListCount(data.orListCount || 0);
       setOrList(data.orList || []);
       setOverList(data.overList || []);
-      if (data.vipCasesText !== undefined) {
+      if (data.vipCasesText !== undefined && !isVipFocusedRef.current) {
         setVipCases(data.vipCasesText);
+        setVipSaveStatus('saved');
       }
       if (data.earlyDischargeRoomsText !== undefined) {
         setEarlyDischargeRooms(data.earlyDischargeRoomsText);
@@ -770,10 +859,18 @@ export default function App() {
       if (Array.isArray(data.transfers)) {
         setTransfersList(data.transfers);
       }
+      setLastSyncedTimestamp(Date.now());
     } catch (err: any) {
-      console.error('Fetch data failed', err);
+      if (retries > 0) {
+        await new Promise(r => setTimeout(r, delay));
+        return fetchData({ silent, retries: retries - 1, delay: delay * 1.5 });
+      }
+      console.warn('Fetch data transient warning (will retry automatically):', err?.message || err);
     } finally {
-      setLoading(false);
+      isFetchingRef.current = false;
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
@@ -1306,8 +1403,34 @@ export default function App() {
     }
   };
 
+  const handleVipChange = (val: string) => {
+    setVipCases(val);
+    setVipSaveStatus('unsaved');
+    if (vipDebounceTimerRef.current) clearTimeout(vipDebounceTimerRef.current);
+    vipDebounceTimerRef.current = setTimeout(async () => {
+      try {
+        setVipSaveStatus('saving');
+        const res = await fetch('/api/vip-cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: val })
+        });
+        if (res.ok) {
+          setVipSaveStatus('saved');
+        } else {
+          setVipSaveStatus('unsaved');
+        }
+      } catch (e) {
+        console.error('Auto-save VIP cases error:', e);
+        setVipSaveStatus('unsaved');
+      }
+    }, 600);
+  };
+
   const saveVipCases = async () => {
+    if (vipDebounceTimerRef.current) clearTimeout(vipDebounceTimerRef.current);
     setProcessing('Saving VIP Cases...');
+    setVipSaveStatus('saving');
     try {
       const res = await fetch('/api/vip-cases', {
         method: 'POST',
@@ -1315,13 +1438,16 @@ export default function App() {
         body: JSON.stringify({ text: vipCases })
       });
       if (res.ok) {
-        alert('VIP cases updated successfully!');
+        setVipSaveStatus('saved');
+        alert('VIP cases updated & saved to database permanently!');
         await fetchData(); // Refresh state and sheets
       } else {
+        setVipSaveStatus('unsaved');
         alert('Failed to update VIP cases.');
       }
     } catch (err: any) {
       console.error(err);
+      setVipSaveStatus('unsaved');
       alert(`Error saving VIP cases: ${err.message}`);
     } finally {
       setProcessing(null);
@@ -1332,6 +1458,7 @@ export default function App() {
     if (!window.confirm('Are you sure you want to reset and clear all VIP cases? This will empty the VIP text box and update the database.')) {
       return;
     }
+    if (vipDebounceTimerRef.current) clearTimeout(vipDebounceTimerRef.current);
     setProcessing('Resetting VIP Cases...');
     try {
       const res = await fetch('/api/reset-vip', {
@@ -1340,6 +1467,7 @@ export default function App() {
       });
       if (res.ok) {
         setVipCases('');
+        setVipSaveStatus('saved');
         alert('VIP cases reset successfully!');
         await fetchData(); // Refresh state and sheets
       } else {
@@ -2354,6 +2482,26 @@ export default function App() {
             </nav>
           </div>
 
+          <div className="pt-2 border-t border-white/10">
+            <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">History & Archives</h3>
+            <nav className="space-y-1.5">
+              <NavItem 
+                active={currentView === 'occupancy-history'} 
+                onClick={() => setCurrentView('occupancy-history')}
+                icon={<Calendar />}
+                label="Occupancy History"
+                badge="11:59 PM"
+              />
+              <NavItem 
+                active={currentView === 'or-history'} 
+                onClick={() => setCurrentView('or-history')}
+                icon={<Activity />}
+                label="OR Dashboard History"
+                badge="OR"
+              />
+            </nav>
+          </div>
+
           {user?.email?.toLowerCase() === 'mohanad.md07@gmail.com' && (
             <div className="pt-2 border-t border-white/10">
               <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Support</h3>
@@ -2515,42 +2663,96 @@ export default function App() {
 
                 {dashboardTab === 'hospital' && (
                   <>
-                    {/* Last Upload Info Badge */}
-                    {uploadedAt ? (
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 px-5 py-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 shadow-xs w-full max-w-3xl">
-                    <div className="flex items-center gap-3">
-                      <div className="relative flex h-2.5 w-2.5">
-                        <div className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></div>
-                        <div className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-600"></div>
+                    {/* Database Update Flash Alert */}
+                    <AnimatePresence>
+                      {dbUpdateMessage && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md text-xs font-semibold gap-3 w-full max-w-4xl"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Zap className="h-4 w-4 animate-bounce text-amber-300" />
+                            <span>{dbUpdateMessage}</span>
+                          </div>
+                          <span className="bg-emerald-700/80 px-2 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider">
+                            Live Supabase Realtime
+                          </span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Auto-Fetch Schedule & Cloud Sync Bar */}
+                    <div className="bg-white/95 border border-emerald-900/10 text-slate-800 p-4 rounded-2xl flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 shadow-xs w-full max-w-5xl">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="relative flex h-3 w-3">
+                            <div className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isDbUpdatePulsing ? "bg-amber-400 opacity-90" : "bg-emerald-400 opacity-75"}`}></div>
+                            <div className={`relative inline-flex rounded-full h-3 w-3 ${isDbUpdatePulsing ? "bg-amber-500" : "bg-emerald-600"}`}></div>
+                          </div>
+                          <span className="text-xs font-bold uppercase tracking-wider text-emerald-950 flex items-center gap-1.5">
+                            <Radio className="h-3.5 w-3.5 text-emerald-600" />
+                            {realtimeConnected ? "Realtime DB Live" : "DB Polling Mode"}
+                          </span>
+                        </div>
+                        
+                        <div className="h-4 w-px bg-slate-200 hidden sm:block"></div>
+                        
+                        <span className="text-xs font-medium text-slate-600">
+                          {uploadedAt ? (
+                            <>
+                              Cloud Sheet: <strong className="font-bold text-slate-800">{new Date(uploadedAt).toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })}</strong> at <strong className="font-bold text-slate-800">{new Date(uploadedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}</strong>
+                            </>
+                          ) : (
+                            <span>No upload timestamp recorded. Synced with cloud DB.</span>
+                          )}
+                        </span>
                       </div>
-                      <span className="text-sm font-semibold text-teal-950">
-                        Last updated cloud sheet was synced at <strong className="font-extrabold text-emerald-800">{new Date(uploadedAt).toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })}</strong> at <strong className="font-extrabold text-emerald-800">{new Date(uploadedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}</strong>
-                      </span>
+
+                      {/* Auto-Fetch Schedule Controls */}
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <div className="flex items-center bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 text-xs">
+                          <span className="px-2 text-slate-500 font-semibold text-[11px] flex items-center gap-1">
+                            <Timer className="h-3 w-3 text-slate-600" />
+                            Schedule:
+                          </span>
+                          <button
+                            onClick={() => handleUpdateScheduleRate('off')}
+                            className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === 'off' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
+                            title="Instant Realtime on DB change only (Default)"
+                          >
+                            ⚡ Instant Only (Default)
+                          </button>
+                          <button
+                            onClick={() => handleUpdateScheduleRate('5m')}
+                            className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '5m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
+                            title="Auto-fetch every 5 minutes"
+                          >
+                            ⏱️ Every 5 Minutes
+                          </button>
+                        </div>
+
+                        {autoFetchScheduleRate === '5m' && (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 5m fetch">
+                            <Clock className="h-3 w-3 text-emerald-600" />
+                            <span>
+                              {Math.floor(nextFetchCountdown / 60)}:{(nextFetchCountdown % 60).toString().padStart(2, '0')}
+                            </span>
+                          </div>
+                        )}
+
+                        <button
+                          onClick={() => { fetchData(); }}
+                          disabled={loading}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs focus:outline-hidden"
+                          title="Force immediate auto-fetch"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+                          Sync Now
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      onClick={fetchData}
-                      disabled={loading}
-                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white text-xs font-bold rounded-lg cursor-pointer transition shadow-xs focus:outline-hidden"
-                    >
-                      <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-                      Sync Live Data
-                    </button>
-                  </div>
-                ) : (
-                  <div className="bg-slate-100 border border-slate-200 text-slate-700 px-5 py-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 shadow-xs w-full max-w-3xl">
-                    <span className="text-sm font-semibold text-slate-600">
-                      No upload timestamp recorded. Sync with cloud or upload a sheet.
-                    </span>
-                    <button
-                      onClick={fetchData}
-                      disabled={loading}
-                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-[#0b3c34] hover:bg-[#155a4e] disabled:bg-slate-400 text-white text-xs font-bold rounded-lg cursor-pointer transition shadow-xs focus:outline-hidden"
-                    >
-                      <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-                      Sync Live Data
-                    </button>
-                  </div>
-                )}
 
                 {/* Metrics Bar */}
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10 gap-4 shrink-0">
@@ -2566,6 +2768,13 @@ export default function App() {
                   />
                   <StatCard label="Today's Entries" value={`${todaysEntries}`} subValue="Admitted today" icon={<Calendar className="text-blue-600" />} color="blue" />
                   <StatCard label="Discharged" value={`${dischargedPatients.length}`} subValue="Sync difference" icon={<LogOut className="text-pink-600" />} color="pink" />
+                  <StatCard 
+                    label="Dialysis Cases" 
+                    value={`${dialysisCount}`} 
+                    subValue="Daily dialysis sessions" 
+                    icon={<Activity className="text-cyan-600" />} 
+                    color="sky" 
+                  />
                   <StatCard 
                     label="Inpatient Occupancy Rate" 
                     value={`${inpatientOccupancyRate}%`} 
@@ -2776,13 +2985,7 @@ export default function App() {
                         return (
                           <div className="max-h-96 overflow-y-auto border border-teal-500/10 rounded-2xl divide-y divide-[#0b3c34]/5 bg-white/30 shadow-2xs">
                             {filtered.map((entry, idx) => {
-                              const isOnORList = orList.some(orPt => {
-                                const orName = String(orPt.patientName || "").toLowerCase().trim();
-                                const entryName = String(entry.name || "").toLowerCase().trim();
-                                const isPascal = orName.includes("باسكال") || orName.includes("pascal");
-                                const isJeaneldie = entryName.includes("jeaneldie") || entryName.includes("nzola") || entryName.includes("mpaka");
-                                return isPascal && isJeaneldie;
-                              });
+                              const isOnORList = isPatientOnORList(entry, orList);
 
                               return (
                                 <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-teal-500/5 transition-colors">
@@ -3019,7 +3222,7 @@ export default function App() {
                                 const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
                                 return nameMatch || mrnMatch;
                               });
-                              if (isDischarged) return true;
+                              if (isDischarged) return false;
                               if (p.realStatus === 'IN') return true;
                               if (p.realStatus === 'OUT') return false;
                               const statusVal = String(p.column3 || p.vt || "").toUpperCase().trim();
@@ -3614,19 +3817,20 @@ export default function App() {
                                                       {p.startTime} - {p.endTime || '...'}
                                                     </span>
                                                   )}
-                                                  {isDischarged && (
+                                                  {isDischarged ? (
                                                     <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-wider border bg-pink-50 text-pink-700 border-pink-200 flex items-center gap-1 shadow-3xs">
                                                       <LogOut className="w-2.5 h-2.5 text-pink-500" />
                                                       Discharged {matchingDisc && matchingDisc.room ? `(Room ${matchingDisc.room})` : 'OR Patient'}
                                                     </span>
+                                                  ) : (
+                                                    <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border ${
+                                                      isInOut === "IN" 
+                                                        ? 'bg-blue-50 text-blue-800 border-blue-200' 
+                                                        : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                                    }`}>
+                                                      {isInOut === "IN" ? (p.admittedRoom ? `IN (${p.admittedRoom})` : 'IN') : 'OUT'}
+                                                    </span>
                                                   )}
-                                                  <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border ${
-                                                    isInOut === "IN" 
-                                                      ? 'bg-blue-50 text-blue-800 border-blue-200' 
-                                                      : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                                  }`}>
-                                                    {isInOut}
-                                                  </span>
                                                   <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border ${
                                                     String(p.vt || "").toUpperCase().trim() === "HC" && !isPrivateCreditCase(p)
                                                       ? 'bg-purple-50 text-purple-800 border-purple-200' 
@@ -3923,7 +4127,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {(currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'audit-logs') && (
+            {(currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs') && (
               <motion.div 
                 key="role-workflows"
                 initial={{ opacity: 0, y: 10 }}
@@ -4050,23 +4254,6 @@ export default function App() {
                           </span>
                         )}
                       </button>
-                      <button
-                        id="tab-db-status-btn"
-                        onClick={() => setMohanadSubTab('db-status')}
-                        type="button"
-                        className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
-                          mohanadSubTab === 'db-status'
-                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
-                            : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
-                        }`}
-                      >
-                        <Server size={16} className="text-teal-700" />
-                        Database Status & Parity
-                        <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          Supabase Parity
-                        </span>
-                      </button>
                     </div>
 
                     {mohanadSubTab === 'inputs' && (
@@ -4076,7 +4263,26 @@ export default function App() {
                           <div className="flex items-center justify-between mb-3 border-b border-teal-500/10 pb-2">
                             <div className="flex items-center gap-2">
                               <ShieldCheck className="text-teal-600" size={22} />
-                              <h4 className="text-base font-extrabold text-[#0b3c34]">VIP Cases Name Matcher (VIP STATUS)</h4>
+                              <div>
+                                <h4 className="text-base font-extrabold text-[#0b3c34]">VIP Cases Name Matcher (VIP STATUS)</h4>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <span className="text-[11px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    Persistent in Database Forever
+                                  </span>
+                                  {vipSaveStatus === 'saving' && (
+                                    <span className="text-[10px] text-amber-600 font-bold animate-pulse">Auto-saving...</span>
+                                  )}
+                                  {vipSaveStatus === 'saved' && (
+                                    <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-0.5">
+                                      <CheckCircle2 size={11} /> Saved
+                                    </span>
+                                  )}
+                                  {vipSaveStatus === 'unsaved' && (
+                                    <span className="text-[10px] text-amber-700 font-bold">Unsaved changes</span>
+                                  )}
+                                </div>
+                              </div>
                             </div>
                             <button
                               id="reset-vip-cases-btn"
@@ -4090,11 +4296,23 @@ export default function App() {
                             </button>
                           </div>
                           <p className="text-xs text-slate-600 mb-4 leading-relaxed font-semibold">
-                            Type or paste lists here. The system will extract names like <strong>عايده عبدالعاطي عبدالله ابوكليله</strong> and find their matches in the Occupancy source sheet to insert a new column called <strong>"VIP STATUS"</strong> across the Refined Debts, Companion Status, Formatted Companions, and Refined Occupancy sheets.
+                            Type or paste lists here. The system will extract names like <strong>عايده عبدالعاطي عبدالله ابوكليله</strong> and find their matches in the Occupancy source sheet to insert a new column called <strong>"VIP STATUS"</strong> across the Refined Debts, Companion Status, Formatted Companions, and Refined Occupancy sheets. All entries are permanently saved to the database.
                           </p>
                           <textarea
                             value={vipCases}
-                            onChange={(e) => setVipCases(e.target.value)}
+                            onChange={(e) => handleVipChange(e.target.value)}
+                            onFocus={() => { isVipFocusedRef.current = true; }}
+                            onBlur={() => { 
+                              isVipFocusedRef.current = false; 
+                              if (vipDebounceTimerRef.current) {
+                                clearTimeout(vipDebounceTimerRef.current);
+                                fetch('/api/vip-cases', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ text: vipCases })
+                                }).then(() => setVipSaveStatus('saved')).catch(() => setVipSaveStatus('unsaved'));
+                              }
+                            }}
                             placeholder="Type or paste VIP cases text here...&#10;1- عايده عبدالعاطي عبدالله ابوكليله.....عنايه&#10;2- محمد عمر ابراهيم بركات...عنايه&#10;3- ماجدة محمود مختار عيسي...عنايه&#10;4- مبروكه عبدالقادر سليمان جبريل..عنايه عامه&#10;4- مكه محمد احمد ماهر....عايه اطفال&#10;6- احمد فتحي احمد عزالدين ...315"
                             rows={8}
                             className="w-full text-[13px] font-mono border border-teal-500/20 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent resize-y bg-white/40 text-slate-800 placeholder-slate-400 font-medium"
@@ -4200,14 +4418,18 @@ export default function App() {
 
                         {/* Mohanad Active Exclusions & Discharged Patients Restoration Board */}
                         <div className="bg-white/60 backdrop-blur-md border border-white/45 rounded-2xl p-6 shadow-sm">
-                          <div className="flex items-center justify-between mb-3 border-b border-teal-500/10 pb-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3 border-b border-teal-500/10 pb-3">
                             <div className="flex items-center gap-2">
                               <LogOut className="text-teal-600" size={22} />
-                              <h4 className="text-base font-extrabold text-[#0b3c34]">Active Exclusions & Discharged Patients</h4>
+                              <div>
+                                <h4 className="text-base font-extrabold text-[#0b3c34]">Active Exclusions & Discharged Patients</h4>
+                                <div className="text-[10px] text-teal-700 font-semibold">Persistent per day and saved with daily snapshots</div>
+                              </div>
                             </div>
-                            <span className="text-xs bg-slate-100 text-slate-800 font-bold px-2 py-1 rounded-full">
-                              {dischargedPatients.length} excluded
-                            </span>
+                            
+                            <div className="px-3 py-1 bg-teal-500/10 text-teal-800 font-extrabold text-xs rounded-xl border border-teal-500/20">
+                              {dischargedPatients.length} Excluded
+                            </div>
                           </div>
                           
                           <p className="text-xs text-slate-600 mb-4 leading-relaxed font-semibold">
@@ -4220,32 +4442,40 @@ export default function App() {
                             </div>
                           ) : (
                             <div className="max-h-64 overflow-y-auto border border-teal-500/10 rounded-xl divide-y divide-[#0b3c34]/5 bg-white/30">
-                              {dischargedPatients.map((p, idx) => (
-                                <div key={idx} className="p-3.5 flex items-center justify-between hover:bg-teal-500/5 transition-colors gap-4">
-                                  <div className="flex flex-col gap-1 min-w-0">
-                                    <div className="text-xs font-extrabold text-[#0b3c34] flex items-center gap-2 flex-wrap">
-                                      <span className="truncate">{p.name}</span>
-                                      <span className="px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-800 font-mono text-[10px] font-extrabold shrink-0">
-                                        {p.room}
-                                      </span>
+                              {dischargedPatients.map((p, idx) => {
+                                  const isVip = (p as any).isVip || (p as any).isVIP;
+                                  return (
+                                    <div key={idx} className="p-3.5 flex items-center justify-between hover:bg-teal-500/5 transition-colors gap-4">
+                                      <div className="flex flex-col gap-1 min-w-0">
+                                        <div className="text-xs font-extrabold text-[#0b3c34] flex items-center gap-2 flex-wrap">
+                                          <span className="truncate">{p.name}</span>
+                                          <span className="px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-800 font-mono text-[10px] font-extrabold shrink-0">
+                                            {p.room}
+                                          </span>
+                                          {isVip && (
+                                            <span className="px-1.5 py-0.2 text-[9px] font-black rounded bg-amber-100 text-amber-900 border border-amber-300">
+                                              VIP
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 font-extrabold flex gap-x-3 gap-y-1 flex-wrap">
+                                          <span className="truncate">Doc: {(p as any).physician || 'N/A'}</span>
+                                          <span className="truncate">Contractor: {(p as any).contractor || 'N/A'}</span>
+                                          <span className="shrink-0">On: {p.date || 'N/A'}</span>
+                                        </div>
+                                      </div>
+                                      <button
+                                        onClick={() => handleRestorePatient(p.name)}
+                                        disabled={!!processing}
+                                        type="button"
+                                        className="px-3 py-1.5 bg-[#0b3c34]/5 text-[11px] font-extrabold text-[#0b3c34] rounded-lg border border-[#0b3c34]/15 hover:bg-[#0b3c34]/10 active:scale-95 transition-all flex items-center gap-1 shrink-0 shadow-sm"
+                                      >
+                                        <RotateCcw size={12} />
+                                        Restore to Active
+                                      </button>
                                     </div>
-                                    <div className="text-[10px] text-slate-500 font-extrabold flex gap-x-3 gap-y-1 flex-wrap">
-                                      <span className="truncate">Doc: {(p as any).physician || 'N/A'}</span>
-                                      <span className="truncate">Contractor: {(p as any).contractor || 'N/A'}</span>
-                                      <span className="shrink-0">On: {p.date || 'N/A'}</span>
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={() => handleRestorePatient(p.name)}
-                                    disabled={!!processing}
-                                    type="button"
-                                    className="px-3 py-1.5 bg-[#0b3c34]/5 text-[11px] font-extrabold text-[#0b3c34] rounded-lg border border-[#0b3c34]/15 hover:bg-[#0b3c34]/10 active:scale-95 transition-all flex items-center gap-1 shrink-0 shadow-sm"
-                                  >
-                                    <RotateCcw size={12} />
-                                    Restore to Active
-                                  </button>
-                                </div>
-                              ))}
+                                  );
+                                })}
                             </div>
                           )}
                         </div>
@@ -4380,12 +4610,20 @@ export default function App() {
                         />
                       </div>
                     )}
+                  </section>
+                )}
 
-                    {mohanadSubTab === 'db-status' && (
-                      <div className="space-y-6 animate-fade-in">
-                        <DatabaseStatusParity />
-                      </div>
-                    )}
+                {/* Section: Standalone Occupancy History View */}
+                {currentView === 'occupancy-history' && (
+                  <section className="space-y-6 animate-fade-in">
+                    <OccupancyHistoryView onNotify={(msg) => alert(msg)} />
+                  </section>
+                )}
+
+                {/* Section: Standalone OR Dashboard History View */}
+                {currentView === 'or-history' && (
+                  <section className="space-y-6 animate-fade-in">
+                    <ORHistoryView onNotify={(msg) => alert(msg)} />
                   </section>
                 )}
 
@@ -4473,12 +4711,13 @@ export default function App() {
   );
 }
 
-function NavItem({ active, onClick, icon, label, highlighted }: { 
+function NavItem({ active, onClick, icon, label, highlighted, badge }: { 
   active: boolean, 
   onClick: () => void, 
   icon: React.ReactElement, 
   label: string,
-  highlighted?: boolean
+  highlighted?: boolean,
+  badge?: string
 }) {
   return (
     <button 
@@ -4491,16 +4730,25 @@ function NavItem({ active, onClick, icon, label, highlighted }: {
             : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
       }`}
     >
-      <div className="flex items-center gap-3">
-        {React.cloneElement(icon, { className: 'w-4 h-4' } as any)}
-        <span>{label}</span>
+      <div className="flex items-center gap-3 min-w-0">
+        {React.cloneElement(icon, { className: 'w-4 h-4 shrink-0' } as any)}
+        <span className="truncate">{label}</span>
       </div>
-      {highlighted && !active && (
-        <span className="flex h-2 w-2 relative">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-        </span>
-      )}
+      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+        {badge && (
+          <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-full ${
+            active ? 'bg-white/20 text-white' : 'bg-teal-500/10 text-teal-800'
+          }`}>
+            {badge}
+          </span>
+        )}
+        {highlighted && !active && (
+          <span className="flex h-2 w-2 relative">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+          </span>
+        )}
+      </div>
     </button>
   );
 }
