@@ -23,7 +23,7 @@ import {
   saveORSnapshot,
   getORSnapshot,
   getAvailableDates
-} from './historyManager';
+} from './historyManager.js';
 
 dotenv.config();
 
