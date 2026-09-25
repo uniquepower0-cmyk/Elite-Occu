@@ -41,15 +41,21 @@ export async function logUserLogin(user: { uid?: string; email?: string; display
   const displayName = user.displayName || 'Authorized Staff';
 
   try {
-    // 1. Record in profiles
-    await supabase.from('profiles').upsert({
-      id: userId,
-      email,
-      display_name: displayName,
-      role: 'user',
-      metadata: { lastLogin: timestamp, userAgent: navigator.userAgent },
-      updated_at: timestamp,
-    });
+    // 1. Record in profiles (if anon key is configured in client)
+    if (SUPABASE_ANON_KEY) {
+      try {
+        await supabase.from('profiles').upsert({
+          id: userId,
+          email,
+          display_name: displayName,
+          role: 'user',
+          metadata: { lastLogin: timestamp, userAgent: navigator.userAgent },
+          updated_at: timestamp,
+        });
+      } catch (upsertErr) {
+        console.warn('Supabase client profile upsert note:', upsertErr);
+      }
+    }
 
     // 2. Add to server-side login log via API or rtdb_nodes
     await fetch('/api/logins', {

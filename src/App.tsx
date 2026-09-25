@@ -2811,8 +2811,8 @@ export default function App() {
                         <h3 className="font-extrabold text-[#0b3c34] tracking-tight">Occupancy Distribution</h3>
                         <div className="text-[10px] font-bold text-teal-700 uppercase tracking-widest bg-teal-500/10 px-2.5 py-1 rounded-md">Live Metrics</div>
                       </div>
-                      <div className="h-80">
-                        <ResponsiveContainer width="100%" height="100%">
+                      <div className="h-80 w-full min-w-0">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={300}>
                           <BarChart data={stats}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                             <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} tick={{ fill: '#475569', fontWeight: 600 }} />
