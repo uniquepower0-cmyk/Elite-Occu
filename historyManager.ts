@@ -9,11 +9,19 @@ export const historySupabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-export const HISTORY_OCC_DIR = path.join(process.cwd(), 'history', 'occupancy');
-export const HISTORY_OR_DIR = path.join(process.cwd(), 'history', 'or');
+// On Vercel (and other read-only serverless environments), /var/task is read-only.
+// Use /tmp for ephemeral disk history; on Railway/local process.cwd() is writable.
+const WRITABLE_BASE = process.env.VERCEL ? '/tmp' : process.cwd();
+export const HISTORY_OCC_DIR = path.join(WRITABLE_BASE, 'history', 'occupancy');
+export const HISTORY_OR_DIR = path.join(WRITABLE_BASE, 'history', 'or');
 
-if (!fs.existsSync(HISTORY_OCC_DIR)) fs.mkdirSync(HISTORY_OCC_DIR, { recursive: true });
-if (!fs.existsSync(HISTORY_OR_DIR)) fs.mkdirSync(HISTORY_OR_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(HISTORY_OCC_DIR)) fs.mkdirSync(HISTORY_OCC_DIR, { recursive: true });
+  if (!fs.existsSync(HISTORY_OR_DIR)) fs.mkdirSync(HISTORY_OR_DIR, { recursive: true });
+} catch (mkdirErr) {
+  console.warn('[historyManager] Could not create history dirs (read-only fs?):', (mkdirErr as any)?.message);
+}
+
 
 export interface OccupancySnapshotSummary {
   totalOccupancy: number;
