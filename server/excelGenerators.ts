@@ -89,7 +89,7 @@ export async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: Exce
         const svgText = `
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(customBg.path)
@@ -112,7 +112,7 @@ export async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: Exce
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect width="1200" height="180" fill="#EBF3F5" />
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(Buffer.from(svgText))

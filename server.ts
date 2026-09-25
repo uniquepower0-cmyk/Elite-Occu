@@ -3392,7 +3392,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
         const svgText = `
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(customBg.path)
@@ -3415,7 +3415,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect width="1200" height="180" fill="#EBF3F5" />
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(Buffer.from(svgText))
@@ -4717,7 +4717,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <!-- Text Box Container in the middle of the header, arranged in front - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -4742,7 +4742,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
           <rect width="1200" height="180" fill="#EBF3F5" />
           <!-- Rounded text box at the center - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -8137,8 +8137,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8161,8 +8161,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -8424,7 +8424,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
       const svgText = `
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8447,7 +8447,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect width="600" height="180" fill="#E8F5E9" />
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -8748,7 +8748,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
       const svgText = `
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8771,7 +8771,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect width="600" height="180" fill="#E8F5E9" />
           <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText)).png().toBuffer();
@@ -9972,8 +9972,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -9996,8 +9996,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
