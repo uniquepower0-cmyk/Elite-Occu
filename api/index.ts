@@ -1,4 +1,18 @@
 import type { Request, Response } from 'express';
+import path from 'path';
+import fs from 'fs';
+
+// Configure fontconfig for serverless environments (AWS Lambda / Vercel)
+const fontsDir = path.resolve(process.cwd(), 'fonts');
+if (!process.env.FONTCONFIG_PATH) {
+  process.env.FONTCONFIG_PATH = fontsDir;
+}
+try {
+  const cacheDir = path.join('/tmp', 'fonts-cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+} catch (_) {}
 
 let appPromise: Promise<any> | null = null;
 let appError: Error | null = null;

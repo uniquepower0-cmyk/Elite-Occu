@@ -27,6 +27,18 @@ import {
 
 dotenv.config();
 
+// Configure fontconfig for serverless environments (AWS Lambda / Vercel / Railway)
+const fontsDir = path.resolve(process.cwd(), 'fonts');
+if (!process.env.FONTCONFIG_PATH) {
+  process.env.FONTCONFIG_PATH = fontsDir;
+}
+try {
+  const cacheDir = path.join('/tmp', 'fonts-cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+} catch (_) {}
+
 // Initialize Supabase Client for Primary Database Operations
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0';

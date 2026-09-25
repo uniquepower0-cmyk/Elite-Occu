@@ -6,7 +6,7 @@
     "api/index.ts": {
       "memory": 1024,
       "maxDuration": 60,
-      "includeFiles": "node_modules/sharp/**,node_modules/@img/**"
+      "includeFiles": "node_modules/sharp/**,node_modules/@img/**,fonts/**"
     }
   },
   "rewrites": [
