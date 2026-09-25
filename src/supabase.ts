@@ -7,7 +7,11 @@ export const SUPABASE_URL =
 
 export const SUPABASE_ANON_KEY = 
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_ANON_KEY) || 
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0';
+  '';
+
+if (!SUPABASE_ANON_KEY) {
+  console.warn('[Security] VITE_SUPABASE_ANON_KEY is not defined in environment variables. Please configure it in .env');
+}
 
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {

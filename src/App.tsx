@@ -2160,8 +2160,9 @@ export default function App() {
   const insuredCount = totalOccupied - cashCount;
 
   const filteredViewPatients = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
     return patients.filter(p => {
-      const matchSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.room.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchSearch = !q || p.name.toLowerCase().includes(q) || p.room.toLowerCase().includes(q);
       if (!matchSearch) return false;
 
       if (paymentFilter === 'cash') return isCashPayment(p.payment);
@@ -2175,7 +2176,7 @@ export default function App() {
       <div 
         className="w-full min-h-screen flex items-center justify-center p-6 relative"
         style={{
-          backgroundImage: `url('/api/header-background?t=${bgTimestamp}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -2198,7 +2199,7 @@ export default function App() {
                 </div>
               ) : (
                 <img 
-                  src={useAlternativeLogo ? `/api/elite-logo?t=${bgTimestamp}` : `/api/elite-logo-transparent?t=${bgTimestamp}`} 
+                  src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
                   alt="Elite Logo" 
                   className="w-full h-full object-contain"
                   referrerPolicy="no-referrer"
@@ -2265,7 +2266,7 @@ export default function App() {
       <div 
         className="w-full min-h-screen flex items-center justify-center p-6 relative"
         style={{
-          backgroundImage: `url('/api/header-background?t=${bgTimestamp}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -2288,7 +2289,7 @@ export default function App() {
                 </div>
               ) : (
                 <img 
-                  src={useAlternativeLogo ? `/api/elite-logo?t=${bgTimestamp}` : `/api/elite-logo-transparent?t=${bgTimestamp}`} 
+                  src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
                   alt="Elite Logo" 
                   className="w-full h-full object-contain"
                   referrerPolicy="no-referrer"
@@ -2363,7 +2364,7 @@ export default function App() {
     <div 
       className="w-full min-h-screen flex flex-col font-sans text-slate-900 overflow-hidden relative bg-slate-100"
       style={{
-        backgroundImage: `url('/api/header-background?t=${bgTimestamp}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+        backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
@@ -2390,7 +2391,7 @@ export default function App() {
               </div>
             ) : (
               <img 
-                src={useAlternativeLogo ? `/api/elite-logo?t=${bgTimestamp}` : `/api/elite-logo-transparent?t=${bgTimestamp}`} 
+                src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
                 alt="Elite Logo" 
                 className="w-full h-full object-contain transition-transform hover:scale-105 duration-300"
                 referrerPolicy="no-referrer"

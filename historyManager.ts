@@ -123,6 +123,37 @@ export function getCairoDateFromTimestamp(ts: number): string {
   }
 }
 
+const fsPromises = fs.promises;
+
+function partitionDischargedPatients(
+  rawDischarged: any[],
+  manualNames: string[] = []
+): { autoList: any[]; manualList: any[] } {
+  const manualNamesNormalized = manualNames
+    .map(m => String(m || '').toLowerCase().trim())
+    .filter(Boolean);
+
+  const autoList: any[] = [];
+  const manualList: any[] = [];
+
+  for (const p of rawDischarged) {
+    if (!p) continue;
+    const pName = String(p.name || '').toLowerCase().trim();
+    const isManual =
+      p.dischargeType === 'manual' ||
+      (pName.length > 0 &&
+        manualNamesNormalized.some(m => m === pName || m.includes(pName) || pName.includes(m)));
+
+    if (isManual) {
+      manualList.push(p);
+    } else {
+      autoList.push(p);
+    }
+  }
+
+  return { autoList, manualList };
+}
+
 /**
  * Save an Occupancy snapshot to both disk and Supabase cloud database
  */
@@ -135,27 +166,17 @@ export async function saveOccupancySnapshot(
   const rawDischarged = data.cumulativeDischarged || [];
   const manualNames = data.manuallyDischargedNames || [];
 
-  const autoList = (data.automaticallyDischarged && Array.isArray(data.automaticallyDischarged))
-    ? data.automaticallyDischarged
-    : rawDischarged.filter(p => {
-        const isManual = p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => {
-          const a = String(m || '').toLowerCase().trim();
-          const b = String(p.name || '').toLowerCase().trim();
-          return a && b && (a === b || a.includes(b) || b.includes(a));
-        }));
-        return !isManual;
-      });
+  let autoList: any[];
+  let manualList: any[];
 
-  const manualList = (data.manuallyDischarged && Array.isArray(data.manuallyDischarged))
-    ? data.manuallyDischarged
-    : rawDischarged.filter(p => {
-        const isManual = p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => {
-          const a = String(m || '').toLowerCase().trim();
-          const b = String(p.name || '').toLowerCase().trim();
-          return a && b && (a === b || a.includes(b) || b.includes(a));
-        }));
-        return isManual;
-      });
+  if (Array.isArray(data.automaticallyDischarged) && Array.isArray(data.manuallyDischarged)) {
+    autoList = data.automaticallyDischarged;
+    manualList = data.manuallyDischarged;
+  } else {
+    const partitioned = partitionDischargedPatients(rawDischarged, manualNames);
+    autoList = partitioned.autoList;
+    manualList = partitioned.manualList;
+  }
 
   const summary: OccupancySnapshotSummary = {
     ...data.summary,
@@ -187,11 +208,11 @@ export async function saveOccupancySnapshot(
     summary
   };
 
-  // 1. Write to local disk cache
+  // 1. Write to local disk cache asynchronously (compact JSON to save disk space and I/O time)
   try {
     const filePath = path.join(HISTORY_OCC_DIR, `${dateStr}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
-    console.log(`[OccupancyHistory] Snapshot saved to local disk: ${filePath} (Auto: ${autoList.length}, Manual: ${manualList.length})`);
+    await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
+    console.log(`[OccupancyHistory] Snapshot saved to local disk asynchronously: ${filePath} (Auto: ${autoList.length}, Manual: ${manualList.length})`);
   } catch (err) {
     console.error('[OccupancyHistory] Failed to write local snapshot:', err);
   }
@@ -256,7 +277,7 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
   const filePath = path.join(HISTORY_OCC_DIR, `${cleanDate}.json`);
   if (fs.existsSync(filePath)) {
     try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
+      const raw = await fsPromises.readFile(filePath, 'utf-8');
       snapshot = JSON.parse(raw) as OccupancySnapshot;
     } catch (err) {
       console.error(`[OccupancyHistory] Failed to parse local snapshot for ${cleanDate}:`, err);
@@ -307,7 +328,7 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
 
         // Cache locally
         try {
-          fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+          await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
         } catch (e) {}
       } else {
         // Fallback check for legacy monolithic node
@@ -320,7 +341,7 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
         if (legacyNode && legacyNode.data) {
           snapshot = legacyNode.data as OccupancySnapshot;
           try {
-            fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+            await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
           } catch (e) {}
         }
       }
@@ -335,23 +356,9 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
     const manualNames = snapshot.manuallyDischargedNames || [];
 
     if (!snapshot.automaticallyDischarged || !snapshot.manuallyDischarged) {
-      snapshot.automaticallyDischarged = rawDischarged.filter(p => {
-        const isManual = p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => {
-          const a = String(m || '').toLowerCase().trim();
-          const b = String(p.name || '').toLowerCase().trim();
-          return a && b && (a === b || a.includes(b) || b.includes(a));
-        }));
-        return !isManual;
-      });
-
-      snapshot.manuallyDischarged = rawDischarged.filter(p => {
-        const isManual = p.dischargeType === 'manual' || (p.name && manualNames.some((m: string) => {
-          const a = String(m || '').toLowerCase().trim();
-          const b = String(p.name || '').toLowerCase().trim();
-          return a && b && (a === b || a.includes(b) || b.includes(a));
-        }));
-        return isManual;
-      });
+      const partitioned = partitionDischargedPatients(rawDischarged, manualNames);
+      snapshot.automaticallyDischarged = partitioned.autoList;
+      snapshot.manuallyDischarged = partitioned.manualList;
     }
 
     if (snapshot.summary) {
@@ -375,8 +382,8 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
   try {
     const filePath = path.join(HISTORY_OCC_DIR, `${cleanDate}.json`);
     if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log(`[OccupancyHistory] Deleted local snapshot file: ${filePath}`);
+      await fsPromises.unlink(filePath);
+      console.log(`[OccupancyHistory] Deleted local snapshot file asynchronously: ${filePath}`);
     }
   } catch (err) {
     console.error(`[OccupancyHistory] Error deleting local snapshot file for ${cleanDate}:`, err);
@@ -404,11 +411,12 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
     let entries: DateIndexEntry[] = [];
     if (fs.existsSync(indexPath)) {
       try {
-        entries = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) || [];
+        const raw = await fsPromises.readFile(indexPath, 'utf-8');
+        entries = JSON.parse(raw) || [];
       } catch (e) {}
     }
     entries = entries.filter(e => e.date !== cleanDate);
-    fs.writeFileSync(indexPath, JSON.stringify(entries, null, 2));
+    await fsPromises.writeFile(indexPath, JSON.stringify(entries));
 
     await historySupabase.from('rtdb_nodes').upsert({
       path: `history/occupancy_index`,
@@ -441,8 +449,8 @@ export async function saveORSnapshot(
   // 1. Local disk
   try {
     const filePath = path.join(HISTORY_OR_DIR, `${dateStr}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
-    console.log(`[ORHistory] Snapshot saved to local disk: ${filePath}`);
+    await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
+    console.log(`[ORHistory] Snapshot saved to local disk asynchronously: ${filePath}`);
   } catch (err) {
     console.error('[ORHistory] Failed to write local snapshot:', err);
   }
@@ -496,7 +504,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
   const filePath = path.join(HISTORY_OR_DIR, `${cleanDate}.json`);
   if (fs.existsSync(filePath)) {
     try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
+      const raw = await fsPromises.readFile(filePath, 'utf-8');
       return JSON.parse(raw) as ORSnapshot;
     } catch (err) {
       console.error(`[ORHistory] Failed to parse local snapshot for ${cleanDate}:`, err);
@@ -532,7 +540,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
       };
 
       try {
-        fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+        await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
       } catch (e) {}
 
       return snapshot;
@@ -548,7 +556,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
     if (legacyNode && legacyNode.data) {
       const snapshot = legacyNode.data as ORSnapshot;
       try {
-        fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+        await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
       } catch (e) {}
       return snapshot;
     }
@@ -568,7 +576,8 @@ async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntr
 
   if (fs.existsSync(indexPath)) {
     try {
-      entries = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) || [];
+      const raw = await fsPromises.readFile(indexPath, 'utf-8');
+      entries = JSON.parse(raw) || [];
     } catch (e) {}
   }
 
@@ -577,9 +586,9 @@ async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntr
   entries.unshift(entry);
   entries.sort((a, b) => b.date.localeCompare(a.date));
 
-  // Save to disk
+  // Save to disk asynchronously
   try {
-    fs.writeFileSync(indexPath, JSON.stringify(entries, null, 2));
+    await fsPromises.writeFile(indexPath, JSON.stringify(entries));
   } catch (e) {}
 
   // Save to Supabase
@@ -604,20 +613,22 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
 
   if (fs.existsSync(indexPath)) {
     try {
-      diskEntries = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) || [];
+      const raw = await fsPromises.readFile(indexPath, 'utf-8');
+      diskEntries = JSON.parse(raw) || [];
     } catch (e) {}
   }
 
   // Also read directory files to ensure no disk files are missed
   try {
     if (fs.existsSync(dir)) {
-      const files = fs.readdirSync(dir);
+      const files = await fsPromises.readdir(dir);
       for (const file of files) {
         if (file.endsWith('.json')) {
           const date = file.replace('.json', '');
           if (!diskEntries.some(e => e.date === date)) {
             try {
-              const content = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8'));
+              const raw = await fsPromises.readFile(path.join(dir, file), 'utf-8');
+              const content = JSON.parse(raw);
               diskEntries.push({
                 date,
                 timestamp: content.timestamp || Date.now(),

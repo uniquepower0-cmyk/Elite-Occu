@@ -69,46 +69,62 @@ export function addLogosToSheet(workbook: ExcelJS.Workbook, worksheet: ExcelJS.W
   }
 }
 
-export async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
-  const customBg = getCustomHeaderBgInfo();
-  let bgBuffer: Buffer | null = null;
-  
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(1200, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error compositing textbox on custom background:', sharpErr);
-    }
-  }
+const headerBufferCache = new Map<string, Buffer>();
 
+export function clearHeaderBufferCache() {
+  headerBufferCache.clear();
+}
+
+export async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
+  const safeTitle = escapeXml(title);
+  const customBg = getCustomHeaderBgInfo();
+  const bgKey = customBg?.path || 'fallback';
+  const cacheKey = `${safeTitle}__${bgKey}`;
+
+  let bgBuffer = headerBufferCache.get(cacheKey) || null;
+  
   if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect width="1200" height="180" fill="#EBF3F5" />
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (sharpFallbackErr) {
-      console.error('Error generating fallback header:', sharpFallbackErr);
+    if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
+      try {
+        const svgText = `
+          <svg width="1200" height="180" viewBox="0 0 1200 180">
+            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+          </svg>
+        `;
+        bgBuffer = await sharp(customBg.path)
+          .resize(1200, 180, { fit: 'fill' })
+          .composite([{
+            input: Buffer.from(svgText),
+            top: 0,
+            left: 0
+          }])
+          .png()
+          .toBuffer();
+      } catch (sharpErr) {
+        console.error('Error compositing textbox on custom background:', sharpErr);
+      }
+    }
+
+    if (!bgBuffer) {
+      try {
+        const svgText = `
+          <svg width="1200" height="180" viewBox="0 0 1200 180">
+            <rect width="1200" height="180" fill="#EBF3F5" />
+            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
+            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+          </svg>
+        `;
+        bgBuffer = await sharp(Buffer.from(svgText))
+          .png()
+          .toBuffer();
+      } catch (sharpFallbackErr) {
+        console.error('Error generating fallback header:', sharpFallbackErr);
+      }
+    }
+
+    if (bgBuffer) {
+      headerBufferCache.set(cacheKey, bgBuffer);
     }
   }
 

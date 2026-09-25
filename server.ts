@@ -231,6 +231,7 @@ let pendingDischargePatientsText = "";
 let uploadedAt: number | null = null;
 let lastActiveDate = "";
 let lastTransfersDate = "";
+let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
 
 function isManuallyDischarged(patientName: string): boolean {
@@ -3346,46 +3347,75 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.getColumn(6).width = 20;
 }
 
-async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
-  const customBg = getCustomHeaderBgInfo();
-  let bgBuffer: Buffer | null = null;
-  
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(1200, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error compositing textbox on custom background:', sharpErr);
+const headerBufferCache = new Map<string, Buffer>();
+
+function clearHeaderBufferCache() {
+  headerBufferCache.clear();
+}
+
+function safeEscapeXml(unsafe: string): string {
+  return String(unsafe || '').replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case '\'': return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
     }
-  }
+  });
+}
+
+async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
+  const safeTitle = safeEscapeXml(title);
+  const customBg = getCustomHeaderBgInfo();
+  const bgKey = customBg?.path || 'fallback';
+  const cacheKey = `${safeTitle}__${bgKey}`;
+
+  let bgBuffer = headerBufferCache.get(cacheKey) || null;
 
   if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect width="1200" height="180" fill="#EBF3F5" />
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${title}</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (sharpFallbackErr) {
-      console.error('Error generating fallback header:', sharpFallbackErr);
+    if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
+      try {
+        const svgText = `
+          <svg width="1200" height="180" viewBox="0 0 1200 180">
+            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+          </svg>
+        `;
+        bgBuffer = await sharp(customBg.path)
+          .resize(1200, 180, { fit: 'fill' })
+          .composite([{
+            input: Buffer.from(svgText),
+            top: 0,
+            left: 0
+          }])
+          .png()
+          .toBuffer();
+      } catch (sharpErr) {
+        console.error('Error compositing textbox on custom background:', sharpErr);
+      }
+    }
+
+    if (!bgBuffer) {
+      try {
+        const svgText = `
+          <svg width="1200" height="180" viewBox="0 0 1200 180">
+            <rect width="1200" height="180" fill="#EBF3F5" />
+            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
+            <text x="600" y="105" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+          </svg>
+        `;
+        bgBuffer = await sharp(Buffer.from(svgText))
+          .png()
+          .toBuffer();
+      } catch (sharpFallbackErr) {
+        console.error('Error generating fallback header:', sharpFallbackErr);
+      }
+    }
+
+    if (bgBuffer) {
+      headerBufferCache.set(cacheKey, bgBuffer);
     }
   }
 
@@ -6527,8 +6557,6 @@ async function resolveORDataset(reqDate?: string | null) {
 }
 
 // Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
-let lastEgyptianAutoResetDate = '';
-
 async function checkEgyptianDailyReset() {
   try {
     const cairo = getCairoDateTime();
@@ -7245,8 +7273,13 @@ app.post('/api/upload-header-background', upload.single('file'), (req: any, res)
       }
     } catch (_) {}
 
-    try { fs.writeFileSync(savePath, req.file.buffer);
-    console.log('Saved custom header background image to:', savePath); } catch (e) { console.error('Failed to save header bg image (might be read-only env)', e); }
+    try { 
+      fs.writeFileSync(savePath, req.file.buffer);
+      clearHeaderBufferCache();
+      console.log('Saved custom header background image to:', savePath); 
+    } catch (e) { 
+      console.error('Failed to save header bg image (might be read-only env)', e); 
+    }
     res.json({ success: true, message: 'Header background uploaded successfully' });
   } catch (error: any) {
     console.error('Header background upload error:', error);
@@ -9996,6 +10029,22 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
 
   let serial = 1;
 
+  // Pre-index medical plans by normalized room and normalized name for O(1) lookups
+  const planByRoom = new Map<string, any>();
+  const planByName = new Map<string, any>();
+  if (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0) {
+    for (const pl of cumulativeMedicalPlans) {
+      if (pl.colB) {
+        const nr = normalizeRoom(pl.colB);
+        if (nr && !planByRoom.has(nr)) planByRoom.set(nr, pl);
+      }
+      if (pl.colD) {
+        const nm = normalizeArabicName(pl.colD);
+        if (nm && !planByName.has(nm)) planByName.set(nm, pl);
+      }
+    }
+  }
+
   ZONE_ORDER.forEach(zoneName => {
     const list = groupedZones[zoneName] || [];
     if (list.length === 0) return; 
@@ -10018,11 +10067,16 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       
       let specialty = "Other / غير محدد";
       if (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0) {
-        const plan = cumulativeMedicalPlans.find(plan => {
-          if (plan.colD && p.name && isNameMatch(plan.colD, p.name)) return true;
-          if (plan.colB && p.room && normalizeRoom(plan.colB) === normalizeRoom(p.room)) return true;
-          return false;
-        });
+        const normRoom = normalizeRoom(p.room);
+        const normName = normalizeArabicName(p.name);
+        let plan = (normRoom ? planByRoom.get(normRoom) : null) || (normName ? planByName.get(normName) : null);
+        if (!plan) {
+          plan = cumulativeMedicalPlans.find(pl => {
+            if (pl.colD && p.name && isNameMatch(pl.colD, p.name)) return true;
+            if (pl.colB && p.room && normalizeRoom(pl.colB) === normRoom) return true;
+            return false;
+          });
+        }
         if (plan && plan.colX) {
           const specVal = (plan.colX || "").trim();
           if (specVal) {
@@ -13104,6 +13158,19 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   let totalOccupiedCount = 0;
   let totalRoomsCount = 0;
 
+  // Pre-index medical plans by normalized room for O(1) lookups
+  const planByNormRoom = new Map<string, any>();
+  if (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0) {
+    for (const p of cumulativeMedicalPlans) {
+      if (p && p.colB) {
+        const nRoom = normalizeRoom(p.colB);
+        if (nRoom && !planByNormRoom.has(nRoom)) {
+          planByNormRoom.set(nRoom, p);
+        }
+      }
+    }
+  }
+
   // 4. Fill Group Data
   roomGroups.forEach(group => {
     let groupOccupied = 0;
@@ -13127,11 +13194,8 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
         rowData = { rawRoom: roomID, patientName: "", contract: "", date: "", physician: "" };
       }
       
-      // Enrich with medical plan data only as fallback
-      const plan = cumulativeMedicalPlans.find(p => {
-        const normPlanB = normalizeRoom(p.colB);
-        return normPlanB === normID || (normID.includes(" ") && normPlanB === normID.split(" ")[0]);
-      });
+      // Enrich with medical plan data only as fallback - O(1) map lookup
+      const plan = planByNormRoom.get(normID) || (normID.includes(" ") ? planByNormRoom.get(normID.split(" ")[0]) : undefined);
       const patientNameRaw = rowData.patientName || (plan ? plan.colD : "") || "";
       const patientName = String(patientNameRaw).trim();
       const occupied = patientName.length > 0;
