@@ -3278,7 +3278,7 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.mergeCells('A1:F1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'الاشغال';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2F1' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -3392,7 +3392,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
         const svgText = `
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(customBg.path)
@@ -3415,7 +3415,7 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
           <svg width="1200" height="180" viewBox="0 0 1200 180">
             <rect width="1200" height="180" fill="#EBF3F5" />
             <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-            <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+            <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
           </svg>
         `;
         bgBuffer = await sharp(Buffer.from(svgText))
@@ -4645,7 +4645,7 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       }
-      cell.font = { name: 'Arial', size: 11 };
+      cell.font = { name: 'Calibri', size: 11 };
     });
   });
 
@@ -4717,7 +4717,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <!-- Text Box Container in the middle of the header, arranged in front - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -4742,7 +4742,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
           <rect width="1200" height="180" fill="#EBF3F5" />
           <!-- Rounded text box at the center - nearly transparent, no outline -->
           <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+          <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -4921,7 +4921,7 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
   sheet.mergeCells('A1:F1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'دخول';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2F1' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -5028,7 +5028,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
   sheet.mergeCells('A1:F1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'خروج';
-  titleCell.font = { name: 'Arial', size: 36, bold: true };
+  titleCell.font = { name: 'Calibri', size: 36, bold: true };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
@@ -5037,7 +5037,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
   const headerRow = sheet.getRow(2);
   headerRow.values = ['', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الدخول'];
   headerRow.eachCell((cell) => {
-    cell.font = { name: 'Arial', size: 10, bold: true };
+    cell.font = { name: 'Calibri', size: 10, bold: true };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4B084' } }; 
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
     cell.border = {
@@ -5089,7 +5089,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
       cleanAdmissionDateStr(patient.date || patient.admissionDate || "")
     ];
     row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      cell.font = { name: 'Arial', size: 10, bold: true };
+      cell.font = { name: 'Calibri', size: 10, bold: true };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFBFBFBF' } },
@@ -5098,7 +5098,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
         right: { style: 'thin', color: { argb: 'FFBFBFBF' } }
       };
     });
-    row.getCell(1).font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF000000' } };
+    row.getCell(1).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF000000' } };
     currentRowIdx++;
   });
 }
@@ -5122,7 +5122,7 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
   sheet.mergeCells('A1:F1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'حالات الغسيل الكلوي';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2F1' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -5181,7 +5181,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'مديونيات الجهات والشركات';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE1BEE7' } }; // Soft light purple
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -5259,7 +5259,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'المديونيات';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F4C3' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -7771,7 +7771,7 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
   sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = `تطورات الحالات المنومة - ${sheetName}`;
-  titleCell.font = { size: 22, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 22, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -7811,7 +7811,7 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       }
-      cell.font = { name: 'Arial', size: 11 };
+      cell.font = { name: 'Calibri', size: 11 };
     });
   });
 
@@ -8137,8 +8137,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8161,8 +8161,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -8424,7 +8424,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
       const svgText = `
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8447,7 +8447,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect width="600" height="180" fill="#E8F5E9" />
           <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -8748,7 +8748,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
       const svgText = `
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -8771,7 +8771,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
         <svg width="600" height="180" viewBox="0 0 600 180">
           <rect width="600" height="180" fill="#E8F5E9" />
           <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText)).png().toBuffer();
@@ -9972,8 +9972,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       const svgText = `
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(customBg.path)
@@ -9996,8 +9996,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         <svg width="1200" height="180" viewBox="0 0 1200 180">
           <rect width="1200" height="180" fill="#EBF3F5" />
           <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Cairo', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
         </svg>
       `;
       bgBuffer = await sharp(Buffer.from(svgText))
@@ -10207,7 +10207,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
   sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'بيان بالحالات المنومة و المرافقين';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE1F5FE' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -12960,7 +12960,7 @@ function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
   sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'LOS Sheet';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -13147,7 +13147,7 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'Inpatient Occupancy Summary / ملخص إشغال الأقسام الداخلية';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -13359,7 +13359,7 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'Closed Units Occupancy Summary / ملخص إشغال الوحدات المغلقة';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE1BEE7' } };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
@@ -13778,7 +13778,7 @@ function addSpecialtyOccupancySheet(
   sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'الحالات المنومة طبقاً للتخصص';
-  titleCell.font = { size: 24, bold: true, name: 'Arial', color: { argb: 'FF000000' } };
+  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
