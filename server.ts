@@ -22,7 +22,11 @@ import {
   deleteOccupancySnapshot,
   saveORSnapshot,
   getORSnapshot,
-  getAvailableDates
+  getAvailableDates,
+  saveChangeLogEntry,
+  getChangeLogForDate,
+  getChangeLogDates,
+  type ChangeType,
 } from './historyManager.js';
 
 dotenv.config();
@@ -1024,8 +1028,8 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
 function processPatientTransfers(
   patients: { name: string; mrn?: string; room: string; physician?: string; contractor?: string; date?: string }[],
   sheetDate?: string
-) {
-  if (!patients || !Array.isArray(patients) || patients.length === 0) return;
+): boolean {
+  if (!patients || !Array.isArray(patients) || patients.length === 0) return false;
   const transferDateStr = sheetDate || getTodayRiyadhDateTimeStr();
   let transfersModified = false;
 
@@ -1177,8 +1181,11 @@ function processPatientTransfers(
   });
 
   if (transfersModified) {
-    saveData();
+    // Callers are responsible for awaiting saveData() after this function.
+    // Tag the pending change type so the changelog captures this correctly.
+    setSaveChangeType('transfer');
   }
+  return transfersModified;
 }
 
 function sanitizeAndDeduplicateTransfers(): boolean {
@@ -2604,12 +2611,81 @@ async function saveData() {
       } catch (snapErr) {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
       }
+
+      // Fire a debounced change-log entry for this save (type injected by caller via pendingChangeType)
+      triggerChangeLogSnapshot(_pendingChangeType);
+      _pendingChangeType = 'general'; // reset after consuming
     } catch (sbEx) {
       console.error('Supabase sync exception:', sbEx);
     }
   } catch (err: any) {
     console.error('Failed to save data:', err);
   }
+}
+
+// Allows callers to specify what kind of change is being saved before calling saveData()
+let _pendingChangeType: ChangeType = 'general';
+function setSaveChangeType(t: ChangeType) { _pendingChangeType = t; }
+
+
+// ─── Debounced Change-Log snapshot trigger ────────────────────────────────────
+// Called after every saveData(). Batches rapid saves into one changelog entry.
+let changeLogDebounceTimer: NodeJS.Timeout | null = null;
+
+function buildChangeLogSummary() {
+  const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+  const bodyRows = occRows.length > 3 ? occRows.slice(3) : occRows;
+  const autoList = (cumulativeDischarged || []).filter(p =>
+    p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
+  );
+  const manualList = (cumulativeDischarged || []).filter(p =>
+    p.dischargeType === 'manual' || isManuallyDischarged(p.name)
+  );
+  return {
+    totalOccupancy: bodyRows.length,
+    entriesCount: (cumulativeEntries || []).length,
+    dischargesCount: (cumulativeDischarged || []).length,
+    autoDischargesCount: autoList.length,
+    manualDischargesCount: manualList.length,
+    dialysisCount: (cumulativeDialysis || []).length,
+    debtsCount: (cumulativeDebts || []).length,
+    insuredDebtsCount: (cumulativeInsuredDebts || []).length,
+    transfersCount: (cumulativeTransfers || []).length,
+  };
+}
+
+function triggerChangeLogSnapshot(changeType: ChangeType = 'general') {
+  // Only log if there is something meaningful to record
+  if (
+    (!hospitalData || hospitalData.length === 0) &&
+    (!cumulativeDischarged || cumulativeDischarged.length === 0) &&
+    (!cumulativeEntries || cumulativeEntries.length === 0) &&
+    (!cumulativeDialysis || cumulativeDialysis.length === 0) &&
+    (!cumulativeTransfers || cumulativeTransfers.length === 0)
+  ) return;
+
+  if (changeLogDebounceTimer) clearTimeout(changeLogDebounceTimer);
+  changeLogDebounceTimer = setTimeout(async () => {
+    try {
+      const cairo = getCairoDateTime();
+      const activeDateStr = uploadedAt
+        ? getCairoDateFromTimestamp(uploadedAt)
+        : (lastActiveDate || cairo.dateStr);
+
+      await saveChangeLogEntry({
+        date: activeDateStr,
+        changeType,
+        summary: buildChangeLogSummary(),
+        cumulativeEntries: cumulativeEntries || [],
+        cumulativeDischarged: cumulativeDischarged || [],
+        cumulativeDialysis: cumulativeDialysis || [],
+        cumulativeTransfers: cumulativeTransfers || [],
+        vipCasesText: vipCasesText || '',
+      });
+    } catch (err) {
+      console.error('[ChangeLog] Failed to save change log entry:', err);
+    }
+  }, 750);
 }
 
 // Background auto-fetch schedule from database on update
@@ -2816,13 +2892,45 @@ async function handleUnifiedUpload(req: any, res: any) {
     const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
 
     if (isDifferentDay) {
-      console.log(`[Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Initializing fresh daily occupancy baseline.`);
+      console.log(`[Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Archiving previous day data before resetting...`);
+
+      // Archive previous day before clearing — T2 fix
+      try {
+        // Final changelog entry for the previous day
+        if (
+          (hospitalData && hospitalData.length > 0) ||
+          (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+          (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+          (cumulativeDialysis && cumulativeDialysis.length > 0)
+        ) {
+          await saveChangeLogEntry({
+            date: activePrevDate,
+            changeType: 'daily_final',
+            summary: buildChangeLogSummary(),
+            cumulativeEntries: cumulativeEntries || [],
+            cumulativeDischarged: cumulativeDischarged || [],
+            cumulativeDialysis: cumulativeDialysis || [],
+            cumulativeTransfers: cumulativeTransfers || [],
+            vipCasesText: vipCasesText || '',
+          });
+          await takeOccupancySnapshotHelper(activePrevDate);
+        }
+        if (cumulativeORList && cumulativeORList.length > 0) {
+          await takeORSnapshotHelper(activePrevDate);
+        }
+      } catch (archiveErr) {
+        console.error('[Upload] Failed to archive previous day before day-rollover reset:', archiveErr);
+      }
+
       cumulativeDischarged = [];
       cumulativeEntries = [];
       cumulativeDialysis = [];
       cumulativeTransfers = [];
       manuallyDischargedNames = [];
       patientRoomRegistry = {};
+      lastEgyptianAutoResetDate = activePrevDate;
+      lastActiveDate = '';
+      lastTransfersDate = '';
       previousHospitalData = rows;
     } else if (baselineData && !isNewSheetLikelyEmpty) {
       const oldActivePatients = extractRawPatientsFromRows(baselineData);
@@ -3028,6 +3136,7 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     uploadedAt = Date.now();
     lastActiveDate = getCairoDateTime().dateStr;
+    setSaveChangeType('upload');
     await saveData();
 
     res.json({ 
@@ -3139,16 +3248,20 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
     
-    let dateStr = "";
-    // Check first few rows for date patterns
-    for (let r = 0; r < Math.min(targetRows.length, 5); r++) {
-      const rowVal = targetRows[r].map(c => String(c || "")).join(" ");
-      const datePattern = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/;
+    // OR7 fix: search more rows (up to 10) for a date, and fallback to today's Cairo date
+    let dateStr = '';
+    const datePattern = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/;
+    for (let r = 0; r < Math.min(targetRows.length, 10); r++) {
+      const rowVal = targetRows[r].map(c => String(c || '')).join(' ');
       const dateMatch = rowVal.match(datePattern);
       if (dateMatch) {
         dateStr = dateMatch[0];
         break;
       }
+    }
+    // Always ensure we have a non-empty date for snapshot filing
+    if (!dateStr) {
+      dateStr = getCairoDateTime().dateStr;
     }
     
     dataRows.forEach((row, i) => {
@@ -3185,6 +3298,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     
     cumulativeORList = parsedData;
     uploadedAt = Date.now();
+    setSaveChangeType('upload');
     await saveData();
     
     return res.status(200).json({
@@ -5685,6 +5799,7 @@ async function updateHospitalState(rows: any[][]) {
 
   cumulativeLOS = losSheetRaw;
   uploadedAt = Date.now();
+  setSaveChangeType('upload');
   await saveData();
 
   return {
@@ -6163,6 +6278,7 @@ app.post('/api/vip-cases', async (req, res) => {
   } catch (err) {
     console.error('Failed to persist VIP cases to settings/vip_cases in Supabase:', err);
   }
+  setSaveChangeType('setting');
   await saveData();
   res.json({ success: true, text: vipCasesText });
 });
@@ -6328,6 +6444,7 @@ app.post('/api/pending-discharge', async (req, res) => {
   pendingDischargePatientsText = remainingInputNames.join("\n");
   lastActiveDate = getCairoDateTime().dateStr;
 
+  setSaveChangeType('discharge');
   await saveData();
 
   res.json({
@@ -6433,7 +6550,31 @@ async function takeOccupancySnapshotHelper(customDate?: string) {
 async function takeORSnapshotHelper(customDate?: string) {
   if (!cumulativeORList || cumulativeORList.length === 0) return null;
   const cairo = getCairoDateTime();
-  const dateStr = customDate || cairo.dateStr;
+
+  // OR4 + OR8 fix: prefer the embedded orListDate from the OR items themselves,
+  // then customDate, then today's Cairo date — so the OR snapshot is always
+  // filed under the correct operational date regardless of when it was uploaded.
+  let resolvedDate = customDate || cairo.dateStr;
+  if (!customDate && cumulativeORList.length > 0) {
+    const rawListDate = cumulativeORList[0]?.orListDate || '';
+    if (rawListDate) {
+      // Parse the embedded date (e.g. "9/25/2026" or "25/9/2026") to YYYY-MM-DD
+      const dateMatch = rawListDate.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (dateMatch) {
+        const n1 = parseInt(dateMatch[1], 10);
+        const n2 = parseInt(dateMatch[2], 10);
+        const yr = dateMatch[3];
+        // Determine month/day: if n1 > 12, n1 is day; otherwise treat as M/D/Y
+        const [month, day] = n1 > 12 ? [n2, n1] : [n1, n2];
+        const parsed = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        // Only use if it's a plausible date string
+        if (/^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
+          resolvedDate = parsed;
+        }
+      }
+    }
+  }
+
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
   const enriched = getEnrichedOrListForStats(cumulativeORList, occRows);
   
@@ -6444,7 +6585,7 @@ async function takeORSnapshotHelper(customDate?: string) {
   };
 
   return await saveORSnapshot({
-    date: dateStr,
+    date: resolvedDate,
     orList: cumulativeORList,
     summary
   });
@@ -6578,6 +6719,23 @@ async function checkEgyptianDailyReset() {
         lastEgyptianAutoResetDate = cairo.dateStr;
         console.log(`[Scheduled Reset] 11:59 PM Egyptian time reached for date ${cairo.dateStr}. Archiving history reference and resetting occupancy, patient transfers, dialysis & discharged cases...`);
         
+        // 0. Save an immutable FINAL change-log entry BEFORE clearing any data
+        try {
+          await saveChangeLogEntry({
+            date: cairo.dateStr,
+            changeType: 'daily_final',
+            summary: buildChangeLogSummary(),
+            cumulativeEntries: cumulativeEntries || [],
+            cumulativeDischarged: cumulativeDischarged || [],
+            cumulativeDialysis: cumulativeDialysis || [],
+            cumulativeTransfers: cumulativeTransfers || [],
+            vipCasesText: vipCasesText || '',
+          });
+          console.log(`[Scheduled Reset] daily_final change-log entry saved for ${cairo.dateStr}.`);
+        } catch (clErr) {
+          console.error('[Scheduled Reset] Failed to save daily_final changelog entry:', clErr);
+        }
+
         // 1. Snapshot occupancy, discharged cases, dialysis, and transfers if data exists
         if ((hospitalData && hospitalData.length > 0) || (cumulativeTransfers && cumulativeTransfers.length > 0) || (cumulativeDischarged && cumulativeDischarged.length > 0) || (cumulativeDialysis && cumulativeDialysis.length > 0)) {
           await takeOccupancySnapshotHelper(cairo.dateStr);
@@ -6630,6 +6788,23 @@ async function checkEgyptianDailyReset() {
     ) {
       console.log(`[Day-Rollover Reset] Detected data from previous day (${lastActiveDate}). Current date is ${cairo.dateStr}. Archiving reference snapshot for ${lastActiveDate} and resetting daily datasets...`);
       
+      // 0. Save an immutable FINAL change-log entry for the previous day BEFORE clearing any data
+      try {
+        await saveChangeLogEntry({
+          date: lastActiveDate,
+          changeType: 'daily_final',
+          summary: buildChangeLogSummary(),
+          cumulativeEntries: cumulativeEntries || [],
+          cumulativeDischarged: cumulativeDischarged || [],
+          cumulativeDialysis: cumulativeDialysis || [],
+          cumulativeTransfers: cumulativeTransfers || [],
+          vipCasesText: vipCasesText || '',
+        });
+        console.log(`[Day-Rollover Reset] daily_final change-log entry saved for previous day ${lastActiveDate}.`);
+      } catch (clErr) {
+        console.error('[Day-Rollover Reset] Failed to save daily_final changelog entry:', clErr);
+      }
+
       // Take snapshot for that previous day
       await takeOccupancySnapshotHelper(lastActiveDate);
       
@@ -6683,6 +6858,26 @@ app.post('/api/reset', async (req, res) => {
     }
     if (lastActiveDate) {
       targetDatesToDelete.add(lastActiveDate);
+    }
+
+    // 0. Save an immutable manual_reset changelog entry BEFORE deleting/clearing data
+    try {
+      const resetDateStr = uploadedAt
+        ? getCairoDateFromTimestamp(uploadedAt)
+        : (lastActiveDate || cairo.dateStr);
+      await saveChangeLogEntry({
+        date: resetDateStr,
+        changeType: 'manual_reset',
+        summary: buildChangeLogSummary(),
+        cumulativeEntries: cumulativeEntries || [],
+        cumulativeDischarged: cumulativeDischarged || [],
+        cumulativeDialysis: cumulativeDialysis || [],
+        cumulativeTransfers: cumulativeTransfers || [],
+        vipCasesText: vipCasesText || '',
+      });
+      console.log(`[Manual Reset] manual_reset change-log entry saved for ${resetDateStr}.`);
+    } catch (clErr) {
+      console.error('[Manual Reset] Failed to save manual_reset changelog entry:', clErr);
     }
 
     // 1. Delete today's / active date's occupancy snapshot completely from database and disk
@@ -6744,13 +6939,41 @@ app.post('/api/reset-or', async (req, res) => {
   console.log('Reset OR list requested');
   const cairo = getCairoDateTime();
   try {
-    // 1. Take a history of OR list before resetting, saved at database by date
     if (cumulativeORList && cumulativeORList.length > 0) {
       console.log(`[Reset] Taking reference snapshot of OR dashboard for date ${cairo.dateStr} before reset...`);
+
+      // OR6 fix: Save immutable changelog entry before clearing
+      try {
+        // Use the OR list's own date for the audit entry
+        const orDate = (() => {
+          const raw = cumulativeORList[0]?.orListDate || '';
+          const m = raw.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+          if (m) {
+            const n1 = parseInt(m[1], 10), n2 = parseInt(m[2], 10), yr = m[3];
+            const [mo, dy] = n1 > 12 ? [n2, n1] : [n1, n2];
+            const p = `${yr}-${String(mo).padStart(2,'0')}-${String(dy).padStart(2,'0')}`;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return p;
+          }
+          return cairo.dateStr;
+        })();
+        await saveChangeLogEntry({
+          date: orDate,
+          changeType: 'manual_reset',
+          summary: buildChangeLogSummary(),
+          cumulativeEntries: cumulativeEntries || [],
+          cumulativeDischarged: cumulativeDischarged || [],
+          cumulativeDialysis: cumulativeDialysis || [],
+          cumulativeTransfers: cumulativeTransfers || [],
+          vipCasesText: vipCasesText || '',
+        });
+      } catch (clErr) {
+        console.error('[OR Reset] Failed to save changelog entry:', clErr);
+      }
+
       await takeORSnapshotHelper(cairo.dateStr);
     }
 
-    // 2. Reset OR list
+    // Reset OR list
     cumulativeORList = [];
     // Note: Discharged patients remain persistent!
 
@@ -6989,6 +7212,44 @@ app.post('/api/history/or/snapshot', async (req, res) => {
     });
   } catch (err: any) {
     console.error('Failed to take OR snapshot:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Change Log API Endpoints ─────────────────────────────────────────────────
+
+/**
+ * GET /api/history/changelog/dates
+ * Returns a list of all dates that have at least one change-log entry.
+ */
+app.get('/api/history/changelog/dates', async (req, res) => {
+  try {
+    const dates = await getChangeLogDates();
+    res.json({ dates });
+  } catch (err: any) {
+    console.error('Failed to get changelog dates:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/history/changelog?date=YYYY-MM-DD
+ * Returns all change-log entries for a given date (oldest → newest).
+ * If no date is provided, defaults to today's Cairo date.
+ */
+app.get('/api/history/changelog', async (req, res) => {
+  try {
+    const dateStr = req.query.date
+      ? String(req.query.date).trim()
+      : getCairoDateTime().dateStr;
+    const entries = await getChangeLogForDate(dateStr);
+    res.json({
+      date: dateStr,
+      count: entries.length,
+      entries,
+    });
+  } catch (err: any) {
+    console.error('Failed to get changelog entries:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -7431,6 +7692,7 @@ app.post('/api/transfers', async (req, res) => {
     };
 
     lastTransfersDate = getCairoDateTime().dateStr;
+    setSaveChangeType('transfer');
     await saveData();
     res.json({ success: true, transfers: cumulativeTransfers, record });
   } catch (error: any) {
@@ -7443,6 +7705,7 @@ app.delete('/api/transfers/:id', async (req, res) => {
   try {
     const id = req.params.id;
     cumulativeTransfers = cumulativeTransfers.filter(t => t.id !== id);
+    setSaveChangeType('transfer');
     await saveData();
     res.json({ success: true, transfers: cumulativeTransfers });
   } catch (error: any) {
@@ -7452,9 +7715,29 @@ app.delete('/api/transfers/:id', async (req, res) => {
 
 app.post('/api/transfers/reset', async (req, res) => {
   try {
+    // Save audit trail before clearing
+    if (cumulativeTransfers && cumulativeTransfers.length > 0) {
+      try {
+        const cairo = getCairoDateTime();
+        const resetDateStr = lastActiveDate || cairo.dateStr;
+        await saveChangeLogEntry({
+          date: resetDateStr,
+          changeType: 'manual_reset',
+          summary: buildChangeLogSummary(),
+          cumulativeEntries: cumulativeEntries || [],
+          cumulativeDischarged: cumulativeDischarged || [],
+          cumulativeDialysis: cumulativeDialysis || [],
+          cumulativeTransfers: cumulativeTransfers || [],
+          vipCasesText: vipCasesText || '',
+        });
+      } catch (clErr) {
+        console.error('[Transfers Reset] Failed to save changelog entry:', clErr);
+      }
+    }
     cumulativeTransfers = [];
     patientRoomRegistry = {};
-    lastTransfersDate = "";
+    lastTransfersDate = '';
+    setSaveChangeType('transfer');
     await saveData();
     res.json({ success: true, transfers: [] });
   } catch (error: any) {
@@ -7523,8 +7806,10 @@ app.post('/api/transfers/sync-from-occupancy', async (req, res) => {
     })).filter((p: any) => p.name && p.room);
 
     const cairo = getCairoDateTime();
-    processPatientTransfers(currentPatients, cairo.dateStr);
+    const transfersModified = processPatientTransfers(currentPatients, cairo.dateStr);
     sanitizeAndDeduplicateTransfers();
+    // setSaveChangeType already called by processPatientTransfers if modified
+    if (!transfersModified) setSaveChangeType('transfer'); // still persist registry update
     await saveData();
 
     res.json({

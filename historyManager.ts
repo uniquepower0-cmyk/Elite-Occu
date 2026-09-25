@@ -79,6 +79,157 @@ export interface DateIndexEntry {
   summary: any;
 }
 
+// ─── Change Log (immutable per-change timestamped snapshots) ──────────────────
+
+export type ChangeType =
+  | 'upload'
+  | 'transfer'
+  | 'discharge'
+  | 'setting'
+  | 'daily_final'
+  | 'manual_reset'
+  | 'general';
+
+export interface ChangeLogEntry {
+  date: string;          // YYYY-MM-DD Cairo
+  timestamp: number;     // epoch ms — unique identifier within a day
+  cairoTime: string;     // human-readable Cairo timestamp
+  changeType: ChangeType;
+  summary: OccupancySnapshotSummary;
+  // Lightweight cumulative arrays (full hospitalData omitted to avoid bloat)
+  cumulativeEntries: any[];
+  cumulativeDischarged: any[];
+  cumulativeDialysis: any[];
+  cumulativeTransfers: any[];
+  vipCasesText: string;
+}
+
+/**
+ * Append an immutable timestamped change-log entry for a given date.
+ * Stored as a separate Supabase row per change:
+ *   history/changelog/{date}/{timestamp}
+ * These rows are never overwritten — each change event creates its own row.
+ */
+export async function saveChangeLogEntry(
+  entry: Omit<ChangeLogEntry, 'date' | 'timestamp' | 'cairoTime'> & { date?: string; timestamp?: number }
+): Promise<ChangeLogEntry> {
+  const cairo = getCairoDateTime();
+  const dateStr = entry.date || cairo.dateStr;
+  const timestamp = entry.timestamp || Date.now();
+  const cairoTime = cairo.fullStr;
+
+  const logEntry: ChangeLogEntry = {
+    date: dateStr,
+    timestamp,
+    cairoTime,
+    changeType: entry.changeType,
+    summary: entry.summary,
+    cumulativeEntries: entry.cumulativeEntries || [],
+    cumulativeDischarged: entry.cumulativeDischarged || [],
+    cumulativeDialysis: entry.cumulativeDialysis || [],
+    cumulativeTransfers: entry.cumulativeTransfers || [],
+    vipCasesText: entry.vipCasesText || '',
+  };
+
+  const path = `history/changelog/${dateStr}/${timestamp}`;
+
+  try {
+    const nowIso = new Date(timestamp).toISOString();
+    const { error } = await historySupabase
+      .from('rtdb_nodes')
+      .upsert({ path, data: logEntry, updated_at: nowIso });
+
+    if (error) {
+      console.error(`[ChangeLog] Failed to save change log entry (${logEntry.changeType}) for ${dateStr}:`, error);
+    } else {
+      console.log(`[ChangeLog] Change log entry saved: ${path} (type=${logEntry.changeType})`);
+    }
+  } catch (err) {
+    console.error(`[ChangeLog] Exception saving change log entry:`, err);
+  }
+
+  // Also update the changelog index so we know which dates have changelog entries
+  await updateChangeLogIndex(dateStr);
+
+  return logEntry;
+}
+
+/**
+ * Retrieve all change-log entries for a specific date, sorted oldest → newest.
+ */
+export async function getChangeLogForDate(dateStr: string): Promise<ChangeLogEntry[]> {
+  const cleanDate = dateStr.trim();
+  try {
+    const { data: nodes, error } = await historySupabase
+      .from('rtdb_nodes')
+      .select('path, data, updated_at')
+      .like('path', `history/changelog/${cleanDate}/%`);
+
+    if (error) {
+      console.error(`[ChangeLog] Failed to fetch changelog for ${cleanDate}:`, error);
+      return [];
+    }
+
+    if (!nodes || nodes.length === 0) return [];
+
+    const entries: ChangeLogEntry[] = nodes
+      .map(n => n.data as ChangeLogEntry)
+      .filter(Boolean)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    return entries;
+  } catch (err) {
+    console.error(`[ChangeLog] Exception fetching changelog for ${cleanDate}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Retrieve all dates that have at least one change-log entry.
+ */
+export async function getChangeLogDates(): Promise<string[]> {
+  try {
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'history/changelog_index')
+      .maybeSingle();
+
+    if (node && Array.isArray(node.data)) {
+      return node.data as string[];
+    }
+  } catch (err) {
+    console.error('[ChangeLog] Failed to fetch changelog dates index:', err);
+  }
+  return [];
+}
+
+/**
+ * Maintain a small index of all dates that have changelog entries.
+ */
+async function updateChangeLogIndex(dateStr: string): Promise<void> {
+  try {
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'history/changelog_index')
+      .maybeSingle();
+
+    let dates: string[] = (node && Array.isArray(node.data)) ? node.data as string[] : [];
+    if (!dates.includes(dateStr)) {
+      dates.unshift(dateStr);
+      dates.sort((a, b) => b.localeCompare(a));
+      await historySupabase.from('rtdb_nodes').upsert({
+        path: 'history/changelog_index',
+        data: dates,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.error('[ChangeLog] Failed to update changelog index:', err);
+  }
+}
+
 /**
  * Returns current date and time formatted in Egypt / Cairo timezone (Africa/Cairo)
  */
