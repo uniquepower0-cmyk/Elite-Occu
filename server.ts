@@ -1384,8 +1384,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     const dLower = p.colD.toLowerCase();
     const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
     const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
     const isOR = isOperatingRoom(p.room);
-    return fMatch && isNotPhysician && !isOR && p.colD.length > 0;
+    return fMatch && isNotPhysician && !isPhysicianPayment && !isOR && p.colD.length > 0;
   });
   cumulativeDebts = finalExtractedDebts;
 
@@ -1414,9 +1415,10 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     const dLower = p.colD.toLowerCase();
     const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
     const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const isOR = isOperatingRoom(p.room);
-    return isInsured && isNotPhysician && valAB > 0 && p.colD.length > 0 && !isOR;
+    return isInsured && isNotPhysician && !isPhysicianPayment && valAB > 0 && p.colD.length > 0 && !isOR;
   });
   cumulativeInsuredDebts = finalExtractedInsuredDebts;
 
@@ -3012,8 +3014,9 @@ async function handleUnifiedUpload(req: any, res: any) {
       const dLower = p.colD.toLowerCase();
       const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
       const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+      const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
       const isOR = isOperatingRoom(p.room);
-      return fMatch && isNotPhysician && !isOR && p.colD.length > 0;
+      return fMatch && isNotPhysician && !isPhysicianPayment && !isOR && p.colD.length > 0;
     });
 
     cumulativeDebts = finalExtractedDebts;
@@ -3043,9 +3046,10 @@ async function handleUnifiedUpload(req: any, res: any) {
       const dLower = p.colD.toLowerCase();
       const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
       const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
+      const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
       const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
       const isOR = isOperatingRoom(p.room);
-      return isInsured && isNotPhysician && valAB > 0 && p.colD.length > 0 && !isOR;
+      return isInsured && isNotPhysician && !isPhysicianPayment && valAB > 0 && p.colD.length > 0 && !isOR;
     });
 
     cumulativeInsuredDebts = finalExtractedInsuredDebts;
