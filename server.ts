@@ -2745,13 +2745,45 @@ async function checkDatabaseSyncSchedule() {
   }
 }
 
-// Supabase background sync scheduler
+// Supabase background sync scheduler - Upgraded to Realtime WebSockets
 function setupServerDatabaseAutoSync() {
   try {
-    // Run scheduled background check every 10 seconds
-    setInterval(checkDatabaseSyncSchedule, 10000);
+    console.log('[Supabase Realtime] Initializing exact-row Realtime Subscriptions...');
+
+    // 1. Subscribe to legacy RTDB nodes (Keeps existing frontend synced instantly without polling)
+    supabaseAdmin
+      .channel('legacy_rtdb_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rtdb_nodes' }, (payload) => {
+        const path = (payload.new as any)?.path;
+        console.log(`[Realtime] Instant change detected in legacy rtdb_nodes: ${path || 'unknown'}`);
+        // Avoid duplicate triggers if this server instance initiated the write
+        if (!isServerAutoSyncing) {
+          triggerServerAutoFetchFromDatabase('realtime-push');
+        }
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to legacy rtdb_nodes.');
+      });
+
+    // 2. Subscribe to NEW Relational Tables (Admissions, Transfers, OR Cases)
+    supabaseAdmin
+      .channel('relational_schema_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'admissions' }, (payload) => {
+        console.log(`[Realtime NEW] Admission updated for patient_id: ${(payload.new as any)?.patient_id}`);
+        // NOTE: In the future, emit socket.io events directly here for targeted frontend updates
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transfers' }, (payload) => {
+        console.log(`[Realtime NEW] Transfer logged: ${(payload.new as any)?.id}`);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_cases' }, (payload) => {
+        console.log(`[Realtime NEW] OR Case updated: ${(payload.new as any)?.id}`);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to Relational Schema (admissions, transfers, or_cases).');
+      });
+
   } catch (err) {
-    console.error('[Auto-Fetch Schedule] Failed to setup server database sync schedule:', err);
+    console.error('[Supabase Realtime] Failed to setup realtime sync:', err);
   }
 }
 
