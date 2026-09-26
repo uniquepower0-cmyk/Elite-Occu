@@ -282,6 +282,50 @@ export function getCairoDateFromTimestamp(ts: number): string {
   }
 }
 
+/**
+ * Normalizes any date string (e.g. "16/9/2026", "2026/09/16", "2026-09-16") to canonical YYYY-MM-DD
+ */
+export function normalizeToISODate(rawDate: any): string | null {
+  if (!rawDate) return null;
+  const s = String(rawDate).trim();
+  if (!s) return null;
+
+  // 1. Check if already YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (isoMatch) {
+    const yr = isoMatch[1];
+    const mo = String(parseInt(isoMatch[2], 10)).padStart(2, '0');
+    const dy = String(parseInt(isoMatch[3], 10)).padStart(2, '0');
+    return `${yr}-${mo}-${dy}`;
+  }
+
+  // 2. Check DD/MM/YYYY or MM/DD/YYYY
+  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    const n1 = parseInt(dmyMatch[1], 10);
+    const n2 = parseInt(dmyMatch[2], 10);
+    const yr = dmyMatch[3];
+    // In Egypt/Arab formats, DD/MM/YYYY is standard, or if n1 > 12 it's definitely DD/MM/YYYY
+    const [month, day] = n1 > 12 ? [n2, n1] : [n1, n2];
+    return `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // 3. Fallback to Date parsing
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      const yr = d.getFullYear();
+      if (yr >= 2020 && yr <= 2040) {
+        const mo = String(d.getMonth() + 1).padStart(2, '0');
+        const dy = String(d.getDate()).padStart(2, '0');
+        return `${yr}-${mo}-${dy}`;
+      }
+    }
+  } catch (e) {}
+
+  return null;
+}
+
 const fsPromises = fs.promises;
 
 function partitionDischargedPatients(
@@ -590,13 +634,94 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
 }
 
 /**
+ * Delete an OR snapshot from disk, Supabase cloud database, and date index
+ */
+export async function deleteORSnapshot(dateStr: string): Promise<boolean> {
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
+  console.log(`[ORHistory] Deleting OR snapshot for date: ${cleanDate}`);
+
+  // 1. Delete from local disk
+  try {
+    const filePath = path.join(HISTORY_OR_DIR, `${cleanDate}.json`);
+    if (fs.existsSync(filePath)) {
+      await fsPromises.unlink(filePath);
+      console.log(`[ORHistory] Deleted local snapshot file: ${filePath}`);
+    }
+  } catch (err) {
+    console.error(`[ORHistory] Error deleting local snapshot file for ${cleanDate}:`, err);
+  }
+
+  // 2. Delete granular history nodes and legacy node from Supabase
+  try {
+    await historySupabase
+      .from('rtdb_nodes')
+      .delete()
+      .like('path', `history/or/${cleanDate}%`);
+
+    if (dateStr.includes('/')) {
+      await historySupabase
+        .from('rtdb_nodes')
+        .delete()
+        .like('path', `history/or/${dateStr}%`);
+    }
+    console.log(`[ORHistory] Successfully deleted history/or/${cleanDate} nodes from Supabase.`);
+  } catch (err) {
+    console.error(`[ORHistory] Exception deleting snapshot from Supabase:`, err);
+  }
+
+  // 3. Remove date from OR index (both disk and cloud)
+  try {
+    const indexPath = path.join(WRITABLE_BASE, 'history', `or_index.json`);
+    let entries: DateIndexEntry[] = [];
+    if (fs.existsSync(indexPath)) {
+      try {
+        const raw = await fsPromises.readFile(indexPath, 'utf-8');
+        entries = JSON.parse(raw) || [];
+      } catch (e) {}
+    } else if (fs.existsSync(path.join(process.cwd(), 'history', `or_index.json`))) {
+      try {
+        const raw = await fsPromises.readFile(path.join(process.cwd(), 'history', `or_index.json`), 'utf-8');
+        entries = JSON.parse(raw) || [];
+      } catch (e) {}
+    }
+
+    entries = entries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate);
+    try {
+      await fsPromises.writeFile(indexPath, JSON.stringify(entries));
+    } catch (e) {}
+
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', `history/or_index`)
+      .maybeSingle();
+
+    let cloudEntries: DateIndexEntry[] = (node && Array.isArray(node.data)) ? node.data : [];
+    cloudEntries = cloudEntries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate);
+
+    await historySupabase.from('rtdb_nodes').upsert({
+      path: `history/or_index`,
+      data: cloudEntries,
+      updated_at: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error(`[ORHistory] Error updating or_index on delete:`, e);
+  }
+
+  return true;
+}
+
+/**
  * Save an OR snapshot to both disk and Supabase cloud database across granular nodes
  */
 export async function saveORSnapshot(
   data: Omit<ORSnapshot, 'date' | 'timestamp' | 'cairoTime'> & { date?: string }
 ): Promise<ORSnapshot> {
   const cairo = getCairoDateTime();
-  const dateStr = data.date || cairo.dateStr;
+  const rawDate = data.date || cairo.dateStr;
+  const dateStr = normalizeToISODate(rawDate) || rawDate;
+
   const snapshot: ORSnapshot = {
     date: dateStr,
     timestamp: Date.now(),
@@ -659,7 +784,8 @@ export async function saveORSnapshot(
  * Retrieve OR Snapshot for a specific date
  */
 export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null> {
-  const cleanDate = dateStr.trim();
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
   const filePath = path.join(HISTORY_OR_DIR, `${cleanDate}.json`);
   if (fs.existsSync(filePath)) {
     try {
@@ -713,11 +839,66 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
       .maybeSingle();
 
     if (legacyNode && legacyNode.data) {
-      const snapshot = legacyNode.data as ORSnapshot;
+      const parsedData = legacyNode.data;
+      const casesData = Array.isArray(parsedData.orList)
+        ? parsedData.orList
+        : (Array.isArray(parsedData.items) ? parsedData.items : (Array.isArray(parsedData) ? parsedData : []));
+
+      const snapshot: ORSnapshot = {
+        date: cleanDate,
+        timestamp: parsedData.timestamp || Date.now(),
+        cairoTime: parsedData.cairoTime || `${cleanDate} 00:00:00`,
+        orList: casesData,
+        summary: parsedData.summary || {
+          totalCases: casesData.length,
+          matched: 0,
+          outpatients: 0
+        }
+      };
+
       try {
         await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
       } catch (e) {}
       return snapshot;
+    }
+
+    // 3. Fallback check for potential slash format in Supabase (e.g. 20/9/2026 or 20/09/2026)
+    if (cleanDate.includes('-')) {
+      const [yr, mo, dy] = cleanDate.split('-');
+      const dSlash1 = `${parseInt(dy, 10)}/${parseInt(mo, 10)}/${yr}`;
+      const dSlash2 = `${dy}/${mo}/${yr}`;
+      for (const slashVariant of [dSlash1, dSlash2]) {
+        const { data: slashNodes } = await historySupabase
+          .from('rtdb_nodes')
+          .select('path, data')
+          .like('path', `history/or/${slashVariant}/%`);
+
+        if (slashNodes && slashNodes.length > 0) {
+          const nodeMap: Record<string, any> = {};
+          for (const n of slashNodes) {
+            const subPath = n.path.replace(`history/or/${slashVariant}/`, '');
+            nodeMap[subPath] = n.data;
+          }
+          const summaryData = nodeMap['summary'] || {};
+          const casesData = Array.isArray(nodeMap['cases']) ? nodeMap['cases'] : [];
+
+          const snapshot: ORSnapshot = {
+            date: cleanDate,
+            timestamp: summaryData.timestamp || Date.now(),
+            cairoTime: summaryData.cairoTime || `${cleanDate} 00:00:00`,
+            orList: casesData,
+            summary: {
+              totalCases: summaryData.totalCases || casesData.length,
+              matched: summaryData.matched || 0,
+              outpatients: summaryData.outpatients || 0
+            }
+          };
+
+          // Re-save normalized under cleanDate for future queries
+          saveORSnapshot(snapshot).catch(() => {});
+          return snapshot;
+        }
+      }
     }
   } catch (err) {
     console.error(`[ORHistory] Failed to fetch OR snapshot from Supabase for ${cleanDate}:`, err);
@@ -730,20 +911,48 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
  * Update the index of available dates
  */
 async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntry) {
-  const indexPath = path.join(process.cwd(), 'history', `${type}_index.json`);
+  const normDate = normalizeToISODate(entry.date) || entry.date;
+  entry.date = normDate;
+
+  const indexPath = path.join(WRITABLE_BASE, 'history', `${type}_index.json`);
   let entries: DateIndexEntry[] = [];
 
+  // Read disk index
   if (fs.existsSync(indexPath)) {
     try {
       const raw = await fsPromises.readFile(indexPath, 'utf-8');
       entries = JSON.parse(raw) || [];
     } catch (e) {}
+  } else if (fs.existsSync(path.join(process.cwd(), 'history', `${type}_index.json`))) {
+    try {
+      const raw = await fsPromises.readFile(path.join(process.cwd(), 'history', `${type}_index.json`), 'utf-8');
+      entries = JSON.parse(raw) || [];
+    } catch (e) {}
   }
 
-  // Remove existing entry for same date if any
-  entries = entries.filter(e => e.date !== entry.date);
+  // Merge with existing Supabase index
+  try {
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', `history/${type}_index`)
+      .maybeSingle();
+
+    if (node && Array.isArray(node.data)) {
+      const cloudEntries = node.data as DateIndexEntry[];
+      for (const ce of cloudEntries) {
+        const cDate = normalizeToISODate(ce.date) || ce.date;
+        if (!entries.some(e => (normalizeToISODate(e.date) || e.date) === cDate)) {
+          entries.push({ ...ce, date: cDate });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // Deduplicate and insert latest
+  entries = entries.filter(e => (normalizeToISODate(e.date) || e.date) !== normDate);
   entries.unshift(entry);
-  entries.sort((a, b) => b.date.localeCompare(a.date));
+  entries.sort((a, b) => (normalizeToISODate(b.date) || b.date).localeCompare(normalizeToISODate(a.date) || a.date));
 
   // Save to disk asynchronously
   try {
@@ -767,12 +976,17 @@ async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntr
  */
 export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateIndexEntry[]> {
   const dir = type === 'occupancy' ? HISTORY_OCC_DIR : HISTORY_OR_DIR;
-  const indexPath = path.join(process.cwd(), 'history', `${type}_index.json`);
+  const indexPath = path.join(WRITABLE_BASE, 'history', `${type}_index.json`);
   let diskEntries: DateIndexEntry[] = [];
 
   if (fs.existsSync(indexPath)) {
     try {
       const raw = await fsPromises.readFile(indexPath, 'utf-8');
+      diskEntries = JSON.parse(raw) || [];
+    } catch (e) {}
+  } else if (fs.existsSync(path.join(process.cwd(), 'history', `${type}_index.json`))) {
+    try {
+      const raw = await fsPromises.readFile(path.join(process.cwd(), 'history', `${type}_index.json`), 'utf-8');
       diskEntries = JSON.parse(raw) || [];
     } catch (e) {}
   }
@@ -783,8 +997,9 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
       const files = await fsPromises.readdir(dir);
       for (const file of files) {
         if (file.endsWith('.json')) {
-          const date = file.replace('.json', '');
-          if (!diskEntries.some(e => e.date === date)) {
+          const rawDate = file.replace('.json', '');
+          const date = normalizeToISODate(rawDate) || rawDate;
+          if (!diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === date)) {
             try {
               const raw = await fsPromises.readFile(path.join(dir, file), 'utf-8');
               const content = JSON.parse(raw);
@@ -801,7 +1016,7 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
     }
   } catch (e) {}
 
-  // Also query Supabase
+  // Also query Supabase index
   try {
     const { data: node } = await historySupabase
       .from('rtdb_nodes')
@@ -812,13 +1027,49 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
     if (node && Array.isArray(node.data)) {
       const cloudEntries = node.data as DateIndexEntry[];
       for (const ce of cloudEntries) {
-        if (!diskEntries.some(e => e.date === ce.date)) {
-          diskEntries.push(ce);
+        const cDate = normalizeToISODate(ce.date) || ce.date;
+        if (!diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === cDate)) {
+          diskEntries.push({ ...ce, date: cDate });
         }
       }
     }
   } catch (e) {}
 
-  diskEntries.sort((a, b) => b.date.localeCompare(a.date));
-  return diskEntries;
+  // Also scan all nodes in Supabase under history/{type}/% to discover any unindexed snapshots
+  try {
+    const { data: nodes } = await historySupabase
+      .from('rtdb_nodes')
+      .select('path, updated_at')
+      .like('path', `history/${type}/%`);
+
+    if (nodes && Array.isArray(nodes)) {
+      for (const n of nodes) {
+        const rel = n.path.replace(`history/${type}/`, '');
+        const datePart = rel.split('/summary')[0].split('/cases')[0];
+        const norm = normalizeToISODate(datePart);
+        if (norm && !diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === norm)) {
+          diskEntries.push({
+            date: norm,
+            timestamp: new Date(n.updated_at || Date.now()).getTime(),
+            cairoTime: `${norm} 00:00:00`,
+            summary: {}
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // Deduplicate by normalized date
+  const map = new Map<string, DateIndexEntry>();
+  for (const entry of diskEntries) {
+    const norm = normalizeToISODate(entry.date) || entry.date;
+    if (!map.has(norm)) {
+      map.set(norm, { ...entry, date: norm });
+    }
+  }
+
+  const result = Array.from(map.values());
+  result.sort((a, b) => b.date.localeCompare(a.date));
+  return result;
 }
+

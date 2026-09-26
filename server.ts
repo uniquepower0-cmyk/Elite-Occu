@@ -22,7 +22,9 @@ import {
   deleteOccupancySnapshot,
   saveORSnapshot,
   getORSnapshot,
+  deleteORSnapshot,
   getAvailableDates,
+  normalizeToISODate,
   saveChangeLogEntry,
   getChangeLogForDate,
   getChangeLogDates,
@@ -251,8 +253,14 @@ let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
 
 function isManuallyDischarged(patientName: string): boolean {
-  if (!patientName || manuallyDischargedNames.length === 0) return false;
-  return manuallyDischargedNames.some(mName => isNameMatch(mName, patientName));
+  if (!patientName) return false;
+  if (manuallyDischargedNames && manuallyDischargedNames.length > 0) {
+    if (manuallyDischargedNames.some(mName => isNameMatch(mName, patientName))) return true;
+  }
+  if (cumulativeDischarged && cumulativeDischarged.length > 0) {
+    if (cumulativeDischarged.some(p => (p.dischargeType === 'manual' || (p.name && manuallyDischargedNames.some(m => isNameMatch(m, p.name)))) && isNameMatch(p.name, patientName))) return true;
+  }
+  return false;
 }
 
 function normalizeRoom(roomStr: string): string {
@@ -1814,25 +1822,16 @@ async function loadData(force = false) {
       }
     }
 
-    // OR List Snapshot fallback: Since OR cases are persistent across days, restore from latest OR snapshot if empty
+    // OR List Snapshot: Only restore from TODAY'S snapshot if available (never resurrect old historical OR lists)
     if (!cumulativeORList || cumulativeORList.length === 0) {
       try {
-        let orSnap = await getORSnapshot(cairoNow.dateStr);
-        if (!orSnap || !Array.isArray(orSnap.orList) || orSnap.orList.length === 0) {
-          const availableORDates = await getAvailableDates('or');
-          if (availableORDates && availableORDates.length > 0) {
-            const latestORDate = typeof availableORDates[0] === 'string' ? availableORDates[0] : (availableORDates[0] as any).date;
-            if (latestORDate) {
-              orSnap = await getORSnapshot(latestORDate);
-            }
-          }
-        }
-        if (orSnap && Array.isArray(orSnap.orList) && orSnap.orList.length > 0) {
-          console.log(`[loadData] Restored ${orSnap.orList.length} persistent OR cases from snapshot (${orSnap.date})`);
-          cumulativeORList = orSnap.orList;
+        const todaySnap = await getORSnapshot(cairoNow.dateStr);
+        if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
+          console.log(`[loadData] Restored ${todaySnap.orList.length} active OR cases from today's snapshot (${cairoNow.dateStr})`);
+          cumulativeORList = todaySnap.orList;
         }
       } catch (orSnapErr) {
-        console.error('[loadData] Failed to restore OR snapshot fallback:', orSnapErr);
+        console.error('[loadData] Failed to restore today OR snapshot fallback:', orSnapErr);
       }
     }
   } catch (err) {
@@ -1938,8 +1937,9 @@ async function loadData(force = false) {
 
         newlyDischarged.forEach(p => {
           if (!cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+            const isManual = isManuallyDischarged(p.name);
             (p as any).dischargeDate = getTodayRiyadhDateStr();
-            (p as any).dischargeType = 'auto';
+            (p as any).dischargeType = isManual ? 'manual' : 'auto';
             cumulativeDischarged.push(p);
             needsSave = true;
           }
@@ -2612,8 +2612,10 @@ async function saveData() {
           console.log(`Automatic occupancy database snapshot saved for date ${activeDateStr}.`);
         }
         if (cumulativeORList && cumulativeORList.length > 0) {
-          await takeORSnapshotHelper(activeDateStr);
-          console.log(`Automatic OR list database snapshot saved for date ${activeDateStr}.`);
+          const rawOrDate = cumulativeORList[0]?.orListDate || '';
+          const targetOrDate = normalizeToISODate(rawOrDate) || activeDateStr;
+          await takeORSnapshotHelper(targetOrDate);
+          console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
         }
       } catch (snapErr) {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
@@ -2834,11 +2836,25 @@ async function handleUnifiedUpload(req: any, res: any) {
         }
     }
 
-    // CRITICAL: manuallyDischargedNames are persistent per day and must NOT be wiped when uploading a sheet
+    // CRITICAL: manuallyDischargedNames and manual discharges are persistent and must NOT be wiped or reverted when uploading a sheet
     const headerRow = rows.slice(0, startIdx);
     const dataRowsFiltered = rows.slice(startIdx).filter(row => {
-      const patientName = String(row[3] || "").trim();
-      return !isManuallyDischarged(patientName);
+      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+      const patientName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
+      const patientMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
+
+      if (isManuallyDischarged(patientName)) return false;
+      if (isManuallyDischarged(String(row[3] || "").trim())) return false;
+      if (isManuallyDischarged(String(row[1] || "").trim())) return false;
+
+      if (cumulativeDischarged && cumulativeDischarged.some(p => 
+        (p.dischargeType === 'manual' || isManuallyDischarged(p.name)) &&
+        (isPatientMatch(p, { name: patientName, mrn: patientMrn }) || isNameMatch(p.name, patientName))
+      )) {
+        return false;
+      }
+
+      return true;
     });
     rows = [...headerRow, ...dataRowsFiltered];
 
@@ -2866,9 +2882,12 @@ async function handleUnifiedUpload(req: any, res: any) {
     const currentSheetPatientsRaw = extractRawPatientsFromRows(rows);
     const isNewSheetLikelyEmpty = currentSheetPatientsRaw.length === 0;
 
-    // CLEANUP: If a patient is actively in the hospital in the new sheet, they are currently admitted (not discharged).
+    // CLEANUP: If an auto-discharged patient is back in the hospital in the new sheet, they are currently admitted.
+    // CRITICAL: NEVER drop manual discharges here! Manual discharges are explicit user actions that must be preserved.
     if (!isNewSheetLikelyEmpty) {
       cumulativeDischarged = (cumulativeDischarged || []).filter(p => {
+        const isManual = p.dischargeType === 'manual' || isManuallyDischarged(p.name);
+        if (isManual) return true; // Keep manual discharges strictly intact across all sheet uploads!
         const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(p, currentP) || isNameMatch(p.name, currentP.name));
         return !isStillPresent;
       });
@@ -2898,7 +2917,10 @@ async function handleUnifiedUpload(req: any, res: any) {
     const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
 
     const cairo = getCairoDateTime();
-    const activePrevDate = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || "");
+    // Prioritize lastActiveDate if today/newer so same-day uploads NEVER trigger a false new day reset
+    const activePrevDate = (lastActiveDate && lastActiveDate >= cairo.dateStr)
+      ? lastActiveDate
+      : (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || ""));
     const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
 
     if (isDifferentDay) {
@@ -2959,14 +2981,24 @@ async function handleUnifiedUpload(req: any, res: any) {
       newlyDischarged.forEach(p => {
         const alreadyExists = cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
         if (!alreadyExists) {
+          const isManual = isManuallyDischarged(p.name);
           (p as any).dischargeDate = getTodayRiyadhDateStr();
-          (p as any).dischargeType = 'auto';
+          (p as any).dischargeType = isManual ? 'manual' : 'auto';
           cumulativeDischarged.push(p);
         }
       });
 
       previousHospitalData = baselineData;
     }
+
+    // Always ensure manuallyDischargedNames stays synced with all manual discharges
+    (cumulativeDischarged || []).forEach(p => {
+      if ((p.dischargeType === 'manual' || isManuallyDischarged(p.name)) && p.name) {
+        if (!manuallyDischargedNames.some(m => isNameMatch(m, p.name))) {
+          manuallyDischargedNames.push(p.name);
+        }
+      }
+    });
 
     // For Dialysis: Keep all dialysis cases cumulatively throughout the day
     if (!isNewSheetLikelyEmpty) {
@@ -3260,18 +3292,21 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
     
-    // OR7 fix: search more rows (up to 10) for a date, and fallback to today's Cairo date
+    // OR7 fix: search more rows (up to 10) for a date, normalize to ISO YYYY-MM-DD, and fallback to today's Cairo date
     let dateStr = '';
-    const datePattern = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/;
+    const datePattern = /(\d{1,4})[\/\-](\d{1,2})[\/\-](\d{1,4})/;
     for (let r = 0; r < Math.min(targetRows.length, 10); r++) {
       const rowVal = targetRows[r].map(c => String(c || '')).join(' ');
       const dateMatch = rowVal.match(datePattern);
       if (dateMatch) {
-        dateStr = dateMatch[0];
-        break;
+        const norm = normalizeToISODate(dateMatch[0]);
+        if (norm) {
+          dateStr = norm;
+          break;
+        }
       }
     }
-    // Always ensure we have a non-empty date for snapshot filing
+    // Always ensure we have a non-empty canonical ISO date for snapshot filing
     if (!dateStr) {
       dateStr = getCairoDateTime().dateStr;
     }
@@ -3311,6 +3346,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     cumulativeORList = parsedData;
     uploadedAt = Date.now();
     setSaveChangeType('upload');
+    await takeORSnapshotHelper(dateStr);
     await saveData();
     
     return res.status(200).json({
@@ -5512,11 +5548,12 @@ async function updateHospitalState(rows: any[][]) {
   }
 
   // Preserve manual discharges if sheet is re-uploaded
-  if (manuallyDischargedNames.length > 0) {
+  if (manuallyDischargedNames.length > 0 || (cumulativeDischarged && cumulativeDischarged.some(p => p.dischargeType === 'manual'))) {
     const headerPrefix = rows.slice(0, startIdx);
     const dataRowsFiltered = rows.slice(startIdx).filter(row => {
-      const patientName = String(row[3] || "").trim();
-      return !isManuallyDischarged(patientName);
+      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+      const patientName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
+      return !isManuallyDischarged(patientName) && !isManuallyDischarged(String(row[3] || "").trim()) && !isManuallyDischarged(String(row[1] || "").trim());
     });
     rows = [...headerPrefix, ...dataRowsFiltered];
   }
@@ -5546,8 +5583,11 @@ async function updateHospitalState(rows: any[][]) {
   const isNewSheetLikelyEmpty = currentSheetPatientsRaw.length === 0;
 
   // CLEANUP: If a patient is in the hospital (any room), they are NOT discharged.
+  // NEVER drop manual discharges here!
   if (!isNewSheetLikelyEmpty) {
     cumulativeDischarged = (cumulativeDischarged || []).filter(p => {
+      const isManual = p.dischargeType === 'manual' || isManuallyDischarged(p.name);
+      if (isManual) return true;
       const isStillPresent = currentSheetPatientsRaw.some(currentP => isPatientMatch(p, currentP) || isNameMatch(p.name, currentP.name));
       return !isStillPresent;
     });
@@ -6059,10 +6099,14 @@ app.get('/api/occupancy/data', async (req, res) => {
   const operationalDateStr = getDatasetOperationalDateStr(activePatients);
 
   const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
+    const isManual = discPt.dischargeType === 'manual' || isManuallyDischarged(discPt.name);
+
+    // Auto-discharged patients are dropped if they are back in the active patient list.
+    // Manual discharges are explicit exclusions that must remain excluded and never be dropped.
     const isStillPresent = activePatients.some(activePt => 
       isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
     );
-    if (isStillPresent) return false;
+    if (!isManual && isStillPresent) return false;
 
     const roomVal = discPt.room || discPt.colB || "";
     if (isProcedureOrTemporaryRoom(roomVal)) return false;
@@ -6071,7 +6115,9 @@ app.get('/api/occupancy/data', async (req, res) => {
     const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
     if (isExcluded) return false;
 
-    if (discPt.dischargeDate && !isToday(discPt.dischargeDate, operationalDateStr)) {
+    // Manual discharges are explicit daily exclusions and must NEVER be dropped by operational admission date!
+    // For auto-discharges, retain if they match either operational date OR today's date
+    if (!isManual && discPt.dischargeDate && !isToday(discPt.dischargeDate, operationalDateStr) && !isToday(discPt.dischargeDate)) {
       return false;
     }
 
@@ -6370,12 +6416,14 @@ app.post('/api/pending-discharge', async (req, res) => {
         processedNames.push(matchedInputName);
 
         const roomVal = String(row[1] || "").trim();
+        const mrnVal = String(row[2] || "").trim().replace(/^0+/, "");
         const docVal = String(row[22] || "").trim();
         const contVal = String(row[12] || "").trim();
         const dateVal = cleanAdmissionDateStr(row[0]);
         
         const discObj = {
           room: roomVal,
+          mrn: mrnVal,
           name: patientName,
           physician: docVal,
           contractor: contVal,
@@ -6428,6 +6476,7 @@ app.post('/api/pending-discharge', async (req, res) => {
       }
       const discObj = {
         room: regMatch.lastRoom || '',
+        mrn: regMatch.mrn || '',
         name: regMatch.name,
         physician: regMatch.physician || '',
         contractor: regMatch.contractor || '',
@@ -6568,28 +6617,21 @@ async function takeORSnapshotHelper(customDate?: string) {
   if (!cumulativeORList || cumulativeORList.length === 0) return null;
   const cairo = getCairoDateTime();
 
-  // OR4 + OR8 fix: prefer the embedded orListDate from the OR items themselves,
-  // then customDate, then today's Cairo date — so the OR snapshot is always
-  // filed under the correct operational date regardless of when it was uploaded.
-  let resolvedDate = customDate || cairo.dateStr;
-  if (!customDate && cumulativeORList.length > 0) {
-    const rawListDate = cumulativeORList[0]?.orListDate || '';
-    if (rawListDate) {
-      // Parse the embedded date (e.g. "9/25/2026" or "25/9/2026") to YYYY-MM-DD
-      const dateMatch = rawListDate.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-      if (dateMatch) {
-        const n1 = parseInt(dateMatch[1], 10);
-        const n2 = parseInt(dateMatch[2], 10);
-        const yr = dateMatch[3];
-        // Determine month/day: if n1 > 12, n1 is day; otherwise treat as M/D/Y
-        const [month, day] = n1 > 12 ? [n2, n1] : [n1, n2];
-        const parsed = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        // Only use if it's a plausible date string
-        if (/^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
-          resolvedDate = parsed;
-        }
-      }
-    }
+  // 1. Prefer the embedded orListDate from the OR items themselves
+  let resolvedDate: string | null = null;
+  const rawListDate = cumulativeORList[0]?.orListDate || '';
+  if (rawListDate) {
+    resolvedDate = normalizeToISODate(rawListDate);
+  }
+
+  // 2. If no valid embedded date, use customDate if provided
+  if (!resolvedDate && customDate) {
+    resolvedDate = normalizeToISODate(customDate) || customDate;
+  }
+
+  // 3. Fallback to today's Cairo date
+  if (!resolvedDate) {
+    resolvedDate = cairo.dateStr;
   }
 
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
@@ -6701,28 +6743,61 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
 
 // Helper to resolve OR dataset (either live or historical by date)
 async function resolveORDataset(reqDate?: string | null) {
+  const cairoToday = getCairoDateTime().dateStr;
+
   if (!reqDate || reqDate === 'current' || reqDate === 'today') {
+    if (cumulativeORList && cumulativeORList.length > 0) {
+      return {
+        orList: cumulativeORList,
+        dateLabel: cairoToday,
+        isHistorical: false,
+        found: true
+      };
+    }
+    const todaySnap = await getORSnapshot(cairoToday);
+    if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
+      return {
+        orList: todaySnap.orList,
+        dateLabel: cairoToday,
+        isHistorical: false,
+        found: true
+      };
+    }
     return {
-      orList: cumulativeORList,
-      dateLabel: getCairoDateTime().dateStr,
-      isHistorical: false
+      orList: [],
+      dateLabel: cairoToday,
+      isHistorical: false,
+      found: false
     };
   }
 
-  const cleanDate = String(reqDate).trim();
+  const cleanDate = normalizeToISODate(String(reqDate).trim()) || String(reqDate).trim();
   const snapshot = await getORSnapshot(cleanDate);
-  if (snapshot && Array.isArray(snapshot.orList)) {
+  if (snapshot && Array.isArray(snapshot.orList) && snapshot.orList.length > 0) {
     return {
       orList: snapshot.orList,
       dateLabel: cleanDate,
-      isHistorical: true
+      isHistorical: true,
+      found: true
     };
   }
 
+  // If requested date is today's Cairo date and live data exists
+  if (cleanDate === cairoToday && cumulativeORList && cumulativeORList.length > 0) {
+    return {
+      orList: cumulativeORList,
+      dateLabel: cleanDate,
+      isHistorical: false,
+      found: true
+    };
+  }
+
+  // Never fall back to cumulativeORList for historical or missing dates!
   return {
-    orList: cumulativeORList,
+    orList: [],
     dateLabel: cleanDate,
-    isHistorical: false
+    isHistorical: true,
+    found: false
   };
 }
 
@@ -6956,48 +7031,41 @@ app.post('/api/reset-or', async (req, res) => {
   console.log('Reset OR list requested');
   const cairo = getCairoDateTime();
   try {
-    if (cumulativeORList && cumulativeORList.length > 0) {
-      console.log(`[Reset] Taking reference snapshot of OR dashboard for date ${cairo.dateStr} before reset...`);
-
-      // OR6 fix: Save immutable changelog entry before clearing
-      try {
-        // Use the OR list's own date for the audit entry
-        const orDate = (() => {
-          const raw = cumulativeORList[0]?.orListDate || '';
-          const m = raw.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-          if (m) {
-            const n1 = parseInt(m[1], 10), n2 = parseInt(m[2], 10), yr = m[3];
-            const [mo, dy] = n1 > 12 ? [n2, n1] : [n1, n2];
-            const p = `${yr}-${String(mo).padStart(2,'0')}-${String(dy).padStart(2,'0')}`;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return p;
-          }
-          return cairo.dateStr;
-        })();
-        await saveChangeLogEntry({
-          date: orDate,
-          changeType: 'manual_reset',
-          summary: buildChangeLogSummary(),
-          cumulativeEntries: cumulativeEntries || [],
-          cumulativeDischarged: cumulativeDischarged || [],
-          cumulativeDialysis: cumulativeDialysis || [],
-          cumulativeTransfers: cumulativeTransfers || [],
-          vipCasesText: vipCasesText || '',
-        });
-      } catch (clErr) {
-        console.error('[OR Reset] Failed to save changelog entry:', clErr);
-      }
-
-      await takeORSnapshotHelper(cairo.dateStr);
+    // 0. Save an audit change-log entry before clearing
+    try {
+      const orDate = normalizeToISODate(cumulativeORList[0]?.orListDate) || cairo.dateStr;
+      await saveChangeLogEntry({
+        date: orDate,
+        changeType: 'manual_reset',
+        summary: buildChangeLogSummary(),
+        cumulativeEntries: cumulativeEntries || [],
+        cumulativeDischarged: cumulativeDischarged || [],
+        cumulativeDialysis: cumulativeDialysis || [],
+        cumulativeTransfers: cumulativeTransfers || [],
+        vipCasesText: vipCasesText || '',
+      });
+    } catch (clErr) {
+      console.error('[OR Reset] Failed to save changelog entry:', clErr);
     }
 
-    // Reset OR list
+    // Delete today's snapshot so it is not resurrected
+    await deleteORSnapshot(cairo.dateStr);
+
+    // Reset live OR list
     cumulativeORList = [];
-    // Note: Discharged patients remain persistent!
+
+    try {
+      await supabaseAdmin.from('rtdb_nodes').upsert({
+        path: 'state/or_list',
+        data: { items: [] },
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) {}
 
     await saveData();
     res.json({
       success: true,
-      message: `OR dashboard history reference archived for date ${cairo.dateStr} in database. OR data reset successfully.`,
+      message: `OR data reset successfully.`,
       archivedDate: cairo.dateStr
     });
   } catch (err: any) {
@@ -7174,13 +7242,7 @@ app.post('/api/history/occupancy/snapshot', async (req, res) => {
 
 app.get('/api/history/or/dates', async (req, res) => {
   try {
-    let dates = await getAvailableDates('or');
-    if (dates.length === 0 && cumulativeORList && cumulativeORList.length > 0) {
-      const snap = await takeORSnapshotHelper();
-      if (snap) {
-        dates = await getAvailableDates('or');
-      }
-    }
+    const dates = await getAvailableDates('or');
     res.json({ dates });
   } catch (err: any) {
     console.error('Failed to get OR history dates:', err);
@@ -7199,6 +7261,7 @@ app.get('/api/history/or/detail', async (req, res) => {
     res.json({
       date: ds.dateLabel,
       isHistorical: ds.isHistorical,
+      found: ds.found,
       totalCases: ds.orList.length,
       matched: enriched.filter(p => p.realStatus === 'IN').length,
       outpatients: enriched.filter(p => p.realStatus === 'OUT').length,
@@ -7229,6 +7292,30 @@ app.post('/api/history/or/snapshot', async (req, res) => {
     });
   } catch (err: any) {
     console.error('Failed to take OR snapshot:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/history/or/snapshot', async (req, res) => {
+  try {
+    const dateStr = req.query.date ? String(req.query.date).trim() : (req.body?.date ? String(req.body.date).trim() : '');
+    if (!dateStr) return res.status(400).json({ error: 'Date is required to delete OR snapshot.' });
+    await deleteORSnapshot(dateStr);
+    res.json({ success: true, message: `OR snapshot deleted successfully for date ${dateStr}` });
+  } catch (err: any) {
+    console.error('Failed to delete OR snapshot:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/history/or/delete', async (req, res) => {
+  try {
+    const dateStr = req.body?.date ? String(req.body.date).trim() : (req.query?.date ? String(req.query.date).trim() : '');
+    if (!dateStr) return res.status(400).json({ error: 'Date is required to delete OR snapshot.' });
+    await deleteORSnapshot(dateStr);
+    res.json({ success: true, message: `OR snapshot deleted successfully for date ${dateStr}` });
+  } catch (err: any) {
+    console.error('Failed to delete OR snapshot:', err);
     res.status(500).json({ error: err.message });
   }
 });

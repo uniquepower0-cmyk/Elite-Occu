@@ -11,14 +11,16 @@ import {
   Search, 
   Camera,
   Database,
-  Building2
+  Building2,
+  Trash2
 } from 'lucide-react';
 
 interface ORHistoryViewProps {
   onNotify?: (msg: string) => void;
+  refreshTrigger?: number;
 }
 
-export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
+export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
@@ -27,7 +29,10 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [takingSnapshot, setTakingSnapshot] = useState<boolean>(false);
+  const [deletingSnapshot, setDeletingSnapshot] = useState<boolean>(false);
   const [cairoStatus, setCairoStatus] = useState<any>(null);
+
+  const isFirstRender = React.useRef(true);
 
   const fetchStatus = async () => {
     try {
@@ -54,6 +59,9 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
           if (!selectedDate || !available.includes(selectedDate)) {
             setSelectedDate(available[0]);
           }
+        } else {
+          setSelectedDate('');
+          setDetailData(null);
         }
       }
     } catch (err) {
@@ -64,7 +72,10 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
   };
 
   const fetchDetail = async (dateStr: string) => {
-    if (!dateStr) return;
+    if (!dateStr) {
+      setDetailData(null);
+      return;
+    }
     setLoadingDetail(true);
     try {
       const res = await fetch(`/api/history/or/detail?date=${encodeURIComponent(dateStr)}`);
@@ -90,8 +101,49 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
   useEffect(() => {
     if (selectedDate) {
       fetchDetail(selectedDate);
+    } else {
+      setDetailData(null);
     }
   }, [selectedDate]);
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    if (refreshTrigger === undefined) return;
+    fetchStatus();
+    fetchDates().then(() => {
+      setSelectedDate(prev => {
+        if (prev) fetchDetail(prev);
+        return prev;
+      });
+    });
+  }, [refreshTrigger]);
+
+  const handleDeleteSnapshot = async () => {
+    if (!selectedDate) return;
+    if (!window.confirm(`Are you sure you want to permanently delete the OR snapshot for date ${selectedDate}?`)) return;
+    setDeletingSnapshot(true);
+    try {
+      const res = await fetch(`/api/history/or/snapshot?date=${encodeURIComponent(selectedDate)}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (onNotify) onNotify(`OR reference snapshot for ${selectedDate} deleted successfully.`);
+        setSelectedDate('');
+        setDetailData(null);
+        await fetchDates();
+      } else {
+        alert(data.error || 'Failed to delete OR snapshot.');
+      }
+    } catch (err: any) {
+      alert('Error deleting OR snapshot: ' + err.message);
+    } finally {
+      setDeletingSnapshot(false);
+    }
+  };
 
   const handleTakeManualSnapshot = async () => {
     setTakingSnapshot(true);
@@ -263,6 +315,20 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
               <Calendar size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-teal-600 pointer-events-none" />
             </div>
 
+            {selectedDate && (
+              <button
+                type="button"
+                id="delete-or-snapshot-btn"
+                onClick={handleDeleteSnapshot}
+                disabled={deletingSnapshot || loadingDetail}
+                className="px-3 py-2.5 rounded-xl border border-rose-500/20 text-rose-700 hover:bg-rose-50 hover:border-rose-400 active:scale-95 transition-all flex items-center gap-1.5 text-xs font-bold disabled:opacity-50 shadow-sm"
+                title={`Delete reference snapshot for ${selectedDate}`}
+              >
+                <Trash2 size={14} className="text-rose-600 shrink-0" />
+                <span>{deletingSnapshot ? 'Deleting...' : 'Delete'}</span>
+              </button>
+            )}
+
             {loadingDates && (
               <span className="text-xs text-slate-500 flex items-center gap-1.5 font-medium">
                 <RefreshCw size={12} className="animate-spin text-teal-600" />
@@ -369,7 +435,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify }) => {
               <RefreshCw size={24} className="animate-spin text-teal-600" />
               Loading OR snapshot data for {selectedDate}...
             </div>
-          ) : detailData ? (
+          ) : (detailData && detailData.found !== false && (detailData.totalCases > 0 || (detailData.orList && detailData.orList.length > 0))) ? (
             <>
               {/* Stat Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

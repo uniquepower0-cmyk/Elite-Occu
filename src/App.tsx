@@ -278,6 +278,7 @@ export default function App() {
   const [dbUpdateMessage, setDbUpdateMessage] = useState<string | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(true);
   const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
+  const [orHistoryRefreshKey, setOrHistoryRefreshKey] = useState<number>(0);
 
 
   const lastDbTimestampRef = useRef<string | null>(null);
@@ -670,8 +671,9 @@ export default function App() {
       if (res.ok) {
         const resetRes = await res.json();
         console.log('OR list reset successful on server:', resetRes);
+        setOrHistoryRefreshKey(k => k + 1);
         await fetchData();
-        alert(resetRes.message || 'OR list data has been reset. Reference history snapshot saved to database.');
+        alert(resetRes.message || 'OR list data has been reset.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('OR reset failed on server:', errorData.error);
@@ -837,6 +839,7 @@ export default function App() {
 
       const dateMsg = data.date ? ` for ${data.date}` : "";
       alert(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
+      setOrHistoryRefreshKey(k => k + 1);
       fetchData();
     } catch (err: any) {
       console.error('OR List Upload error:', err);
@@ -4695,7 +4698,7 @@ export default function App() {
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <ORHistoryView onNotify={(msg) => alert(msg)} />
+                    <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
                   </section>
                 )}
 
