@@ -38,7 +38,7 @@ import {
   Timer,
   Sparkles
 } from 'lucide-react';
-import { supabase, fetchSupabaseAuditLogs, logUserLogin } from './supabase';
+import { supabase, fetchSupabaseAuditLogs, logUserLogin, SUPABASE_ANON_KEY } from './supabase';
 import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
@@ -410,50 +410,57 @@ export default function App() {
     fetchData();
 
     // 1. Supabase Realtime channel subscription on rtdb_nodes (granular state/* nodes and general updates)
-    const channel = supabase
-      .channel('schema-db-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'rtdb_nodes'
-        },
-        (payload: any) => {
-          const path = payload?.new?.path || payload?.old?.path || '';
-          // Only trigger refresh if it's state, settings, or audit change
-          if (path && !path.startsWith('state/') && !path.startsWith('settings/') && path !== 'audit_logs') {
-            return;
-          }
+    // Only subscribe when the anon key is configured — without it requests return 401
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    if (SUPABASE_ANON_KEY) {
+      channel = supabase
+        .channel('schema-db-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'rtdb_nodes'
+          },
+          (payload: any) => {
+            const path = payload?.new?.path || payload?.old?.path || '';
+            // Only trigger refresh if it's state, settings, or audit change
+            if (path && !path.startsWith('state/') && !path.startsWith('settings/') && path !== 'audit_logs') {
+              return;
+            }
 
-          const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
-          if (newUpdatedAt && newUpdatedAt === lastDbTimestampRef.current) {
-            // Already synced to this database snapshot, ignore echo
-            return;
-          }
-          if (newUpdatedAt) {
-            lastDbTimestampRef.current = String(newUpdatedAt);
-          }
+            const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
+            if (newUpdatedAt && newUpdatedAt === lastDbTimestampRef.current) {
+              // Already synced to this database snapshot, ignore echo
+              return;
+            }
+            if (newUpdatedAt) {
+              lastDbTimestampRef.current = String(newUpdatedAt);
+            }
 
-          if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
-          realtimeDebounceTimerRef.current = setTimeout(() => {
-            console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType, path);
-            setIsDbUpdatePulsing(true);
-            setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
-            fetchData({ silent: true });
-            setTimeout(() => {
-              setIsDbUpdatePulsing(false);
-            }, 3000);
-            setTimeout(() => {
-              setDbUpdateMessage(null);
-            }, 5000);
-          }, 500);
-        }
-      )
-      .subscribe((status) => {
-        console.log('[Auto-Fetch Schedule] Supabase real-time subscription status:', status);
-        setRealtimeConnected(status === 'SUBSCRIBED');
-      });
+            if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
+            realtimeDebounceTimerRef.current = setTimeout(() => {
+              console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType, path);
+              setIsDbUpdatePulsing(true);
+              setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
+              fetchData({ silent: true });
+              setTimeout(() => {
+                setIsDbUpdatePulsing(false);
+              }, 3000);
+              setTimeout(() => {
+                setDbUpdateMessage(null);
+              }, 5000);
+            }, 500);
+          }
+        )
+        .subscribe((status) => {
+          console.log('[Auto-Fetch Schedule] Supabase real-time subscription status:', status);
+          setRealtimeConnected(status === 'SUBSCRIBED');
+        });
+    } else {
+      console.warn('[Auto-Fetch Schedule] VITE_SUPABASE_ANON_KEY not set — skipping Supabase real-time subscription to avoid 401 errors.');
+      setRealtimeConnected(false);
+    }
 
     // 2. Visibility change auto-fetch: when user switches back to tab after being away (> 60s), auto-fetch silently
     const handleVisibilityChange = () => {
@@ -475,7 +482,7 @@ export default function App() {
     window.addEventListener('online', handleOnline);
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channel) supabase.removeChannel(channel);
       if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
@@ -2811,7 +2818,7 @@ export default function App() {
                         <h3 className="font-extrabold text-[#0b3c34] tracking-tight">Occupancy Distribution</h3>
                         <div className="text-[10px] font-bold text-teal-700 uppercase tracking-widest bg-teal-500/10 px-2.5 py-1 rounded-md">Live Metrics</div>
                       </div>
-                      <div className="h-80 w-full min-w-0">
+                      <div className="h-80 w-full min-w-0" style={{ minHeight: 320 }}>
                         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={300}>
                           <BarChart data={stats}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
