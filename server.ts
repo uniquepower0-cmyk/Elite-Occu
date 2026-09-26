@@ -1504,10 +1504,27 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
 let lastKnownDatabaseUpdatedAt: string | null = null;
 let lastServerFetchTimestamp: number = Date.now();
 let isServerAutoSyncing = false;
+let activeLoadDataPromise: Promise<void> | null = null;
+
+async function loadData(force = false): Promise<void> {
+  if (activeLoadDataPromise && !force) {
+    return activeLoadDataPromise;
+  }
+  const task = (async () => {
+    isServerAutoSyncing = true;
+    try {
+      await executeLoadData(force);
+    } finally {
+      isServerAutoSyncing = false;
+      activeLoadDataPromise = null;
+    }
+  })();
+  activeLoadDataPromise = task;
+  return task;
+}
 
 // Persistence Helpers
-async function loadData(force = false) {
-  if (isServerAutoSyncing && !force) return;
+async function executeLoadData(force = false) {
   try {
     // 1. Try to load local disk cache first for fast immediate recovery
     if (fs.existsSync(DATA_FILE)) {
@@ -2394,6 +2411,24 @@ app.use((req, res, next) => {
     checkDataTTL();
   } catch (err) {
     console.error('Error executing TTL check:', err);
+  }
+  next();
+});
+
+// Auto-load middleware ensuring in-memory datasets (occupancy, debts, reports) are populated from Supabase
+app.use(async (req, res, next) => {
+  if (
+    req.path.startsWith('/api/reports') || 
+    req.path.startsWith('/api/history') || 
+    req.path.startsWith('/api/occupancy')
+  ) {
+    if (!hospitalData || hospitalData.length === 0 || cumulativeDebts.length === 0) {
+      try {
+        await loadData();
+      } catch (err) {
+        console.error('[Auto-Load Middleware] Error loading state from Supabase:', err);
+      }
+    }
   }
   next();
 });
@@ -6807,6 +6842,14 @@ async function takeORSnapshotHelper(customDate?: string) {
 
 // Helper to resolve Occupancy dataset (either live or historical by date)
 async function resolveOccupancyDataset(reqDate?: string | null) {
+  if (!hospitalData || hospitalData.length === 0 || cumulativeDebts.length === 0) {
+    try {
+      await loadData();
+    } catch (err) {
+      console.error('[resolveOccupancyDataset] Error auto-loading state:', err);
+    }
+  }
+
   if (!reqDate || reqDate === 'current' || reqDate === 'today') {
     const autoList = (cumulativeDischarged || []).filter(p => 
       p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
@@ -6898,6 +6941,14 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
 
 // Helper to resolve OR dataset (either live or historical by date)
 async function resolveORDataset(reqDate?: string | null) {
+  if (!cumulativeORList || cumulativeORList.length === 0) {
+    try {
+      await loadData();
+    } catch (err) {
+      console.error('[resolveORDataset] Error auto-loading state:', err);
+    }
+  }
+
   const cairoToday = getCairoDateTime().dateStr;
 
   if (!reqDate || reqDate === 'current' || reqDate === 'today') {
