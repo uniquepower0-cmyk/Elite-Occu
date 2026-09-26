@@ -13,8 +13,13 @@ if (!SUPABASE_ANON_KEY) {
   console.warn('[Security] VITE_SUPABASE_ANON_KEY is not defined in environment variables. Please configure it in .env');
 }
 
+// When no anon key is set, point to a placeholder URL so the Supabase client is
+// effectively inert and cannot emit authenticated (or unauthenticated) requests
+// against the real project — preventing 401 errors in the browser console.
+const _supabaseUrl = SUPABASE_ANON_KEY ? SUPABASE_URL : 'https://placeholder.invalid';
+const _supabaseKey = SUPABASE_ANON_KEY || 'placeholder-key-not-configured';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+export const supabase = createClient(_supabaseUrl, _supabaseKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -41,7 +46,7 @@ export async function logUserLogin(user: { uid?: string; email?: string; display
   const displayName = user.displayName || 'Authorized Staff';
 
   try {
-    // 1. Record in profiles (if anon key is configured in client)
+    // 1. Record in profiles (only if anon key is configured)
     if (SUPABASE_ANON_KEY) {
       try {
         await supabase.from('profiles').upsert({
@@ -57,7 +62,7 @@ export async function logUserLogin(user: { uid?: string; email?: string; display
       }
     }
 
-    // 2. Add to server-side login log via API or rtdb_nodes
+    // 2. Add to server-side login log via API
     await fetch('/api/logins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -86,18 +91,22 @@ export async function fetchSupabaseAuditLogs(): Promise<SupabaseAuditLog[]> {
     console.warn('Error fetching login logs from API, trying direct Supabase query:', e);
   }
 
-  try {
-    const { data, error } = await supabase
-      .from('rtdb_nodes')
-      .select('data')
-      .eq('path', 'audit_logs')
-      .single();
+  // Only attempt a direct Supabase query when a valid anon key is available;
+  // without it the request would return 401 and pollute the browser console.
+  if (SUPABASE_ANON_KEY) {
+    try {
+      const { data, error } = await supabase
+        .from('rtdb_nodes')
+        .select('data')
+        .eq('path', 'audit_logs')
+        .single();
 
-    if (!error && data && Array.isArray(data.data)) {
-      return data.data;
+      if (!error && data && Array.isArray(data.data)) {
+        return data.data;
+      }
+    } catch (e) {
+      console.error('Supabase direct audit log fetch error:', e);
     }
-  } catch (e) {
-    console.error('Supabase direct audit log fetch error:', e);
   }
 
   return [];
