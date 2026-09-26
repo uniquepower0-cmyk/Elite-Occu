@@ -16,7 +16,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION & CREDENTIALS ---
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://uuvomcxbgldgtmuqtymk.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "YOUR_SERVICE_ROLE_KEY_HERE")
+SUPABASE_KEY = os.getenv(
+    "SUPABASE_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0"
+)
 
 FORTINET_USER = os.getenv("FORTINET_USER", "mohanad.elmaamoun")
 FORTINET_PASS = os.getenv("FORTINET_PASS", "Me@111222")
@@ -150,7 +153,9 @@ def fetch_powerbi_and_sync():
                     "AdmissionDate": row.get("AdmissionDate")
                 })
                 
-            rpc_res = requests.post(SUPABASE_RPC_URL, headers=rpc_headers, json=rpc_payload, verify=False)
+            # PostgREST expects the JSON keys to match the SQL function parameter names.
+            # Since our SQL function is `sync_powerbi_admissions(payload JSON)`, we must wrap the array in `{"payload": [...]}`
+            rpc_res = requests.post(SUPABASE_RPC_URL, headers=rpc_headers, json={"payload": rpc_payload}, verify=False)
             if rpc_res.status_code not in [200, 204]:
                 log(f"RPC Relational Sync Failed: {rpc_res.text}")
             else:
