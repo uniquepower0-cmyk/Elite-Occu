@@ -3491,11 +3491,17 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     
     cumulativeORList = parsedData;
     // Push to relational database
-    syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
+    await syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
     uploadedAt = Date.now();
     setSaveChangeType('upload');
-    await takeORSnapshotHelper(dateStr);
-    await saveData();
+    
+    // Only update the specific OR list nodes to avoid Vercel timeouts
+    const nowIso = new Date().toISOString();
+    await Promise.all([
+      takeORSnapshotHelper(dateStr),
+      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/or_list', data: { items: parsedData }, updated_at: nowIso }),
+      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/metadata', data: { lastDatabaseUpdatedAt: Date.now(), lastActiveDate, uploadedAt, cairoTimeStatus: getCairoDateTime().fullStr }, updated_at: nowIso })
+    ]);
     
     return res.status(200).json({
       success: true,
