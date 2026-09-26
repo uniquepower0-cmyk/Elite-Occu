@@ -2714,13 +2714,14 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
   }, 350);
 }
 
-// Check database updated_at on scheduled interval (every 60s) as a reliable background fallback
+// Check database updated_at on scheduled interval (every 10s) as a reliable background fallback
 async function checkDatabaseSyncSchedule() {
   try {
     const { data: node, error } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('updated_at')
-      .eq('path', 'state/metadata')
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (!error && node && node.updated_at) {
@@ -2729,6 +2730,8 @@ async function checkDatabaseSyncSchedule() {
         console.log(`[Auto-Fetch Schedule] Newer database version detected in Supabase (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
         lastKnownDatabaseUpdatedAt = cloudUpdated;
         triggerServerAutoFetchFromDatabase('schedule-periodic-check');
+      } else if (!lastKnownDatabaseUpdatedAt) {
+        lastKnownDatabaseUpdatedAt = cloudUpdated;
       }
     }
   } catch (e: any) {
@@ -2739,8 +2742,8 @@ async function checkDatabaseSyncSchedule() {
 // Supabase background sync scheduler
 function setupServerDatabaseAutoSync() {
   try {
-    // Run scheduled background check every 60 seconds
-    setInterval(checkDatabaseSyncSchedule, 60000);
+    // Run scheduled background check every 10 seconds
+    setInterval(checkDatabaseSyncSchedule, 10000);
   } catch (err) {
     console.error('[Auto-Fetch Schedule] Failed to setup server database sync schedule:', err);
   }
@@ -6029,9 +6032,10 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 }
 
 app.get('/api/occupancy/data', async (req, res) => {
-  if (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0)) {
+  const force = req.query.force === 'true' || req.query.reload === 'true';
+  if (force || (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0))) {
     try {
-      await loadData();
+      await loadData(force);
     } catch (err) {
       console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
     }
@@ -6134,7 +6138,8 @@ app.get('/api/occupancy/data', async (req, res) => {
       orList: enrichedOrList,
       overList: [],
       transfers: cumulativeTransfers,
-      transfersCount: (cumulativeTransfers || []).length
+      transfersCount: (cumulativeTransfers || []).length,
+      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt
     });
   }
 
@@ -6165,7 +6170,8 @@ app.get('/api/occupancy/data', async (req, res) => {
     orList: enrichedOrList,
     overList: getOverListPatients(hospitalData, cumulativeORList),
     transfers: cumulativeTransfers,
-    transfersCount: (cumulativeTransfers || []).length
+    transfersCount: (cumulativeTransfers || []).length,
+    lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt
   });
 });
 
@@ -7268,6 +7274,28 @@ app.get('/api/history/changelog', async (req, res) => {
 // Database Auto-Fetch & Synchronization Status Endpoint
 app.get('/api/database/auto-sync-status', async (req, res) => {
   try {
+    // Proactively check if there is a newer database version in Supabase
+    try {
+      const { data: node } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .select('updated_at')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (node && node.updated_at) {
+        const cloudUpdated = String(node.updated_at);
+        if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
+          console.log(`[Auto-Fetch Schedule] Newer database version detected via status check (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
+          lastKnownDatabaseUpdatedAt = cloudUpdated;
+          await loadData(true);
+        } else if (!lastKnownDatabaseUpdatedAt) {
+          lastKnownDatabaseUpdatedAt = cloudUpdated;
+        }
+      }
+    } catch (checkErr) {
+      // Non-blocking
+    }
+
     const cairo = getCairoDateTime();
     res.json({
       status: 'active',
@@ -7279,7 +7307,7 @@ app.get('/api/database/auto-sync-status', async (req, res) => {
       databaseEngine: 'supabase',
       databaseEndpoint: SUPABASE_URL,
       realtimeEnabled: true,
-      syncScheduleIntervalMs: 25000,
+      syncScheduleIntervalMs: 10000,
       isCurrentlySyncing: isServerAutoSyncing,
       hasHospitalData: !!(hospitalData && hospitalData.length > 0)
     });

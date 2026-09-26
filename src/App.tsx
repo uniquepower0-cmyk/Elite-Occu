@@ -450,9 +450,9 @@ export default function App() {
               setIsDbUpdatePulsing(true);
               setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
 
-              // Refresh occupancy data on state/settings/audit changes
+              // Refresh occupancy data on state/settings/audit changes (force bypass cache)
               if (isStateChange) {
-                fetchData({ silent: true });
+                fetchData({ silent: true, force: true });
               }
 
               // Refresh occupancy history view on history/ path changes
@@ -475,8 +475,8 @@ export default function App() {
           setRealtimeConnected(status === 'SUBSCRIBED');
         });
     } else {
-      console.warn('[Auto-Fetch Schedule] VITE_SUPABASE_ANON_KEY not set — skipping Supabase real-time subscription to avoid 401 errors.');
-      setRealtimeConnected(false);
+      console.warn('[Auto-Fetch Schedule] VITE_SUPABASE_ANON_KEY not set — using active server auto-sync polling for real-time DB changes.');
+      setRealtimeConnected(true);
     }
 
     // 2. Visibility change auto-fetch: when user switches back to tab after being away (> 60s), auto-fetch silently
@@ -486,13 +486,13 @@ export default function App() {
         if (now - lastVisibilityFetchRef.current > 60000) {
           lastVisibilityFetchRef.current = now;
           console.log('[Auto-Fetch Schedule] Tab became active after inactivity. Triggering silent auto-fetch...');
-          fetchData({ silent: true });
+          fetchData({ silent: true, force: true });
         }
       }
     };
     const handleOnline = () => {
       console.log('[Auto-Fetch Schedule] Network online restored. Triggering auto-fetch...');
-      fetchData({ silent: true });
+      fetchData({ silent: true, force: true });
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -504,6 +504,45 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
     };
+  }, [isAuthenticated]);
+
+  // 3. Proactive Cloud Database Auto-Sync Poller (guarantees real-time change detection across all clients)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let isPolling = false;
+    const checkDbSyncStatus = async () => {
+      if (isPolling || isFetchingRef.current) return;
+      isPolling = true;
+      try {
+        const res = await fetch('/api/database/auto-sync-status');
+        if (res.ok) {
+          const json = await res.json();
+          const serverDbUpdated = json.lastDatabaseUpdate ? String(json.lastDatabaseUpdate) : null;
+          if (serverDbUpdated && lastDbTimestampRef.current && serverDbUpdated !== lastDbTimestampRef.current) {
+            console.log('⚡ [Auto-Sync] Database change detected in Supabase cloud! Auto-fetching latest state...', serverDbUpdated, 'vs', lastDbTimestampRef.current);
+            lastDbTimestampRef.current = serverDbUpdated;
+            setIsDbUpdatePulsing(true);
+            setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
+            await fetchData({ silent: true, force: true });
+            setOccupancyHistoryRefreshKey(k => k + 1);
+
+            setTimeout(() => setIsDbUpdatePulsing(false), 3000);
+            setTimeout(() => setDbUpdateMessage(null), 5000);
+          } else if (serverDbUpdated && !lastDbTimestampRef.current) {
+            lastDbTimestampRef.current = serverDbUpdated;
+          }
+        }
+      } catch (err) {
+        // Non-blocking
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    // Check cloud database update status every 5 seconds
+    const interval = setInterval(checkDbSyncStatus, 5000);
+    return () => clearInterval(interval);
   }, [isAuthenticated]);
 
   // Scheduled Auto-Fetch Timer from Database on interval
@@ -518,7 +557,7 @@ export default function App() {
     const timer = setInterval(() => {
       setNextFetchCountdown((prev) => {
         if (prev <= 1) {
-          fetchData({ silent: true });
+          fetchData({ silent: true, force: true });
           return rateSeconds;
         }
         return prev - 1;
@@ -674,8 +713,9 @@ export default function App() {
   };
 
   const handleRefresh = async () => {
-    console.log('Manual refresh triggered');
-    await fetchData();
+    console.log('Manual refresh triggered (force reload from DB)');
+    await fetchData({ force: true });
+    setOccupancyHistoryRefreshKey(k => k + 1);
   };
 
   const checkDataStatus = async () => {
@@ -811,10 +851,11 @@ export default function App() {
     }
   };
 
-  const fetchData = async (options?: { silent?: boolean; retries?: number; delay?: number }): Promise<void> => {
+  const fetchData = async (options?: { silent?: boolean; retries?: number; delay?: number; force?: boolean }): Promise<void> => {
     const retries = typeof options?.retries === 'number' ? options.retries : 2;
     const delay = typeof options?.delay === 'number' ? options.delay : 800;
     const silent = !!options?.silent;
+    const force = !!options?.force;
 
     if (!silent) {
       setLoading(true);
@@ -822,11 +863,12 @@ export default function App() {
     isFetchingRef.current = true;
 
     try {
-      const res = await fetch('/api/occupancy/data');
+      const url = force ? `/api/occupancy/data?force=true&t=${Date.now()}` : '/api/occupancy/data';
+      const res = await fetch(url);
       if (!res.ok) {
         if (retries > 0) {
           await new Promise(r => setTimeout(r, delay));
-          return fetchData({ silent, retries: retries - 1, delay: delay * 1.5 });
+          return fetchData({ silent, force, retries: retries - 1, delay: delay * 1.5 });
         }
         const text = await res.text().catch(() => '');
         console.warn('Fetch /api/occupancy/data returned status:', res.status, text.substring(0, 50));
@@ -2768,10 +2810,13 @@ export default function App() {
                         )}
 
                         <button
-                          onClick={() => { fetchData(); setOccupancyHistoryRefreshKey(k => k + 1); }}
+                          onClick={async () => {
+                            await fetchData({ force: true });
+                            setOccupancyHistoryRefreshKey(k => k + 1);
+                          }}
                           disabled={loading}
                           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs focus:outline-hidden"
-                          title="Force immediate auto-fetch"
+                          title="Force immediate database sync"
                         >
                           <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
                           Sync Now
