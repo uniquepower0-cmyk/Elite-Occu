@@ -141,14 +141,14 @@ def fetch_powerbi_and_sync():
             rpc_headers = SUPABASE_HEADERS.copy()
             rpc_headers["Prefer"] = "return=minimal"
             
-            # Format payload for the RPC function (ensuring MRN is string)
+            # Format payload for the RPC function (handling PowerBI column aliases)
             rpc_payload = []
             for row in new_occupancy_rows:
                 rpc_payload.append({
-                    "MRN": str(row.get("MRN", "")),
-                    "Patient": row.get("Patient"),
-                    "Bed#": row.get("Bed#"),
-                    "Floor Name": row.get("Floor Name"),
+                    "MRN": str(row.get("MRN") or row.get("PatientBarcode") or ""),
+                    "Patient": row.get("Patient") or row.get("EnglishFullName") or "Unknown",
+                    "Bed#": row.get("Bed#") or row.get("BedName_EN"),
+                    "Floor Name": row.get("Floor Name") or row.get("FloorName_EN"),
                     "TreatingPhysicianName": row.get("TreatingPhysicianName"),
                     "AdmissionDate": row.get("AdmissionDate")
                 })

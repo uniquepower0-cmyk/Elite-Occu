@@ -1,5 +1,4 @@
--- Run this in the Supabase SQL Editor to create the RPC function used by the Python script
-
+-- 1. Create the RPC Function
 CREATE OR REPLACE FUNCTION sync_powerbi_admissions(payload JSON)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -9,23 +8,24 @@ DECLARE
   s_id UUID;
   a_id UUID;
   active_admission_ids UUID[] := '{}';
+  v_mrn VARCHAR(50);
 BEGIN
-  -- Loop through the incoming PowerBI JSON payload
   FOR rec IN SELECT * FROM json_array_elements(payload)
   LOOP
-    -- 1. Upsert Patient (Using MRN as the unique identifier)
-    IF rec->>'MRN' IS NOT NULL AND rec->>'MRN' != '' THEN
-      INSERT INTO patients (mrn, name) 
-      VALUES (rec->>'MRN', rec->>'Patient')
-      ON CONFLICT (mrn) DO UPDATE SET name = EXCLUDED.name
-      RETURNING id INTO p_id;
-    ELSE
-      -- Skip if no MRN is provided (invalid patient record)
-      CONTINUE;
+    -- 1. Ensure MRN exists (fallback to generating one if PowerBI missing)
+    v_mrn := rec->>'MRN';
+    IF v_mrn IS NULL OR v_mrn = '' OR v_mrn = 'None' OR v_mrn = 'nan' THEN
+      v_mrn := 'UNKNOWN-' || gen_random_uuid()::text;
     END IF;
 
+    -- Upsert Patient
+    INSERT INTO patients (mrn, name) 
+    VALUES (v_mrn, COALESCE(rec->>'Patient', 'Unknown Patient'))
+    ON CONFLICT (mrn) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id INTO p_id;
+
     -- 2. Upsert Room
-    IF rec->>'Bed#' IS NOT NULL AND rec->>'Bed#' != '' THEN
+    IF rec->>'Bed#' IS NOT NULL AND rec->>'Bed#' != '' AND rec->>'Bed#' != 'None' AND rec->>'Bed#' != 'nan' THEN
       INSERT INTO rooms (name, ward_type) 
       VALUES (rec->>'Bed#', rec->>'Floor Name')
       ON CONFLICT (name) DO UPDATE SET ward_type = EXCLUDED.ward_type
@@ -34,10 +34,9 @@ BEGIN
       r_id := NULL;
     END IF;
 
-    -- 3. Find or Create Staff (Treating Physician)
-    IF rec->>'TreatingPhysicianName' IS NOT NULL AND rec->>'TreatingPhysicianName' != '' THEN
+    -- 3. Upsert Physician
+    IF rec->>'TreatingPhysicianName' IS NOT NULL AND rec->>'TreatingPhysicianName' != '' AND rec->>'TreatingPhysicianName' != 'None' AND rec->>'TreatingPhysicianName' != 'nan' THEN
       SELECT id INTO s_id FROM staff WHERE name = rec->>'TreatingPhysicianName' LIMIT 1;
-      
       IF s_id IS NULL THEN
         INSERT INTO staff (name, role) 
         VALUES (rec->>'TreatingPhysicianName', 'Physician')
@@ -47,32 +46,24 @@ BEGIN
       s_id := NULL;
     END IF;
 
-    -- 4. Check if patient is already admitted
+    -- 4. Upsert Admission
     SELECT id INTO a_id FROM admissions 
     WHERE patient_id = p_id AND status = 'Admitted' LIMIT 1;
     
     IF a_id IS NULL THEN
-      -- Create new admission
       INSERT INTO admissions (patient_id, room_id, physician_id, admission_date, status)
       VALUES (p_id, r_id, s_id, COALESCE((rec->>'AdmissionDate')::TIMESTAMPTZ, NOW()), 'Admitted')
       RETURNING id INTO a_id;
     ELSE
-      -- Update existing admission's room and physician if they moved
-      UPDATE admissions 
-      SET room_id = r_id, physician_id = s_id
-      WHERE id = a_id;
+      UPDATE admissions SET room_id = r_id, physician_id = s_id WHERE id = a_id;
     END IF;
 
-    -- Track this admission as active
     active_admission_ids := array_append(active_admission_ids, a_id);
   END LOOP;
 
-  -- 5. Auto-Discharge anyone who is no longer in the PowerBI list!
-  -- This eliminates the need for downloading "history" in Python.
+  -- 5. Auto-Discharge
   UPDATE admissions 
   SET status = 'Discharged', discharge_date = NOW()
-  WHERE status = 'Admitted' 
-  AND id != ALL(active_admission_ids);
-  
+  WHERE status = 'Admitted' AND id != ALL(active_admission_ids);
 END;
 $$;
