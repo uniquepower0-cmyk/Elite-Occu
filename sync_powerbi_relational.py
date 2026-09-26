@@ -166,11 +166,11 @@ def fetch_powerbi_and_sync():
                 ad_val = get_val(row, ["AdmissionDate"])
                 
                 rpc_payload.append({
-                    "MRN": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN"])),
-                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name"]) or "Unknown"),
-                    "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No"])),
-                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor"])),
-                    "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor"])),
+                    "MRN": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف"])),
+                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم"]) or "Unknown"),
+                    "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير"])),
+                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور"])),
+                    "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج"])),
                     "AdmissionDate": str(ad_val) if ad_val else None
                 })
                 
@@ -202,17 +202,17 @@ def fetch_powerbi_and_sync():
             legacy_occupancy_rows.append(fake_header)
             
             for row in raw_records:
-                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No"])).strip()
-                if bed_val.lower() in ["bed#", "bed", "room", ""] or "no filters" in bed_val.lower():
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير"])).strip()
+                if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", ""] or "no filters" in bed_val.lower():
                     continue
                     
                 legacy_row = {
-                    "No filters applied": clean_val(get_val(row, ["AdmissionDate", "Admission Date", "Date"])),
+                    "No filters applied": clean_val(get_val(row, ["AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ"])),
                     "Unnamed: 1": clean_val(bed_val),
-                    "Unnamed: 2": clean_val(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN"])),
-                    "Unnamed: 3": clean_val(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name"])),
-                    "Unnamed: 12": clean_val(get_val(row, ["Financial Status", "ContractorName", "Contractor", "Financial"])),
-                    "Unnamed: 22": clean_val(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor"]))
+                    "Unnamed: 2": clean_val(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف"])),
+                    "Unnamed: 3": clean_val(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم"])),
+                    "Unnamed: 12": clean_val(get_val(row, ["Financial Status", "ContractorName", "Contractor", "Financial", "الجهة", "الشركة", "جهة الدفع"])),
+                    "Unnamed: 22": clean_val(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج"]))
                 }
                 legacy_occupancy_rows.append(legacy_row)
             
