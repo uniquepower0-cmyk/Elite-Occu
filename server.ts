@@ -6772,19 +6772,16 @@ async function takeORSnapshotHelper(customDate?: string) {
   if (!cumulativeORList || cumulativeORList.length === 0) return null;
   const cairo = getCairoDateTime();
 
+  // 1. Prefer the embedded orListDate from the OR items themselves
   let resolvedDate: string | null = null;
-
-  // 1. Prefer customDate if explicitly provided (e.g., manual snapshot force or explicit upload date)
-  if (customDate) {
-    resolvedDate = normalizeToISODate(customDate) || customDate;
+  const rawListDate = cumulativeORList[0]?.orListDate || '';
+  if (rawListDate) {
+    resolvedDate = normalizeToISODate(rawListDate);
   }
 
-  // 2. Fallback to embedded orListDate
-  if (!resolvedDate) {
-    const rawListDate = cumulativeORList[0]?.orListDate || '';
-    if (rawListDate) {
-      resolvedDate = normalizeToISODate(rawListDate);
-    }
+  // 2. If no valid embedded date, use customDate if provided
+  if (!resolvedDate && customDate) {
+    resolvedDate = normalizeToISODate(customDate) || customDate;
   }
 
   // 3. Fallback to today's Cairo date
@@ -7377,8 +7374,7 @@ app.get('/api/history/occupancy/detail', async (req, res) => {
 
 app.post('/api/history/occupancy/snapshot', async (req, res) => {
   try {
-    // For manual snapshot triggers, default to today's Cairo date if not explicitly provided
-    const customDate = req.body?.date ? String(req.body.date).trim() : getCairoDateTime().dateStr;
+    const customDate = req.body?.date ? String(req.body.date).trim() : undefined;
     const snap = await takeOccupancySnapshotHelper(customDate);
     if (!snap) {
       return res.status(400).json({ error: 'No occupancy data currently loaded to snapshot.' });
@@ -7434,8 +7430,7 @@ app.get('/api/history/or/detail', async (req, res) => {
 
 app.post('/api/history/or/snapshot', async (req, res) => {
   try {
-    // For manual snapshot triggers, default to today's Cairo date if not explicitly provided
-    const customDate = req.body?.date ? String(req.body.date).trim() : getCairoDateTime().dateStr;
+    const customDate = req.body?.date ? String(req.body.date).trim() : undefined;
     const snap = await takeORSnapshotHelper(customDate);
     if (!snap) {
       return res.status(400).json({ error: 'No OR list data currently loaded to snapshot.' });
