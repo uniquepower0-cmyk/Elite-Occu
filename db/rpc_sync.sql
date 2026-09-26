@@ -18,31 +18,11 @@ BEGIN
       v_mrn := 'UNKNOWN-' || gen_random_uuid()::text;
     END IF;
 
-    -- Upsert Patient with demographic data
-    INSERT INTO patients (mrn, name, gender, mobile, financial_status, blood_type) 
-    VALUES (
-      v_mrn, 
-      COALESCE(rec->>'Patient', 'Unknown Patient'),
-      NULLIF(rec->>'Gender', 'None'),
-      NULLIF(rec->>'DefaultMobile', 'None'),
-      NULLIF(rec->>'Financial Status', 'None'),
-      NULLIF(rec->>'Blood Type', 'None')
-    )
-    ON CONFLICT (mrn) DO UPDATE SET 
-      name = EXCLUDED.name,
-      gender = COALESCE(EXCLUDED.gender, patients.gender),
-      mobile = COALESCE(EXCLUDED.mobile, patients.mobile),
-      financial_status = COALESCE(EXCLUDED.financial_status, patients.financial_status),
-      blood_type = COALESCE(EXCLUDED.blood_type, patients.blood_type)
+    -- Upsert Patient
+    INSERT INTO patients (mrn, name) 
+    VALUES (v_mrn, COALESCE(rec->>'Patient', 'Unknown Patient'))
+    ON CONFLICT (mrn) DO UPDATE SET name = EXCLUDED.name
     RETURNING id INTO p_id;
-
-    -- Update birth date separately due to type casting
-    IF rec->>'BirthDate' IS NOT NULL AND rec->>'BirthDate' != 'None' AND rec->>'BirthDate' != 'nan' THEN
-      BEGIN
-        UPDATE patients SET birth_date = (rec->>'BirthDate')::DATE WHERE id = p_id;
-      EXCEPTION WHEN OTHERS THEN
-      END;
-    END IF;
 
     -- 2. Upsert Room
     IF rec->>'Bed#' IS NOT NULL AND rec->>'Bed#' != '' AND rec->>'Bed#' != 'None' AND rec->>'Bed#' != 'nan' THEN
@@ -71,15 +51,11 @@ BEGIN
     WHERE patient_id = p_id AND status = 'Admitted' LIMIT 1;
     
     IF a_id IS NULL THEN
-      INSERT INTO admissions (patient_id, room_id, physician_id, admission_date, status, icd10_code)
-      VALUES (p_id, r_id, s_id, COALESCE((rec->>'AdmissionDate')::TIMESTAMPTZ, NOW()), 'Admitted', NULLIF(rec->>'ICD-10 Diagnosis', 'None'))
+      INSERT INTO admissions (patient_id, room_id, physician_id, admission_date, status)
+      VALUES (p_id, r_id, s_id, COALESCE((rec->>'AdmissionDate')::TIMESTAMPTZ, NOW()), 'Admitted')
       RETURNING id INTO a_id;
     ELSE
-      UPDATE admissions SET 
-        room_id = r_id, 
-        physician_id = s_id,
-        icd10_code = COALESCE(NULLIF(rec->>'ICD-10 Diagnosis', 'None'), admissions.icd10_code)
-      WHERE id = a_id;
+      UPDATE admissions SET room_id = r_id, physician_id = s_id WHERE id = a_id;
     END IF;
 
     active_admission_ids := array_append(active_admission_ids, a_id);
