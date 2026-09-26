@@ -114,8 +114,9 @@ def fetch_existing_supabase_state():
 def fetch_powerbi_and_sync():
     export_url = "http://10.12.0.11/powerbi/api/explore/reports/ca9cb448-faa1-41d0-ad8e-f4af14ec7bbd/export/xlsx"
     
-    # Note: Shortened payload string for script brevity (matches your original)
-    raw_payload = """{"exportDataType":0,"executeSemanticQueryRequest":{"version":"1.0.0","queries":[{"Query":{"Commands":[{"SemanticQueryDataShapeCommand":{"Query":{"Version":2,"From":[{"Name":"b","Entity":"BedoCCupancy_Soussi","Type":0}],"Select":[{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"AdmissionDate"},"Name":"BedoCCupancy_Soussi.AdmissionDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Bed#"},"Name":"BedoCCupancy_Soussi.BedName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Patient"},"Name":"BedoCCupancy_Soussi.EnglishFullName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"MRN"},"Name":"BedoCCupancy_Soussi.PatientBarcode"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Floor Name"},"Name":"BedoCCupancy_Soussi.FloorName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"TreatingPhysicianName"},"Name":"BedoCCupancy_Soussi.TreatingPhysicianName"}],"OrderBy":[{"Direction":2,"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"}}}]},"Binding":{"Primary":{"Groupings":[{"Projections":[0,1,2,3,4,5],"Subtotal":0}]},"DataReduction":{"Primary":{"Top":{"Count":100000}},"Secondary":{"Top":{"Count":100}}},"Version":1}}},{"ExportDataCommand":{"Columns":[{"QueryName":"BedoCCupancy_Soussi.AdmissionDate","Name":"AdmissionDate"},{"QueryName":"BedoCCupancy_Soussi.BedName_EN","Name":"Bed#"},{"QueryName":"BedoCCupancy_Soussi.EnglishFullName","Name":"Patient"},{"QueryName":"BedoCCupancy_Soussi.PatientBarcode","Name":"MRN"},{"QueryName":"BedoCCupancy_Soussi.FloorName_EN","Name":"Floor Name"},{"QueryName":"BedoCCupancy_Soussi.TreatingPhysicianName","Name":"TreatingPhysicianName"}],"Ordering":[0,1,2,3,4,5],"FiltersDescription":"No filters applied"}}]}}],"cancelQueries":[],"modelId":"477100070","userPreferredLocale":"en-US"}}"""
+    raw_payload = """
+    {"exportDataType":0,"executeSemanticQueryRequest":{"version":"1.0.0","queries":[{"Query":{"Commands":[{"SemanticQueryDataShapeCommand":{"Query":{"Version":2,"From":[{"Name":"b","Entity":"BedoCCupancy_Soussi","Type":0}],"Select":[{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"AdmissionDate"},"Name":"BedoCCupancy_Soussi.AdmissionDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Bed#"},"Name":"BedoCCupancy_Soussi.BedName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Patient"},"Name":"BedoCCupancy_Soussi.EnglishFullName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Financial Status"},"Name":"BedoCCupancy_Soussi.FinancialStatusGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Floor Name"},"Name":"BedoCCupancy_Soussi.FloorName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Notes"},"Name":"BedoCCupancy_Soussi.Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Age"},"Name":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"MRN"},"Name":"BedoCCupancy_Soussi.PatientBarcode"},{"Measure":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Companions #"},"Name":"BedoCCupancy_Soussi.Count of Companions"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PaymentBy"},"Name":"BedoCCupancy_Soussi.PaymentBy"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Visit"},"Name":"BedoCCupancy_Soussi.VisitTypeGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ContractorName"},"Name":"BedoCCupancy_Soussi.ContractorName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FloorStructureName_EN"},"Name":"BedoCCupancy_Soussi.FloorStructureName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG"},"Name":"BedoCCupancy_Soussi.DRG"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Created by DIG"},"Name":"BedoCCupancy_Soussi.Expr1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG Diagnosis"},"Name":"BedoCCupancy_Soussi.Expr3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LOS"},"Name":"Sum(BedoCCupancy_Soussi.LOS)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"GeometricMeanLOS"},"Name":"BedoCCupancy_Soussi.GeometricMeanLOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Speciality"},"Name":"BedoCCupancy_Soussi.Speciality"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Date Of Patients"},"Name":"BedoCCupancy_Soussi.NewPatients"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ALOS"},"Name":"BedoCCupancy_Soussi.ALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ICD-10 Diagnosis"},"Name":"BedoCCupancy_Soussi.Name"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Payments"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Payments)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Weight"},"Name":"BedoCCupancy_Soussi.Weight"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Difference"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Difference)"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FTotal"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.FTotal)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"SSO"},"Name":"BedoCCupancy_Soussi.1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC Weight"},"Name":"BedoCCupancy_Soussi.2"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC GLOS"},"Name":"BedoCCupancy_Soussi.3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes"},"Name":"BedoCCupancy_Soussi.PrograssNotes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"OR Notes"},"Name":"BedoCCupancy_Soussi.OR Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Operations"},"Name":"BedoCCupancy_Soussi.Operations"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DefaultMobile"},"Name":"BedoCCupancy_Soussi.DefaultMobile"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"TreatingPhysicianName"},"Name":"BedoCCupancy_Soussi.TreatingPhysicianName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes Creation Date"},"Name":"BedoCCupancy_Soussi.PrograssNotes Creation Date"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"},"Name":"BedoCCupancy_Soussi.DischargeExpectedDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Hand Over"},"Name":"BedoCCupancy_Soussi.Hand Over"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteALOS"},"Name":"BedoCCupancy_Soussi.EliteALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteWeight"},"Name":"BedoCCupancy_Soussi.EliteWeight"}],"OrderBy":[{"Direction":2,"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"}}}]},"Binding":{"Primary":{"Groupings":[{"Projections":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38],"Subtotal":0}]},"DataReduction":{"Primary":{"Top":{"Count":1000000}},"Secondary":{"Top":{"Count":100}}},"Version":1}}},{"ExportDataCommand":{"Columns":[{"QueryName":"BedoCCupancy_Soussi.AdmissionDate","Name":"AdmissionDate"},{"QueryName":"BedoCCupancy_Soussi.BedName_EN","Name":"Bed#"},{"QueryName":"BedoCCupancy_Soussi.EnglishFullName","Name":"Patient"},{"QueryName":"BedoCCupancy_Soussi.FinancialStatusGUID","Name":"Financial Status"},{"QueryName":"BedoCCupancy_Soussi.FloorName_EN","Name":"Floor Name"},{"QueryName":"BedoCCupancy_Soussi.Notes","Name":"Notes"},{"QueryName":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)","Name":"Age"},{"QueryName":"BedoCCupancy_Soussi.PatientBarcode","Name":"MRN"},{"QueryName":"BedoCCupancy_Soussi.Count of Companions","Name":"Companions #"},{"QueryName":"BedoCCupancy_Soussi.PaymentBy","Name":"PaymentBy"},{"QueryName":"BedoCCupancy_Soussi.VisitTypeGUID","Name":"Visit"},{"QueryName":"BedoCCupancy_Soussi.ContractorName","Name":"ContractorName"},{"QueryName":"BedoCCupancy_Soussi.FloorStructureName_EN","Name":"FloorStructureName_EN"},{"QueryName":"BedoCCupancy_Soussi.DRG","Name":"DRG"},{"QueryName":"BedoCCupancy_Soussi.Expr1","Name":"Created by DIG"},{"QueryName":"BedoCCupancy_Soussi.Expr3","Name":"DRG Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.LOS)","Name":"LOS"},{"QueryName":"BedoCCupancy_Soussi.GeometricMeanLOS","Name":"GLOS"},{"QueryName":"BedoCCupancy_Soussi.Speciality","Name":"Speciality"},{"QueryName":"BedoCCupancy_Soussi.NewPatients","Name":"Date Of Patients"},{"QueryName":"BedoCCupancy_Soussi.ALOS","Name":"ALOS"},{"QueryName":"BedoCCupancy_Soussi.Name","Name":"ICD-10 Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.Payments)","Name":"Sum of Payments"},{"QueryName":"BedoCCupancy_Soussi.Weight","Name":"Weight"},{"QueryName":"Sum(BedoCCupancy_Soussi.Difference)","Name":"Remaining"},{"QueryName":"Sum(BedoCCupancy_Soussi.FTotal)","Name":"Sum of FTotal"},{"QueryName":"BedoCCupancy_Soussi.1","Name":"SSO"},{"QueryName":"BedoCCupancy_Soussi.2","Name":"LTC Weight"},{"QueryName":"BedoCCupancy_Soussi.3","Name":"LTC GLOS"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes","Name":"Handover"},{"QueryName":"BedoCCupancy_Soussi.OR Notes","Name":"OR Notes"},{"QueryName":"BedoCCupancy_Soussi.Operations","Name":"Operations"},{"QueryName":"BedoCCupancy_Soussi.DefaultMobile","Name":"DefaultMobile"},{"QueryName":"BedoCCupancy_Soussi.TreatingPhysicianName","Name":"TreatingPhysicianName"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes Creation Date","Name":"PrograssNotes Creation Date"},{"QueryName":"BedoCCupancy_Soussi.DischargeExpectedDate","Name":"DischargeExpectedDate"},{"QueryName":"BedoCCupancy_Soussi.Hand Over","Name":"Prograssnotes"},{"QueryName":"BedoCCupancy_Soussi.EliteALOS","Name":"EliteALOS"},{"QueryName":"BedoCCupancy_Soussi.EliteWeight","Name":"EliteWeight"}],"Ordering":[0,1,7,2,32,3,6,4,5,8,10,9,11,12,21,13,14,15,16,17,20,23,33,18,19,25,22,24,26,27,28,35,34,29,36,30,31,37,38],"FiltersDescription":"No filters applied"}}]}}],"cancelQueries":[],"modelId":"477100070","userPreferredLocale":"en-US"}}
+    """
     
     while True:
         try:
@@ -124,6 +125,22 @@ def fetch_powerbi_and_sync():
             response.raise_for_status()
 
             df = pd.read_excel(io.BytesIO(response.content))
+            
+            # Build dynamic column map because PowerBI Excel exports have headers on row 1, 
+            # causing pandas to name columns "Unnamed: 1", "Unnamed: 2", etc.
+            # The first row in the dataframe contains the actual column names.
+            header_row = df.iloc[0].to_dict() if not df.empty else {}
+            col_map = {str(v).strip(): k for k, v in header_row.items() if pd.notna(v)}
+            
+            def get_val(row, possible_names):
+                for name in possible_names:
+                    key = col_map.get(name)
+                    if key and pd.notna(row.get(key)):
+                        return row.get(key)
+                    # Fallback in case pandas DID read headers correctly
+                    if pd.notna(row.get(name)):
+                        return row.get(name)
+                return ""
             
             def clean_val(val):
                 if pd.isna(val): return None
@@ -135,22 +152,24 @@ def fetch_powerbi_and_sync():
 
             # ---------------------------------------------------------
             # 1. NEW RELATIONAL SYNC (The New Formula)
-            # Sends the flat array to PostgreSQL, which handles Upserts and Auto-Discharges instantly.
             # ---------------------------------------------------------
             log(f"Syncing {len(new_occupancy_rows)} records to New Relational Schema...")
             rpc_headers = SUPABASE_HEADERS.copy()
             rpc_headers["Prefer"] = "return=minimal"
             
-            # Format payload for the RPC function (handling PowerBI column aliases)
             rpc_payload = []
             for row in new_occupancy_rows:
+                # Skip the header row itself during data extraction
+                if str(get_val(row, ["Bed#", "BedName_EN"])) == "Bed#":
+                    continue
+                    
                 rpc_payload.append({
-                    "MRN": str(row.get("MRN") or row.get("PatientBarcode") or ""),
-                    "Patient": row.get("Patient") or row.get("EnglishFullName") or "Unknown",
-                    "Bed#": row.get("Bed#") or row.get("BedName_EN"),
-                    "Floor Name": row.get("Floor Name") or row.get("FloorName_EN"),
-                    "TreatingPhysicianName": row.get("TreatingPhysicianName"),
-                    "AdmissionDate": row.get("AdmissionDate")
+                    "MRN": str(get_val(row, ["MRN", "PatientBarcode"])),
+                    "Patient": str(get_val(row, ["Patient", "EnglishFullName"]) or "Unknown"),
+                    "Bed#": str(get_val(row, ["Bed#", "BedName_EN"])),
+                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN"])),
+                    "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName"])),
+                    "AdmissionDate": str(get_val(row, ["AdmissionDate"]))
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -167,6 +186,7 @@ def fetch_powerbi_and_sync():
             existing = fetch_existing_supabase_state()
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
+            # Send exactly what the original script sent so server.ts 'Unnamed: X' parser works flawlessly
             granular_nodes = [
                 {
                     "path": "state/occupancy",
