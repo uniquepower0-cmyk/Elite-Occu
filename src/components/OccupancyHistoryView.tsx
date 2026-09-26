@@ -21,9 +21,11 @@ import {
 
 interface OccupancyHistoryViewProps {
   onNotify?: (msg: string) => void;
+  /** Increment this to force a silent re-fetch of dates and detail */
+  refreshTrigger?: number;
 }
 
-export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNotify }) => {
+export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
@@ -34,6 +36,10 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
   const [takingSnapshot, setTakingSnapshot] = useState<boolean>(false);
   const [cairoStatus, setCairoStatus] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'inpatients' | 'discharges' | 'transfers'>('inpatients');
+
+  // Track whether the initial mount already ran so refreshTrigger only fires on subsequent changes
+  const isFirstRender = React.useRef(true);
+
 
   const fetchStatus = async () => {
     try {
@@ -99,6 +105,25 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
       fetchDetail(selectedDate);
     }
   }, [selectedDate]);
+
+  // Re-fetch silently whenever the parent signals a DB change via refreshTrigger
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    if (refreshTrigger === undefined) return;
+    console.log('[OccupancyHistoryView] refreshTrigger changed — re-fetching dates and detail...');
+    fetchStatus();
+    fetchDates().then(() => {
+      // After dates refresh, also re-fetch current detail
+      setSelectedDate(prev => {
+        if (prev) fetchDetail(prev);
+        return prev;
+      });
+    });
+  }, [refreshTrigger]);
+
 
   const handleTakeManualSnapshot = async () => {
     setTakingSnapshot(true);

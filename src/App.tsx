@@ -277,6 +277,8 @@ export default function App() {
   const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
   const [dbUpdateMessage, setDbUpdateMessage] = useState<string | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(true);
+  const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
+
 
   const lastDbTimestampRef = useRef<string | null>(null);
   const realtimeDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -424,8 +426,12 @@ export default function App() {
           },
           (payload: any) => {
             const path = payload?.new?.path || payload?.old?.path || '';
-            // Only trigger refresh if it's state, settings, or audit change
-            if (path && !path.startsWith('state/') && !path.startsWith('settings/') && path !== 'audit_logs') {
+            // Determine what kind of change this is
+            const isStateChange = path.startsWith('state/') || path.startsWith('settings/') || path === 'audit_logs';
+            const isHistoryChange = path.startsWith('history/');
+
+            // Ignore paths we don't care about
+            if (path && !isStateChange && !isHistoryChange) {
               return;
             }
 
@@ -443,7 +449,17 @@ export default function App() {
               console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType, path);
               setIsDbUpdatePulsing(true);
               setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
-              fetchData({ silent: true });
+
+              // Refresh occupancy data on state/settings/audit changes
+              if (isStateChange) {
+                fetchData({ silent: true });
+              }
+
+              // Refresh occupancy history view on history/ path changes
+              if (isHistoryChange) {
+                setOccupancyHistoryRefreshKey(k => k + 1);
+              }
+
               setTimeout(() => {
                 setIsDbUpdatePulsing(false);
               }, 3000);
@@ -452,6 +468,7 @@ export default function App() {
               }, 5000);
             }, 500);
           }
+
         )
         .subscribe((status) => {
           console.log('[Auto-Fetch Schedule] Supabase real-time subscription status:', status);
@@ -2751,7 +2768,7 @@ export default function App() {
                         )}
 
                         <button
-                          onClick={() => { fetchData(); }}
+                          onClick={() => { fetchData(); setOccupancyHistoryRefreshKey(k => k + 1); }}
                           disabled={loading}
                           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs focus:outline-hidden"
                           title="Force immediate auto-fetch"
@@ -2759,6 +2776,7 @@ export default function App() {
                           <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
                           Sync Now
                         </button>
+
                       </div>
                     </div>
 
@@ -4624,9 +4642,10 @@ export default function App() {
                 {/* Section: Standalone Occupancy History View */}
                 {currentView === 'occupancy-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <OccupancyHistoryView onNotify={(msg) => alert(msg)} />
+                    <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
                   </section>
                 )}
+
 
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
