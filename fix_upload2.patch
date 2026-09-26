@@ -1,0 +1,11 @@
+--- server.ts
++++ server.ts
+@@ -3491,7 +3491,7 @@
+     
+     cumulativeORList = parsedData;
+     // Push to relational database
+-    syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
++    await syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
+     uploadedAt = Date.now();
+     setSaveChangeType('upload');
+     

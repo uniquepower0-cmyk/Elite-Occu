@@ -166,19 +166,12 @@ def fetch_powerbi_and_sync():
                 ad_val = get_val(row, ["AdmissionDate"])
                 
                 rpc_payload.append({
-                    "MRN": str(get_val(row, ["MRN", "PatientBarcode"])),
-                    "Patient": str(get_val(row, ["Patient", "EnglishFullName"]) or "Unknown"),
-                    "Bed#": str(get_val(row, ["Bed#", "BedName_EN"])),
-                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN"])),
-                    "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName"])),
-                    "AdmissionDate": str(ad_val) if ad_val else None,
-                    "Age": str(get_val(row, ["Age"])),
-                    "DefaultMobile": str(get_val(row, ["DefaultMobile", "Mobile"])),
-                    "Financial Status": str(get_val(row, ["Financial Status", "ContractorName"])),
-                    "ICD-10 Diagnosis": str(get_val(row, ["ICD-10 Diagnosis"])),
-                    "Gender": str(get_val(row, ["Gender"])),
-                    "BirthDate": str(get_val(row, ["BirthDate", "DOB"])),
-                    "Blood Type": str(get_val(row, ["Blood Type"]))
+                    "MRN": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN"])),
+                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name"]) or "Unknown"),
+                    "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No"])),
+                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor"])),
+                    "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor"])),
+                    "AdmissionDate": str(ad_val) if ad_val else None
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -209,17 +202,17 @@ def fetch_powerbi_and_sync():
             legacy_occupancy_rows.append(fake_header)
             
             for row in raw_records:
-                bed_val = str(get_val(row, ["Bed#", "BedName_EN"])).strip()
-                if bed_val == "Bed#" or bed_val == "":
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No"])).strip()
+                if bed_val.lower() in ["bed#", "bed", "room", ""] or "no filters" in bed_val.lower():
                     continue
                     
                 legacy_row = {
-                    "No filters applied": clean_val(get_val(row, ["AdmissionDate"])),
+                    "No filters applied": clean_val(get_val(row, ["AdmissionDate", "Admission Date", "Date"])),
                     "Unnamed: 1": clean_val(bed_val),
-                    "Unnamed: 2": clean_val(get_val(row, ["MRN", "PatientBarcode"])),
-                    "Unnamed: 3": clean_val(get_val(row, ["Patient", "EnglishFullName"])),
-                    "Unnamed: 12": clean_val(get_val(row, ["Financial Status", "ContractorName"])),
-                    "Unnamed: 22": clean_val(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN"]))
+                    "Unnamed: 2": clean_val(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN"])),
+                    "Unnamed: 3": clean_val(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name"])),
+                    "Unnamed: 12": clean_val(get_val(row, ["Financial Status", "ContractorName", "Contractor", "Financial"])),
+                    "Unnamed: 22": clean_val(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor"]))
                 }
                 legacy_occupancy_rows.append(legacy_row)
             
