@@ -171,7 +171,14 @@ def fetch_powerbi_and_sync():
                     "Bed#": str(get_val(row, ["Bed#", "BedName_EN"])),
                     "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName"])),
-                    "AdmissionDate": str(ad_val) if ad_val else None
+                    "AdmissionDate": str(ad_val) if ad_val else None,
+                    "Age": str(get_val(row, ["Age"])),
+                    "DefaultMobile": str(get_val(row, ["DefaultMobile", "Mobile"])),
+                    "Financial Status": str(get_val(row, ["Financial Status", "ContractorName"])),
+                    "ICD-10 Diagnosis": str(get_val(row, ["ICD-10 Diagnosis"])),
+                    "Gender": str(get_val(row, ["Gender"])),
+                    "BirthDate": str(get_val(row, ["BirthDate", "DOB"])),
+                    "Blood Type": str(get_val(row, ["Blood Type"]))
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -188,11 +195,39 @@ def fetch_powerbi_and_sync():
             existing = fetch_existing_supabase_state()
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
-            # Send exactly what the original script sent so server.ts 'Unnamed: X' parser works flawlessly
+            legacy_occupancy_rows = []
+            
+            # Fake header row ensures Node.js startIdx parsing works reliably
+            fake_header = {
+                "No filters applied": "AdmissionDate",
+                "Unnamed: 1": "Bed",
+                "Unnamed: 2": "MRN",
+                "Unnamed: 3": "Patient",
+                "Unnamed: 12": "Financial Status",
+                "Unnamed: 22": "TreatingPhysicianName"
+            }
+            legacy_occupancy_rows.append(fake_header)
+            
+            for row in raw_records:
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN"])).strip()
+                if bed_val == "Bed#" or bed_val == "":
+                    continue
+                    
+                legacy_row = {
+                    "No filters applied": clean_val(get_val(row, ["AdmissionDate"])),
+                    "Unnamed: 1": clean_val(bed_val),
+                    "Unnamed: 2": clean_val(get_val(row, ["MRN", "PatientBarcode"])),
+                    "Unnamed: 3": clean_val(get_val(row, ["Patient", "EnglishFullName"])),
+                    "Unnamed: 12": clean_val(get_val(row, ["Financial Status", "ContractorName"])),
+                    "Unnamed: 22": clean_val(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN"]))
+                }
+                legacy_occupancy_rows.append(legacy_row)
+            
+            # Send the reconstructed rigid array so legacy backend parses it flawlessly
             granular_nodes = [
                 {
                     "path": "state/occupancy",
-                    "data": {"current": new_occupancy_rows, "previous": existing["previous"]},
+                    "data": {"current": legacy_occupancy_rows, "previous": existing.get("previous")},
                     "updated_at": now_iso
                 }
             ]
