@@ -163,13 +163,15 @@ def fetch_powerbi_and_sync():
                 if str(get_val(row, ["Bed#", "BedName_EN"])) == "Bed#":
                     continue
                     
+                ad_val = get_val(row, ["AdmissionDate"])
+                
                 rpc_payload.append({
                     "MRN": str(get_val(row, ["MRN", "PatientBarcode"])),
                     "Patient": str(get_val(row, ["Patient", "EnglishFullName"]) or "Unknown"),
                     "Bed#": str(get_val(row, ["Bed#", "BedName_EN"])),
                     "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName"])),
-                    "AdmissionDate": str(get_val(row, ["AdmissionDate"]))
+                    "AdmissionDate": str(ad_val) if ad_val else None
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
