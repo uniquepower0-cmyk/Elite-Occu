@@ -2335,15 +2335,20 @@ app.post('/api/logins', async (req, res) => {
     const userEmail = email || 'user@elite.hospital';
     const name = displayName || 'Authorized Staff';
 
-    // 1. Upsert profile in Supabase
-    await supabaseAdmin.from('profiles').upsert({
+    // 1. Upsert profile in Supabase, resolving conflict on email so the same
+    //    user re-logging in (possibly with a different generated uid) never hits
+    //    the profiles_email_key unique constraint (error 23505).
+    const { error: profileErr } = await supabaseAdmin.from('profiles').upsert({
       id: uid,
       email: userEmail,
       display_name: name,
       role: 'user',
       metadata: { lastLogin: now },
       updated_at: now
-    });
+    }, { onConflict: 'email', ignoreDuplicates: false });
+    if (profileErr) {
+      console.warn('Profile upsert note (non-fatal):', profileErr.message);
+    }
 
     // 2. Append to audit_logs in rtdb_nodes
     const { data: existingNode } = await supabaseAdmin

@@ -46,23 +46,10 @@ export async function logUserLogin(user: { uid?: string; email?: string; display
   const displayName = user.displayName || 'Authorized Staff';
 
   try {
-    // 1. Record in profiles (only if anon key is configured)
-    if (SUPABASE_ANON_KEY) {
-      try {
-        await supabase.from('profiles').upsert({
-          id: userId,
-          email,
-          display_name: displayName,
-          role: 'user',
-          metadata: { lastLogin: timestamp, userAgent: navigator.userAgent },
-          updated_at: timestamp,
-        });
-      } catch (upsertErr) {
-        console.warn('Supabase client profile upsert note:', upsertErr);
-      }
-    }
-
-    // 2. Add to server-side login log via API
+    // Delegate all profile writes to the server-side API which uses the service-role
+    // key (bypasses RLS) and handles upsert conflict resolution correctly.
+    // Never write to 'profiles' directly from the browser with the anon key —
+    // that triggers RLS violations (42501) and duplicate email errors (23505).
     await fetch('/api/logins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -74,7 +61,7 @@ export async function logUserLogin(user: { uid?: string; email?: string; display
       }),
     });
   } catch (err) {
-    console.error('Failed to record Supabase login audit:', err);
+    console.error('Failed to record login audit:', err);
   }
 }
 
