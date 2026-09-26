@@ -1528,6 +1528,7 @@ async function loadData(force = false) {
       earlyDischargeRoomsText = parsed.earlyDischargeRoomsText || "";
       pendingDischargePatientsText = parsed.pendingDischargePatientsText || "";
       uploadedAt = parsed.uploadedAt || null;
+      if (parsed.lastDatabaseUpdatedAt) lastKnownDatabaseUpdatedAt = String(parsed.lastDatabaseUpdatedAt);
       manuallyDischargedNames = parsed.manuallyDischargedNames || [];
       cumulativeTransfers = parsed.transfers || [];
       patientRoomRegistry = parsed.patientRoomRegistry || {};
@@ -1703,6 +1704,7 @@ async function loadData(force = false) {
       if (stateMap['state/metadata']) {
         const meta = stateMap['state/metadata'];
         if (meta.uploadedAt) uploadedAt = typeof meta.uploadedAt === 'number' ? meta.uploadedAt : new Date(meta.uploadedAt).getTime();
+        if (meta.lastDatabaseUpdatedAt && !latestNodeUpdated) lastKnownDatabaseUpdatedAt = String(meta.lastDatabaseUpdatedAt);
         if (meta.lastResetDate) lastEgyptianAutoResetDate = String(meta.lastResetDate);
         if (meta.lastActiveDate) lastActiveDate = String(meta.lastActiveDate);
         if (meta.lastTransfersDate) lastTransfersDate = String(meta.lastTransfersDate);
@@ -1759,15 +1761,15 @@ async function loadData(force = false) {
       if (settingNodes && Array.isArray(settingNodes)) {
         for (const sNode of settingNodes) {
           if (sNode.path === 'settings/vip_cases' && sNode.data && typeof sNode.data.text === 'string') {
-            if (sNode.data.text.trim().length > 0 || !vipCasesText) {
+            if (force || sNode.data.text.trim().length > 0 || !vipCasesText) {
               vipCasesText = sNode.data.text;
             }
           } else if (sNode.path === 'settings/early_discharge_rooms' && sNode.data && typeof sNode.data.text === 'string') {
-            if (sNode.data.text.trim().length > 0 || !earlyDischargeRoomsText) {
+            if (force || sNode.data.text.trim().length > 0 || !earlyDischargeRoomsText) {
               earlyDischargeRoomsText = sNode.data.text;
             }
           } else if (sNode.path === 'settings/pending_discharges' && sNode.data && typeof sNode.data.text === 'string') {
-            if (sNode.data.text.trim().length > 0 || !pendingDischargePatientsText) {
+            if (force || sNode.data.text.trim().length > 0 || !pendingDischargePatientsText) {
               pendingDischargePatientsText = sNode.data.text;
             }
           }
@@ -2428,6 +2430,7 @@ async function saveData() {
       earlyDischargeRoomsText: earlyDischargeRoomsText,
       pendingDischargePatientsText: pendingDischargePatientsText,
       uploadedAt: uploadedAt,
+      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       manuallyDischargedNames: manuallyDischargedNames,
       transfers: cumulativeTransfers,
       patientRoomRegistry: patientRoomRegistry,
@@ -2456,6 +2459,7 @@ async function saveData() {
           path: 'state/metadata',
           data: {
             uploadedAt: uploadedAt,
+            lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
             lastResetDate: lastEgyptianAutoResetDate,
             lastActiveDate: lastActiveDate,
             lastTransfersDate: lastTransfersDate,
@@ -3185,6 +3189,8 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     res.json({ 
       success: true, 
+      uploadedAt: uploadedAt,
+      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       count: cumulativeDebts.length, 
       medicalPlansCount: cumulativeMedicalPlans.length,
       companionStatusCount: cumulativeCompanionStatus.length,
@@ -3353,6 +3359,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
       success: true,
       count: parsedData.length,
       uploadedAt: uploadedAt,
+      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       date: dateStr,
       sheet: targetSheetName
     });
@@ -6185,7 +6192,7 @@ app.get('/api/occupancy/data', async (req, res) => {
       overList: [],
       transfers: cumulativeTransfers,
       transfersCount: (cumulativeTransfers || []).length,
-      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt
+      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
     });
   }
 
@@ -6217,7 +6224,7 @@ app.get('/api/occupancy/data', async (req, res) => {
     overList: getOverListPatients(hospitalData, cumulativeORList),
     transfers: cumulativeTransfers,
     transfersCount: (cumulativeTransfers || []).length,
-    lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt
+    lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
   });
 });
 

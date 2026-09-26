@@ -274,17 +274,40 @@ export default function App() {
   });
   const [nextFetchCountdown, setNextFetchCountdown] = useState<number>(300);
   const [lastSyncedTimestamp, setLastSyncedTimestamp] = useState<number | null>(Date.now());
+  const [cloudDatabaseUpdatedAt, setCloudDatabaseUpdatedAt] = useState<string | number | null>(null);
   const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
   const [dbUpdateMessage, setDbUpdateMessage] = useState<string | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(true);
   const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
   const [orHistoryRefreshKey, setOrHistoryRefreshKey] = useState<number>(0);
 
-
   const lastDbTimestampRef = useRef<string | null>(null);
   const realtimeDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isFetchingRef = useRef<boolean>(false);
   const lastVisibilityFetchRef = useRef<number>(Date.now());
+
+  // Formatted Dashboard Timestamps (Asia/Riyadh)
+  const uploadedAtFormatted = useMemo(() => {
+    if (!uploadedAt) return null;
+    const d = new Date(uploadedAt);
+    if (isNaN(d.getTime())) return null;
+    return {
+      date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }),
+      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' }),
+      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}`
+    };
+  }, [uploadedAt]);
+
+  const cloudDbFormatted = useMemo(() => {
+    if (!cloudDatabaseUpdatedAt) return null;
+    const d = new Date(cloudDatabaseUpdatedAt);
+    if (isNaN(d.getTime())) return null;
+    return {
+      date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }),
+      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' }),
+      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}`
+    };
+  }, [cloudDatabaseUpdatedAt]);
 
   const checkHeaderBgStatus = async (options?: { retries?: number; delay?: number }): Promise<void> => {
     const retries = typeof options?.retries === 'number' ? options.retries : 2;
@@ -443,6 +466,7 @@ export default function App() {
             }
             if (newUpdatedAt) {
               lastDbTimestampRef.current = String(newUpdatedAt);
+              setCloudDatabaseUpdatedAt(String(newUpdatedAt));
             }
 
             if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
@@ -523,6 +547,7 @@ export default function App() {
           if (serverDbUpdated && lastDbTimestampRef.current && serverDbUpdated !== lastDbTimestampRef.current) {
             console.log('⚡ [Auto-Sync] Database change detected in Supabase cloud! Auto-fetching latest state...', serverDbUpdated, 'vs', lastDbTimestampRef.current);
             lastDbTimestampRef.current = serverDbUpdated;
+            setCloudDatabaseUpdatedAt(serverDbUpdated);
             setIsDbUpdatePulsing(true);
             setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
             await fetchData({ silent: true, force: true });
@@ -532,6 +557,7 @@ export default function App() {
             setTimeout(() => setDbUpdateMessage(null), 5000);
           } else if (serverDbUpdated && !lastDbTimestampRef.current) {
             lastDbTimestampRef.current = serverDbUpdated;
+            setCloudDatabaseUpdatedAt(serverDbUpdated);
           }
         }
       } catch (err) {
@@ -751,6 +777,12 @@ export default function App() {
         throw new Error(data?.error || `Upload failed (status ${res.status})`);
       }
 
+      if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+        setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
+      }
+
       setIsDataLoaded(true);
       fetchData();
     } catch (err: any) {
@@ -794,6 +826,12 @@ export default function App() {
         throw new Error(data?.error || `Upload failed with status ${res.status}`);
       }
 
+      if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+        setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
+      }
+
       alert(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
       fetchData();
     } catch (err: any) {
@@ -835,6 +873,12 @@ export default function App() {
       
       if (!res.ok || !data.success) {
         throw new Error(data?.error || `OR List upload failed with status ${res.status}`);
+      }
+
+      if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+        setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
       const dateMsg = data.date ? ` for ${data.date}` : "";
@@ -888,6 +932,7 @@ export default function App() {
 
       if (data.lastDatabaseUpdatedAt) {
         lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+        setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
       const rawRows = data.rows || [];
@@ -2731,102 +2776,156 @@ export default function App() {
                   </button>
                 </div>
 
-                {dashboardTab === 'hospital' && (
-                  <>
-                    {/* Database Update Flash Alert */}
-                    <AnimatePresence>
-                      {dbUpdateMessage && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md text-xs font-semibold gap-3 w-full max-w-4xl"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Zap className="h-4 w-4 animate-bounce text-amber-300" />
-                            <span>{dbUpdateMessage}</span>
-                          </div>
-                          <span className="bg-emerald-700/80 px-2 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider">
-                            Live Supabase Realtime
-                          </span>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                {/* Database Update Flash Alert */}
+                <AnimatePresence>
+                  {dbUpdateMessage && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md text-xs font-semibold gap-3 w-full max-w-4xl"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Zap className="h-4 w-4 animate-bounce text-amber-300" />
+                        <span>{dbUpdateMessage}</span>
+                      </div>
+                      <span className="bg-emerald-700/80 px-2 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider">
+                        Live Supabase Realtime
+                      </span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
-                    {/* Auto-Fetch Schedule & Cloud Sync Bar */}
-                    <div className="bg-white/95 border border-emerald-900/10 text-slate-800 p-4 rounded-2xl flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 shadow-xs w-full max-w-5xl">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="relative flex h-3 w-3">
-                            <div className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isDbUpdatePulsing ? "bg-amber-400 opacity-90" : "bg-emerald-400 opacity-75"}`}></div>
-                            <div className={`relative inline-flex rounded-full h-3 w-3 ${isDbUpdatePulsing ? "bg-amber-500" : "bg-emerald-600"}`}></div>
-                          </div>
-                          <span className="text-xs font-bold uppercase tracking-wider text-emerald-950 flex items-center gap-1.5">
-                            <Radio className="h-3.5 w-3.5 text-emerald-600" />
-                            {realtimeConnected ? "Realtime DB Live" : "DB Polling Mode"}
-                          </span>
-                        </div>
-                        
-                        <div className="h-4 w-px bg-slate-200 hidden sm:block"></div>
-                        
-                        <span className="text-xs font-medium text-slate-600">
-                          {uploadedAt ? (
+                {/* Auto-Fetch Schedule & Cloud Sync Bar with Dual Timestamps */}
+                <div className="bg-white/95 border border-emerald-900/10 text-slate-800 p-4 rounded-2xl flex flex-col 2xl:flex-row 2xl:items-center 2xl:justify-between gap-4 shadow-xs w-full">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {/* Live Realtime State Pill */}
+                    <div className="flex items-center gap-2 px-3 py-2 bg-slate-100/80 border border-slate-200/80 rounded-xl">
+                      <div className="relative flex h-2.5 w-2.5">
+                        <div className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isDbUpdatePulsing ? "bg-amber-400 opacity-90" : "bg-emerald-400 opacity-75"}`}></div>
+                        <div className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isDbUpdatePulsing ? "bg-amber-500" : "bg-emerald-600"}`}></div>
+                      </div>
+                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-950 flex items-center gap-1.5">
+                        <Radio className="h-3.5 w-3.5 text-emerald-600" />
+                        {realtimeConnected ? "Realtime DB Live" : "DB Polling Mode"}
+                      </span>
+                    </div>
+
+                    <div className="h-5 w-px bg-slate-200 hidden sm:block"></div>
+
+                    {/* Timestamp 1: Last Manual Sheet Upload */}
+                    <div 
+                      className="flex items-center gap-2.5 px-3.5 py-2 bg-slate-50 border border-slate-200/90 rounded-xl shadow-2xs hover:bg-slate-100/70 transition-colors"
+                      title={uploadedAtFormatted ? `Manual sheet uploaded on ${uploadedAtFormatted.full} (Asia/Riyadh)` : 'No manual sheet uploaded yet'}
+                    >
+                      <div className="p-1.5 bg-blue-100/90 text-blue-700 rounded-lg shrink-0">
+                        <FileSpreadsheet className="h-4 w-4" />
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                          Last Manual Sheet Upload
+                        </span>
+                        <span className="text-xs font-bold text-slate-800 font-mono tracking-tight">
+                          {uploadedAtFormatted ? (
                             <>
-                              Cloud Sheet: <strong className="font-bold text-slate-800">{new Date(uploadedAt).toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })}</strong> at <strong className="font-bold text-slate-800">{new Date(uploadedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}</strong>
+                              <strong className="text-slate-900 font-bold">{uploadedAtFormatted.date}</strong>
+                              <span className="text-slate-400 mx-1.5 font-sans font-normal">at</span>
+                              <strong className="text-blue-900 font-bold">{uploadedAtFormatted.time}</strong>
                             </>
                           ) : (
-                            <span>No upload timestamp recorded. Synced with cloud DB.</span>
+                            <span className="text-slate-400 font-normal italic text-[11px]">No sheet uploaded yet</span>
                           )}
                         </span>
                       </div>
+                    </div>
 
-                      {/* Auto-Fetch Schedule Controls */}
-                      <div className="flex flex-wrap items-center gap-2.5">
-                        <div className="flex items-center bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 text-xs">
-                          <span className="px-2 text-slate-500 font-semibold text-[11px] flex items-center gap-1">
-                            <Timer className="h-3 w-3 text-slate-600" />
-                            Schedule:
+                    {/* Timestamp 2: Cloud Database Update */}
+                    <div 
+                      className={`flex items-center gap-2.5 px-3.5 py-2 bg-slate-50 border rounded-xl shadow-2xs transition-all ${
+                        isDbUpdatePulsing ? "border-amber-400/80 bg-amber-50/50 ring-2 ring-amber-400/20" : "border-slate-200/90 hover:bg-slate-100/70"
+                      }`}
+                      title={cloudDbFormatted ? `Cloud database last updated on ${cloudDbFormatted.full} (Asia/Riyadh)` : 'In sync with Supabase Cloud DB'}
+                    >
+                      <div className={`p-1.5 rounded-lg shrink-0 transition-colors ${isDbUpdatePulsing ? "bg-amber-200 text-amber-800" : "bg-emerald-100/90 text-emerald-700"}`}>
+                        <Database className={`h-4 w-4 ${isDbUpdatePulsing ? "animate-bounce" : ""}`} />
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                            Cloud Database Update
                           </span>
-                          <button
-                            onClick={() => handleUpdateScheduleRate('off')}
-                            className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === 'off' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
-                            title="Instant Realtime on DB change only (Default)"
-                          >
-                            ⚡ Instant Only (Default)
-                          </button>
-                          <button
-                            onClick={() => handleUpdateScheduleRate('5m')}
-                            className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '5m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
-                            title="Auto-fetch every 5 minutes"
-                          >
-                            ⏱️ Every 5 Minutes
-                          </button>
-                        </div>
-
-                        {autoFetchScheduleRate === '5m' && (
-                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 5m fetch">
-                            <Clock className="h-3 w-3 text-emerald-600" />
-                            <span>
-                              {Math.floor(nextFetchCountdown / 60)}:{(nextFetchCountdown % 60).toString().padStart(2, '0')}
+                          {isDbUpdatePulsing && (
+                            <span className="inline-flex items-center px-1.5 py-0.2 bg-amber-200 text-amber-900 text-[9px] font-bold rounded-full animate-pulse">
+                              Syncing...
                             </span>
-                          </div>
-                        )}
-
-                        <button
-                          onClick={async () => {
-                            await fetchData({ force: true });
-                            setOccupancyHistoryRefreshKey(k => k + 1);
-                          }}
-                          disabled={loading}
-                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs focus:outline-hidden"
-                          title="Force immediate database sync"
-                        >
-                          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-                          Sync Now
-                        </button>
-
+                          )}
+                        </div>
+                        <span className="text-xs font-bold text-slate-800 font-mono tracking-tight">
+                          {cloudDbFormatted ? (
+                            <>
+                              <strong className="text-slate-900 font-bold">{cloudDbFormatted.date}</strong>
+                              <span className="text-slate-400 mx-1.5 font-sans font-normal">at</span>
+                              <strong className="text-emerald-900 font-bold">{cloudDbFormatted.time}</strong>
+                            </>
+                          ) : (
+                            <span className="text-emerald-700 font-semibold text-[11px] flex items-center gap-1">
+                              <CheckCircle2 className="h-3 w-3" /> Live In Sync with Supabase
+                            </span>
+                          )}
+                        </span>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Auto-Fetch Schedule Controls & Sync Button */}
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <div className="flex items-center bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 text-xs">
+                      <span className="px-2 text-slate-500 font-semibold text-[11px] flex items-center gap-1">
+                        <Timer className="h-3 w-3 text-slate-600" />
+                        Schedule:
+                      </span>
+                      <button
+                        onClick={() => handleUpdateScheduleRate('off')}
+                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === 'off' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
+                        title="Instant Realtime on DB change only (Default)"
+                      >
+                        ⚡ Instant Only (Default)
+                      </button>
+                      <button
+                        onClick={() => handleUpdateScheduleRate('5m')}
+                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '5m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
+                        title="Auto-fetch every 5 minutes"
+                      >
+                        ⏱️ Every 5 Minutes
+                      </button>
+                    </div>
+
+                    {autoFetchScheduleRate === '5m' && (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 5m fetch">
+                        <Clock className="h-3 w-3 text-emerald-600" />
+                        <span>
+                          {Math.floor(nextFetchCountdown / 60)}:{(nextFetchCountdown % 60).toString().padStart(2, '0')}
+                        </span>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={async () => {
+                        await fetchData({ force: true });
+                        setOccupancyHistoryRefreshKey(k => k + 1);
+                      }}
+                      disabled={loading}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs focus:outline-hidden"
+                      title="Force immediate database sync"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                      Sync Now
+                    </button>
+                  </div>
+                </div>
+
+                {dashboardTab === 'hospital' && (
+                  <>
 
                 {/* Metrics Bar */}
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10 gap-4 shrink-0">
