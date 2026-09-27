@@ -1371,10 +1371,12 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const finalExtractedDebts = rows.slice(startIdx).map(row => ({
     colA: cleanAdmissionDateStr(row[0]),
     room: cleanRoomStr(String(row[1] || "").trim()),
+    mrn: String(row[2] || "").trim(),
     colD: String(row[3] || "").trim(),
     colF: String(row[5] || "").trim(),
     colM: String(row[12] || "").trim(),
     colL: String(row[11] || "").trim(),
+    physician: String(row[22] || "").trim(),
     colZ: String(row[25] || "").trim(),
     colAB: String(row[27] || "").trim()
   })).filter(p => {
@@ -1401,10 +1403,12 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
     colA: cleanAdmissionDateStr(row[0]),
     room: cleanRoomStr(String(row[1] || "").trim()),
+    mrn: String(row[2] || "").trim(),
     colD: String(row[3] || "").trim(),
     colF: String(row[5] || "").trim(),
     colM: String(row[12] || "").trim(),
     colL: String(row[11] || "").trim(),
+    physician: String(row[22] || "").trim(),
     colZ: String(row[25] || "").trim(),
     colAB: String(row[27] || "").trim()
   })).filter(p => {
@@ -2658,6 +2662,9 @@ async function saveData() {
         if (cumulativeTransfers && cumulativeTransfers.length > 0) {
           syncTransfersToRelationalSchema(cumulativeTransfers).catch(() => {});
         }
+        if ((cumulativeDebts && cumulativeDebts.length > 0) || (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0)) {
+          syncDebtsToRelationalSchema(cumulativeDebts, cumulativeInsuredDebts).catch(() => {});
+        }
       } catch (snapErr) {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
       }
@@ -3107,10 +3114,12 @@ async function handleUnifiedUpload(req: any, res: any) {
     const finalExtractedDebts = rows.slice(startIdx).map(row => ({
       colA: String(row[0] || "").trim(),
       room: String(row[1] || "").trim(),
+      mrn: String(row[2] || "").trim(),
       colD: String(row[3] || "").trim(),
       colF: String(row[5] || "").trim(), // Financial status, cash or insured
       colM: String(row[12] || "").trim(), // Contractor Name
       colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
+      physician: String(row[22] || "").trim(), // Treating Physician
       colZ: String(row[25] || "").trim(), // Total invoice
       colAB: String(row[27] || "").trim() // Remaining on invoice
     })).filter(p => {
@@ -3138,10 +3147,12 @@ async function handleUnifiedUpload(req: any, res: any) {
     const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
       colA: String(row[0] || "").trim(),
       room: String(row[1] || "").trim(),
+      mrn: String(row[2] || "").trim(),
       colD: String(row[3] || "").trim(),
       colF: String(row[5] || "").trim(), // Financial status, cash or insured
       colM: String(row[12] || "").trim(), // Contractor Name
       colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
+      physician: String(row[22] || "").trim(), // Treating Physician
       colZ: String(row[25] || "").trim(), // Total invoice
       colAB: String(row[27] || "").trim() // Remaining on invoice
     })).filter(p => {
@@ -3419,6 +3430,53 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
     console.log(`[Relational Sync] Audited transfers dual-synchronized to relational database.`);
   } catch (err) {
     console.warn('[Relational Transfers Sync] Notice:', err);
+  }
+}
+
+async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]) {
+  try {
+    const allDebts = [...(cashDebts || []), ...(insuredDebts || [])];
+    if (allDebts.length === 0) return;
+
+    for (const d of allDebts) {
+      const mrn = d.mrn ? String(d.mrn).trim() : null;
+      const patientName = d.colD ? String(d.colD).trim() : null;
+      if (!mrn && !patientName) continue;
+
+      const totalVal = parseFloat(String(d.colZ).replace(/[^0-9.-]+/g, "")) || 0;
+      const remainingVal = parseFloat(String(d.colAB).replace(/[^0-9.-]+/g, "")) || 0;
+      const contractor = d.colM ? String(d.colM).trim() : null;
+      const financial = d.colF ? String(d.colF).trim() : null;
+
+      let patientId: string | null = null;
+      if (mrn) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', mrn).maybeSingle();
+        if (pt) patientId = pt.id;
+      }
+      if (!patientId && patientName) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', patientName).maybeSingle();
+        if (pt) patientId = pt.id;
+      }
+
+      if (patientId) {
+        const updatePayload: any = {
+          total_invoice: totalVal,
+          remaining_debt: remainingVal,
+          updated_at: new Date().toISOString()
+        };
+        if (contractor) updatePayload.contractor_name = contractor;
+        if (financial) updatePayload.financial_status = financial;
+
+        await supabaseAdmin
+          .from('admissions')
+          .update(updatePayload)
+          .eq('patient_id', patientId)
+          .eq('status', 'Admitted');
+      }
+    }
+    console.log(`[Relational Sync] Audited debts dual-synchronized to admissions table.`);
+  } catch (err) {
+    console.warn('[Relational Debts Sync] Notice:', err);
   }
 }
 
@@ -4334,17 +4392,28 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مديونيات الجهات والشركات', 8);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات الجهات والشركات / Insured Debts', 10);
 
   const sortedDebts = [...debts];
 
-  const headerLabels = ['تاريخ الحجز / Date', 'Room / الغرفة', 'Patient / اسم المريض', 'Contract / التعاقد', 'Total Bill / إجمالي الحساب (Z)', 'Remaining Amount / المبلغ المتبقي', 'Remaining Pct / نسبة المتبقي (%)', 'VIP STATUS'];
+  const headerLabels = [
+    'تاريخ الدخول / Date', 
+    'Room / الغرفة', 
+    'MRN / كود المريض',
+    'Patient / اسم المريض', 
+    'Physician / الطبيب المعالج',
+    'Company / الشركة', 
+    'Total Bill / إجمالي الحساب (Z)', 
+    'Remaining Amount / المبلغ المتبقي', 
+    'Remaining Pct / نسبة المتبقي (%)', 
+    'VIP STATUS'
+  ];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -4402,11 +4471,14 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
   });
 
   const renderPatientRow = (p: any) => {
+    const contractVal = p.colM || p.colF || 'Insured';
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
-      p.room, 
-      p.colD, 
-      p.colM, 
+      p.room || '', 
+      p.mrn || '',
+      p.colD || '', 
+      p.physician || '',
+      contractVal, 
       p.valZ, 
       p.valAB, 
       p.pct,
@@ -4443,28 +4515,73 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 2 || colNumber === 3) {
+      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
+      } else if (colNumber === 8) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
+      } else if (colNumber === 9) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+      } else if (colNumber === 10) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } };
       }
-      if (colNumber === 5 || colNumber === 6) {
+
+      if (colNumber === 7 || colNumber === 8) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 7) {
+      } else if (colNumber === 9) {
         cell.numFmt = '0.0%';
       }
     });
   };
 
   above50.forEach(p => renderPatientRow(p));
+
+  // Add separator for 50% threshold if both groups exist
+  if (above50.length > 0 && below50.length > 0) {
+    const sepRowIdx = sheet.rowCount + 1;
+    sheet.addRow(['', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 10);
+    const separatorCell = sheet.getCell(sepRowIdx, 1);
+    separatorCell.value = '■ متبقي أقل من 50% / Remaining Less Than 50% ■';
+    separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4A148C' } };
+    separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    separatorCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(sepRowIdx).height = 28;
+  }
+
   below50.forEach(p => renderPatientRow(p));
 
-  sheet.getColumn(1).width = 16;
-  sheet.getColumn(2).width = 16;
-  sheet.getColumn(3).width = 35;
-  sheet.getColumn(4).width = 35;
-  sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 25;
-  sheet.getColumn(7).width = 20;
-  sheet.getColumn(8).width = 15;
+  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column I / 9)
+  const lastRow = sheet.rowCount;
+  if (lastRow >= 3) {
+    sheet.addConditionalFormatting({
+      ref: `I3:I${lastRow}`,
+      rules: [
+        {
+          type: 'dataBar',
+          cfvo: [
+            { type: 'num', value: 0 },
+            { type: 'num', value: 1 }
+          ],
+          color: { argb: 'FF7E57C2' }, // Purple-indigo progress bar
+          showValue: true,
+          gradient: true
+        } as any
+      ]
+    });
+  }
+
+  sheet.columns = [
+    { width: 16 }, // Date
+    { width: 14 }, // Room
+    { width: 14 }, // MRN
+    { width: 34 }, // Patient Name
+    { width: 28 }, // Physician
+    { width: 26 }, // Company
+    { width: 18 }, // Total Bill
+    { width: 20 }, // Remaining Amount
+    { width: 18 }, // Remaining Pct
+    { width: 14 }  // VIP Status
+  ];
 }
 
 function getInsuredNonCashOccupancy(data: any[][] | null): any[] {
@@ -4663,17 +4780,28 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'المديونيات', 8);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات المرضى (نقدي) / Cash Debts', 10);
 
   const sortedDebts = [...debts];
 
-  const headerLabels = ['تاريخ الحجز / Date', 'Room / الغرفة', 'Patient / اسم المريض', 'Contract / التعاقد', 'Total Bill / إجمالي الحساب (Z)', 'Remaining Amount / المبلغ المتبقي', 'Remaining Pct / نسبة المتبقي (%)', 'VIP STATUS'];
+  const headerLabels = [
+    'تاريخ الدخول / Date', 
+    'Room / الغرفة', 
+    'MRN / كود المريض',
+    'Patient / اسم المريض', 
+    'Physician / الطبيب المعالج',
+    'Contract / التعاقد', 
+    'Total Bill / إجمالي الحساب (Z)', 
+    'Remaining Amount / المبلغ المتبقي', 
+    'Remaining Pct / نسبة المتبقي (%)', 
+    'VIP STATUS'
+  ];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -4733,11 +4861,14 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   });
 
   const renderPatientRow = (p: any) => {
+    const contractVal = p.colM || p.colF || 'Cash';
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
-      p.room, 
-      p.colD, 
-      p.colM, 
+      p.room || '', 
+      p.mrn || '',
+      p.colD || '', 
+      p.physician || '',
+      contractVal, 
       p.valZ, 
       p.valAB, 
       p.pct,
@@ -4775,19 +4906,19 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 2 || colNumber === 3) {
+      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
-      } else if (colNumber === 6) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
-      } else if (colNumber === 7) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
       } else if (colNumber === 8) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
+      } else if (colNumber === 9) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+      } else if (colNumber === 10) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } };
       }
 
-      if (colNumber === 5 || colNumber === 6) {
+      if (colNumber === 7 || colNumber === 8) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 7) {
+      } else if (colNumber === 9) {
         cell.numFmt = '0.0%';
       }
     });
@@ -4797,24 +4928,26 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   above50.forEach(p => renderPatientRow(p));
 
   // 2. Add separator (representing 50% threshold)
-  const sepRowIdx = sheet.rowCount + 1;
-  sheet.addRow(['', '', '', '', '', '', '', '']);
-  sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 8);
-  const separatorCell = sheet.getCell(sepRowIdx, 1);
-  separatorCell.value = '■ متبقي أقل من 50% / Remaining Less Than 50% ■';
-  separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD32F2F' } }; // Rich crimson red badge
-  separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
-  separatorCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(sepRowIdx).height = 28;
+  if (above50.length > 0 && below50.length > 0) {
+    const sepRowIdx = sheet.rowCount + 1;
+    sheet.addRow(['', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 10);
+    const separatorCell = sheet.getCell(sepRowIdx, 1);
+    separatorCell.value = '■ متبقي أقل من 50% / Remaining Less Than 50% ■';
+    separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD32F2F' } }; // Rich crimson red badge
+    separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    separatorCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(sepRowIdx).height = 28;
+  }
 
   // 3. Add patients with less than 50% remaining (< 50%)
   below50.forEach(p => renderPatientRow(p));
 
-  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column G / 7)
+  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column I / 9)
   const lastRow = sheet.rowCount;
   if (lastRow >= 3) {
     sheet.addConditionalFormatting({
-      ref: `G3:G${lastRow}`,
+      ref: `I3:I${lastRow}`,
       rules: [
         {
           type: 'dataBar',
@@ -4831,7 +4964,16 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   }
 
   sheet.columns = [
-    { width: 15 }, { width: 14 }, { width: 35 }, { width: 25 }, { width: 18 }, { width: 22 }, { width: 18 }, { width: 15 }
+    { width: 16 }, // Date
+    { width: 14 }, // Room
+    { width: 14 }, // MRN
+    { width: 34 }, // Patient Name
+    { width: 28 }, // Physician
+    { width: 26 }, // Contract
+    { width: 18 }, // Total Bill
+    { width: 20 }, // Remaining Amount
+    { width: 18 }, // Remaining Pct
+    { width: 14 }  // VIP Status
   ];
 }
 
@@ -5537,7 +5679,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'مديونيات الجهات والشركات';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -5545,7 +5687,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 9.0);
 
   const sortedDebts = [...debts].sort((a, b) => {
     const valA = parseFloat(String(a.colAB).replace(/[^0-9.-]+/g, "")) || 0;
@@ -5553,7 +5695,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     return valB - valA;
   });
 
-  const headerLabels = ['تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
+  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   headerRow.eachCell((cell) => {
@@ -5572,12 +5714,15 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
+    const contractVal = p.colM || p.colF || 'Insured';
 
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
-      p.room, 
-      p.colD, 
-      p.colM, 
+      p.room || '', 
+      p.mrn || '',
+      p.colD || '', 
+      p.physician || '',
+      contractVal, 
       valZ, 
       valAB, 
       pct
@@ -5593,21 +5738,26 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
 
-      if (colNumber === 5 || colNumber === 6) {
+      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
+        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      }
+      if (colNumber === 7 || colNumber === 8) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 7) {
+      } else if (colNumber === 9) {
         cell.numFmt = '0.0%';
       }
     });
   });
 
-  sheet.getColumn(1).width = 18;
-  sheet.getColumn(2).width = 18;
-  sheet.getColumn(3).width = 35;
-  sheet.getColumn(4).width = 35;
-  sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 25;
-  sheet.getColumn(7).width = 20;
+  sheet.getColumn(1).width = 16;
+  sheet.getColumn(2).width = 14;
+  sheet.getColumn(3).width = 16;
+  sheet.getColumn(4).width = 34;
+  sheet.getColumn(5).width = 28;
+  sheet.getColumn(6).width = 26;
+  sheet.getColumn(7).width = 18;
+  sheet.getColumn(8).width = 20;
+  sheet.getColumn(9).width = 18;
 }
 
 function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -5615,15 +5765,15 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
-  titleCell.value = 'المديونيات';
+  titleCell.value = 'المديونيات (نقدي)';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F4C3' } }; 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 9.0);
 
   // Sort debts by column AB (index 27/p.colAB) descending
   const sortedDebts = [...debts].sort((a, b) => {
@@ -5632,7 +5782,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     return valB - valA;
   });
 
-  const headerLabels = ['تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
+  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   headerRow.eachCell((cell) => {
@@ -5651,12 +5801,15 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
+    const contractVal = p.colM || p.colF || 'Cash';
 
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
-      p.room, 
-      p.colD, 
-      p.colM, 
+      p.room || '', 
+      p.mrn || '',
+      p.colD || '', 
+      p.physician || '',
+      contractVal, 
       valZ, 
       valAB, 
       pct
@@ -5672,21 +5825,26 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
 
-      if (colNumber === 5 || colNumber === 6) {
+      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
+        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      }
+      if (colNumber === 7 || colNumber === 8) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 7) {
+      } else if (colNumber === 9) {
         cell.numFmt = '0.0%';
       }
     });
   });
 
-  sheet.getColumn(1).width = 18;
-  sheet.getColumn(2).width = 18;
-  sheet.getColumn(3).width = 35;
-  sheet.getColumn(4).width = 25;
-  sheet.getColumn(5).width = 18;
-  sheet.getColumn(6).width = 20;
+  sheet.getColumn(1).width = 16;
+  sheet.getColumn(2).width = 14;
+  sheet.getColumn(3).width = 16;
+  sheet.getColumn(4).width = 34;
+  sheet.getColumn(5).width = 28;
+  sheet.getColumn(6).width = 26;
   sheet.getColumn(7).width = 18;
+  sheet.getColumn(8).width = 20;
+  sheet.getColumn(9).width = 18;
 }
 
 function getActiveVipCount(): number {
@@ -5906,10 +6064,12 @@ async function updateHospitalState(rows: any[][]) {
   const finalExtractedDebts = rows.slice(startIdx).map(row => ({
     colA: String(row[0] || "").trim(),
     room: String(row[1] || "").trim(),
+    mrn: String(row[2] || "").trim(),
     colD: String(row[3] || "").trim(),
     colF: String(row[5] || "").trim(), // Financial status, cash or insured
     colM: String(row[12] || "").trim(), // Contractor Name
     colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
+    physician: String(row[22] || "").trim(), // Treating Physician
     colZ: String(row[25] || "").trim(), // Total invoice
     colAB: String(row[27] || "").trim() // Remaining on invoice
   })).filter(p => {
@@ -5937,10 +6097,12 @@ async function updateHospitalState(rows: any[][]) {
   const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
     colA: String(row[0] || "").trim(),
     room: String(row[1] || "").trim(),
+    mrn: String(row[2] || "").trim(),
     colD: String(row[3] || "").trim(),
     colF: String(row[5] || "").trim(), // Financial status, cash or insured
     colM: String(row[12] || "").trim(), // Contractor Name
     colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
+    physician: String(row[22] || "").trim(), // Treating Physician
     colZ: String(row[25] || "").trim(), // Total invoice
     colAB: String(row[27] || "").trim() // Remaining on invoice
   })).filter(p => {
@@ -8334,7 +8496,7 @@ app.get('/api/reports/debts_formatted', async (req, res) => {
   if (cumulativeDebts.length === 0) return res.status(400).json({ error: 'No debts data available. Please upload the debts source sheet first.' });
   try {
     const workbook = new ExcelJS.Workbook();
-    addDebtsSheet(workbook, cumulativeDebts);
+    await addRefinedDebtsSheet(workbook, cumulativeDebts);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Debts.xlsx');
     await workbook.xlsx.write(res);

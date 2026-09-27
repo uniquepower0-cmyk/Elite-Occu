@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS public.admissions (
     contractor_id UUID REFERENCES public.staff(id),
     contractor_name VARCHAR(255),
     financial_status VARCHAR(100),
+    total_invoice NUMERIC(12,2) DEFAULT 0.00,
+    remaining_debt NUMERIC(12,2) DEFAULT 0.00,
     admission_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     discharge_date TIMESTAMPTZ,
     status admission_status DEFAULT 'Admitted',
@@ -114,6 +116,8 @@ BEGIN
     ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE;
     ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS contractor_name VARCHAR(255);
     ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS financial_status VARCHAR(100);
+    ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS total_invoice NUMERIC(12,2) DEFAULT 0.00;
+    ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS remaining_debt NUMERIC(12,2) DEFAULT 0.00;
 
     -- Ensure columns exist in transfers
     ALTER TABLE public.transfers ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE;
@@ -156,6 +160,12 @@ BEGIN
             s.name AS treating_physician,
             COALESCE(a.contractor_name, cs.name) AS contractor_name,
             a.financial_status,
+            COALESCE(a.total_invoice, 0.00) AS total_invoice,
+            COALESCE(a.remaining_debt, 0.00) AS remaining_debt,
+            CASE WHEN COALESCE(a.total_invoice, 0) > 0 
+                 THEN ROUND((COALESCE(a.remaining_debt, 0) / a.total_invoice) * 100, 2) 
+                 ELSE 0 
+            END AS remaining_debt_pct,
             a.admission_date,
             a.status
         FROM public.admissions a

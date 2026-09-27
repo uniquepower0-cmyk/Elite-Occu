@@ -171,7 +171,11 @@ def fetch_powerbi_and_sync():
                     "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])),
                     "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 5"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])),
-                    "AdmissionDate": str(ad_val) if ad_val else None
+                    "AdmissionDate": str(ad_val) if ad_val else None,
+                    "ContractorName": str(get_val(row, ["Financial Status", "ContractorName", "Contractor", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])),
+                    "Financial Status": str(get_val(row, ["Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])),
+                    "Total Invoice": str(get_val(row, ["Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
+                    "Remaining Amount": str(get_val(row, ["Remaining Amount", "Remaining", "Balance", "المتبقي", "الباقي", "Unnamed: 27"]))
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.

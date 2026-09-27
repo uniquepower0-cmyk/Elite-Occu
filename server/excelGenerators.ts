@@ -588,20 +588,31 @@ export async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مديونيات كاش', 7);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات المرضى (نقدي) / Cash Debts', 10);
 
-  const headerLabels = ['# / الرقم', 'Admission Date / تاريخ الدخول', 'Room / الغرفة', 'Patient / اسم المريض', 'Payment / نوع الدفع', 'Debts / المديونية', 'Remaining / المتبقي'];
+  const headerLabels = [
+    '# / م',
+    'تاريخ الدخول / Admission Date', 
+    'الغرفة / Room', 
+    'كود المريض / MRN',
+    'اسم المريض / Patient Name', 
+    'الطبيب المعالج / Physician',
+    'الجهة والتعاقد / Contractor', 
+    'إجمالي الحساب / Total Bill (Z)', 
+    'المبلغ المتبقي / Remaining Amount', 
+    'نسبة المتبقي / Remaining Pct (%)'
+  ];
   const headerRow = sheet.addRow(headerLabels);
-  headerRow.height = 24;
+  headerRow.height = 25;
   headerRow.eachCell((cell) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
-    cell.font = { bold: true, size: 10, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF37474F' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
     cell.border = {
       top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
@@ -613,35 +624,57 @@ export async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: an
 
   let serial = 1;
   (debts || []).forEach((p) => {
+    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
+    const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
+    const pct = valZ > 0 ? (valAB / valZ) : 0;
+    const contractVal = p.colM || p.colF || 'Cash';
+
     const rowValues = [
       serial++,
-      p.colA || '',
+      p.colA ? String(p.colA).split(' ')[0] : '',
       p.room || '',
+      p.mrn || '',
       p.colD || '',
-      p.colF || p.colM || '',
-      p.colZ || '',
-      p.colAB || ''
+      p.physician || '',
+      contractVal,
+      valZ,
+      valAB,
+      pct
     ];
     const pRow = sheet.addRow(rowValues);
-    pRow.eachCell((cell) => {
+    pRow.eachCell((cell, colNumber) => {
       cell.border = {
-        top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
+        top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
+
+      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
+        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      }
+      if (colNumber === 8 || colNumber === 9) {
+        cell.numFmt = '#,##0.00';
+      } else if (colNumber === 10) {
+        cell.numFmt = '0.0%';
+      }
     });
   });
 
-  sheet.getColumn(1).width = 8;
-  sheet.getColumn(2).width = 22;
-  sheet.getColumn(3).width = 15;
-  sheet.getColumn(4).width = 30;
-  sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 18;
-  sheet.getColumn(7).width = 18;
+  sheet.columns = [
+    { width: 8 },  // #
+    { width: 16 }, // Date
+    { width: 14 }, // Room
+    { width: 14 }, // MRN
+    { width: 34 }, // Patient Name
+    { width: 28 }, // Physician
+    { width: 26 }, // Contractor
+    { width: 18 }, // Total Bill
+    { width: 20 }, // Remaining Amount
+    { width: 18 }  // Remaining Pct
+  ];
 }
 
 export async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -649,20 +682,31 @@ export async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, de
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مديونيات شركات', 7);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات الجهات والشركات / Insured Debts', 10);
 
-  const headerLabels = ['# / الرقم', 'Admission Date / تاريخ الدخول', 'Room / الغرفة', 'Patient / اسم المريض', 'Company / الشركة', 'Debts / المديونية', 'Remaining / المتبقي'];
+  const headerLabels = [
+    '# / م',
+    'تاريخ الدخول / Admission Date', 
+    'الغرفة / Room', 
+    'كود المريض / MRN',
+    'اسم المريض / Patient Name', 
+    'الطبيب المعالج / Physician',
+    'الجهة والتعاقد / Company', 
+    'إجمالي الحساب / Total Bill (Z)', 
+    'المبلغ المتبقي / Remaining Amount', 
+    'نسبة المتبقي / Remaining Pct (%)'
+  ];
   const headerRow = sheet.addRow(headerLabels);
-  headerRow.height = 24;
+  headerRow.height = 25;
   headerRow.eachCell((cell) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
-    cell.font = { bold: true, size: 10, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4A148C' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
     cell.border = {
       top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
@@ -674,35 +718,57 @@ export async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, de
 
   let serial = 1;
   (debts || []).forEach((p) => {
+    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
+    const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
+    const pct = valZ > 0 ? (valAB / valZ) : 0;
+    const contractVal = p.colM || p.colF || 'Insured';
+
     const rowValues = [
       serial++,
-      p.colA || '',
+      p.colA ? String(p.colA).split(' ')[0] : '',
       p.room || '',
+      p.mrn || '',
       p.colD || '',
-      p.colM || p.colF || '',
-      p.colZ || '',
-      p.colAB || ''
+      p.physician || '',
+      contractVal,
+      valZ,
+      valAB,
+      pct
     ];
     const pRow = sheet.addRow(rowValues);
-    pRow.eachCell((cell) => {
+    pRow.eachCell((cell, colNumber) => {
       cell.border = {
-        top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
+        top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
+
+      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
+        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      }
+      if (colNumber === 8 || colNumber === 9) {
+        cell.numFmt = '#,##0.00';
+      } else if (colNumber === 10) {
+        cell.numFmt = '0.0%';
+      }
     });
   });
 
-  sheet.getColumn(1).width = 8;
-  sheet.getColumn(2).width = 22;
-  sheet.getColumn(3).width = 15;
-  sheet.getColumn(4).width = 30;
-  sheet.getColumn(5).width = 28;
-  sheet.getColumn(6).width = 18;
-  sheet.getColumn(7).width = 18;
+  sheet.columns = [
+    { width: 8 },  // #
+    { width: 16 }, // Date
+    { width: 14 }, // Room
+    { width: 14 }, // MRN
+    { width: 34 }, // Patient Name
+    { width: 28 }, // Physician
+    { width: 26 }, // Company
+    { width: 18 }, // Total Bill
+    { width: 20 }, // Remaining Amount
+    { width: 18 }  // Remaining Pct
+  ];
 }
 
 export async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {

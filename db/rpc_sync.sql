@@ -14,6 +14,8 @@ DECLARE
   v_admission_date TIMESTAMPTZ;
   v_contractor VARCHAR(255);
   v_financial VARCHAR(100);
+  v_total_invoice NUMERIC(12,2);
+  v_remaining_debt NUMERIC(12,2);
 BEGIN
   FOR rec IN SELECT * FROM json_array_elements(payload)
   LOOP
@@ -59,13 +61,25 @@ BEGIN
     v_contractor := NULLIF(TRIM(rec->>'ContractorName'), '');
     v_financial := NULLIF(TRIM(rec->>'Financial Status'), '');
 
+    BEGIN
+      v_total_invoice := COALESCE(NULLIF(regexp_replace(TRIM(rec->>'Total Invoice'), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00);
+    EXCEPTION WHEN others THEN
+      v_total_invoice := 0.00;
+    END;
+
+    BEGIN
+      v_remaining_debt := COALESCE(NULLIF(regexp_replace(TRIM(rec->>'Remaining Amount'), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00);
+    EXCEPTION WHEN others THEN
+      v_remaining_debt := 0.00;
+    END;
+
     -- 5. Upsert Admission
     SELECT id INTO a_id FROM admissions 
     WHERE patient_id = p_id AND status = 'Admitted' LIMIT 1;
     
     IF a_id IS NULL THEN
-      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, admission_date, status)
-      VALUES (p_id, r_id, s_id, v_contractor, v_financial, COALESCE(v_admission_date, NOW()), 'Admitted')
+      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date, status)
+      VALUES (p_id, r_id, s_id, v_contractor, v_financial, v_total_invoice, v_remaining_debt, COALESCE(v_admission_date, NOW()), 'Admitted')
       RETURNING id INTO a_id;
     ELSE
       UPDATE admissions 
@@ -74,6 +88,8 @@ BEGIN
         physician_id = COALESCE(s_id, physician_id),
         contractor_name = COALESCE(v_contractor, contractor_name),
         financial_status = COALESCE(v_financial, financial_status),
+        total_invoice = CASE WHEN v_total_invoice > 0 THEN v_total_invoice ELSE total_invoice END,
+        remaining_debt = CASE WHEN v_remaining_debt > 0 THEN v_remaining_debt ELSE remaining_debt END,
         updated_at = NOW()
       WHERE id = a_id;
     END IF;
