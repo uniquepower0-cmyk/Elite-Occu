@@ -14276,7 +14276,7 @@ app.get('/api/reports/specialty_occupancy', async (req, res) => {
   }
   try {
     const workbook = new ExcelJS.Workbook();
-    addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || cumulativeMedicalPlans, ds.cumulativeLOS || cumulativeLOS, ds.hospitalData || hospitalData);
+    await addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || cumulativeMedicalPlans, ds.cumulativeLOS || cumulativeLOS, ds.hospitalData || hospitalData);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Inpatients_By_Specialty.xlsx');
     await workbook.xlsx.write(res);
@@ -14307,7 +14307,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
     
     // 4. Inpatients By Specialty
     if ((ds.cumulativeMedicalPlans && ds.cumulativeMedicalPlans.length > 0) || (ds.hospitalData && ds.hospitalData.length > 0)) {
-      addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || [], ds.cumulativeLOS || [], ds.hospitalData);
+      await addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || [], ds.cumulativeLOS || [], ds.hospitalData);
     } else {
       const sheet = workbook.addWorksheet('By Specialty');
       sheet.addRow(['No specialty data available.']);
@@ -14333,7 +14333,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
   }
 });
 
-function addSpecialtyOccupancySheet(
+async function addSpecialtyOccupancySheet(
   workbook: ExcelJS.Workbook, 
   plans: any[] = cumulativeMedicalPlans, 
   losList: any[] = cumulativeLOS, 
@@ -14343,62 +14343,131 @@ function addSpecialtyOccupancySheet(
     views: [{ rightToLeft: false }]
   });
 
-  // Group by Column X (Specialty)
+  sheet.mergeCells('A1:K1');
+  const titleCell = sheet.getCell('A1');
+  titleCell.value = '';
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 90;
+
+  await applyRefinedHeader(workbook, sheet, 'الحالات المنومة طبقاً للتخصص الطبي / Inpatients By Medical Specialty', 11);
+
+  // Group by Specialty
   const groups: { [key: string]: any[] } = {};
 
   if (occData && occData.length > 0) {
-    // Ground truth: Use active occupancy rows so specialty sheet count matches occupancy count exactly
-    const activeOccRows = getOccupancyRows(occData).slice(3)
-      .map(row => ({
-        room: String(row[0] || "").trim(),
-        name: String(row[1] || "").trim(),
-        physician: String(row[2] || "").trim(),
-        contractor: String(row[3] || "").trim(),
-        date: cleanAdmissionDateStr(row[4]),
-        mrn: String(row[5] || "").trim(),
-      }))
-      .filter(p => {
-        if (!p.room || !p.name) return false;
-        const rowAsString = Object.values(p).join(" ").toLowerCase();
-        const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
-        const isOR = isOperatingRoom(p.room);
-        return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isManuallyDischarged(p.name);
-      });
+    // 1. Locate start index of data
+    let startIdx = 3;
+    for (let i = 0; i < Math.min(occData.length, 10); i++) {
+      const r1 = String(occData[i][1] || "").toLowerCase();
+      const r3 = String(occData[i][3] || "").toLowerCase();
+      if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name") {
+        startIdx = i + 1;
+        break;
+      }
+    }
 
+    // 2. Extract active occupancy cases directly from raw dataset to preserve all clinical columns
+    const rawPatients = occData.slice(startIdx).map(row => ({
+      date: cleanAdmissionDateStr(row[0]),
+      room: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim(),
+      name: String(row[3] || "").trim(),
+      contractor: String(row[12] || row[5] || "").trim(),
+      diagnosis: String(row[14] || "").trim(),
+      physician: String(row[22] || "").trim(),
+      specialty: String(row[23] || "").trim(),
+      los: String(row[18] || "").trim(),
+      alos: String(row[37] || "").trim()
+    })).filter(p => {
+      if (!p.room || !p.name) return false;
+      const roomLower = p.room.toLowerCase();
+      const nameLower = p.name.toLowerCase();
+      const isHeader = roomLower === "bed" || roomLower === "room" || roomLower === "الغرفة" || nameLower === "patient" || nameLower === "name" || nameLower === "المريض";
+      if (isHeader) return false;
+      if (isOperatingRoom(p.room)) return false;
+      if (isProcedureOrTemporaryRoom(p.room)) return false;
+      if (isManuallyDischarged(p.name)) return false;
+      const combinedStr = `${p.room} ${p.name}`.toLowerCase();
+      if (KEYWORDS_TO_EXCLUDE.some(kw => combinedStr.includes(kw))) return false;
+      return true;
+    });
+
+    // 3. Deduplicate Zone C (Room 330 vs 330A/B, 331 vs 331A/B)
+    const has330Sub = rawPatients.some(p => { const nr = normalizeRoom(p.room); return nr === "330A" || nr === "330B"; });
+    const has331Sub = rawPatients.some(p => { const nr = normalizeRoom(p.room); return nr === "331A" || nr === "331B"; });
+    const activeOccRows = rawPatients.filter(p => {
+      const nr = normalizeRoom(p.room);
+      if (nr === "330" && has330Sub) return false;
+      if (nr === "331" && has331Sub) return false;
+      return true;
+    });
+
+    // 4. Map into groups with full fallbacks
     activeOccRows.forEach(occP => {
-      const plan = (plans || []).find(pl => {
-        if (pl.colD && occP.name && isNameMatch(pl.colD, occP.name)) return true;
-        if (pl.colB && occP.room && normalizeRoom(pl.colB) === normalizeRoom(occP.room)) return true;
-        return false;
-      });
+      let specialty = occP.specialty;
+      let diagnosis = occP.diagnosis;
+      let physician = occP.physician;
+      let losVal = occP.los;
+      let alosVal = occP.alos;
 
-      let specialty = (plan?.colX || "").trim() || "Other / غير محدد";
-      const specLower = specialty.toLowerCase();
-      
-      if (specLower === "pulmonology" || specLower === "haematology") {
-        specialty = "Internal Medicine";
-      } else if (specLower === "general surgery" || specLower === "git surgery") {
-        specialty = "General Surgery";
-      } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
-        specialty = "Orthopaedic surgery";
+      // Fallback from medical plans if needed
+      if (!specialty || specialty === "0" || !physician) {
+        const plan = (plans || []).find(pl => {
+          if (pl.colD && occP.name && isNameMatch(pl.colD, occP.name)) return true;
+          if (pl.colB && occP.room && normalizeRoom(pl.colB) === normalizeRoom(occP.room)) return true;
+          return false;
+        });
+        if (plan) {
+          if (!specialty && plan.colX) specialty = String(plan.colX).trim();
+          if (!physician && plan.colW) physician = String(plan.colW).trim();
+          if (!diagnosis && plan.colAG) diagnosis = String(plan.colAG).trim();
+        }
+      }
+
+      // Fallback LOS / ALOS from losList if needed
+      if (!losVal || isNaN(parseFloat(losVal)) || !alosVal) {
+        const losItem = (losList || []).find(l => {
+          if (l.colD && occP.name && isNameMatch(l.colD, occP.name)) return true;
+          if (l.colB && occP.room && normalizeRoom(l.colB) === normalizeRoom(occP.room)) return true;
+          return false;
+        });
+        if (losItem) {
+          if (!losVal && losItem.colS !== undefined && losItem.colS !== null) losVal = String(losItem.colS);
+          if (!alosVal && losItem.colAL !== undefined && losItem.colAL !== null) alosVal = String(losItem.colAL);
+        }
+      }
+
+      // Harmonize specialty name
+      let cleanSpec = (specialty || "").trim() || "Other / غير محدد";
+      const sLower = cleanSpec.toLowerCase();
+      if (sLower === "pulmonology" || sLower === "haematology" || sLower === "hematology") {
+        cleanSpec = "Internal Medicine";
+      } else if (sLower === "general surgery" || sLower === "git surgery" || sLower === "surgical") {
+        cleanSpec = "General Surgery";
+      } else if (sLower === "orthopedics" || sLower === "orthopedic surgery" || sLower === "orthopaedics") {
+        cleanSpec = "Orthopaedic surgery";
+      } else if (sLower === "pediatric cardiology") {
+        cleanSpec = "Pediatric Cardiology";
       }
 
       const item = {
-        colA: occP.date || (plan ? cleanAdmissionDateStr(plan.colA) : ""),
+        colA: occP.date,
         colB: occP.room,
+        mrn: occP.mrn,
         colD: occP.name,
-        colM: occP.contractor || (plan ? plan.colM : ""),
-        colW: plan ? (plan.colW || "") : "",
-        colX: specialty,
-        colS: plan ? plan.colS : "",
-        colAL: plan ? plan.colAL : ""
+        colM: occP.contractor,
+        physician: physician,
+        diagnosis: diagnosis,
+        specialty: cleanSpec,
+        los: losVal,
+        alos: alosVal
       };
 
-      if (!groups[specialty]) groups[specialty] = [];
-      groups[specialty].push(item);
+      if (!groups[cleanSpec]) groups[cleanSpec] = [];
+      groups[cleanSpec].push(item);
     });
   } else {
-    // Fallback: If no occData, filter plans directly with full strict occupancy criteria
+    // Fallback: If no occData, process plans directly
     const uniquePlansMap = new Map<string, any>();
     (plans || []).forEach(p => {
       if (!p.colD || p.colD === "" || p.colD === "0") return;
@@ -14415,112 +14484,193 @@ function addSpecialtyOccupancySheet(
       if (normRoom === "331" && (plans.some(o => normalizeRoom(o.colB) === "331A" || normalizeRoom(o.colB) === "331B"))) return;
 
       let specialty = (p.colX || "").trim() || "Other / غير محدد";
-      const specLower = specialty.toLowerCase();
-      if (specLower === "pulmonology" || specLower === "haematology") {
+      const sLower = specialty.toLowerCase();
+      if (sLower === "pulmonology" || sLower === "haematology" || sLower === "hematology") {
         specialty = "Internal Medicine";
-      } else if (specLower === "general surgery" || specLower === "git surgery") {
+      } else if (sLower === "general surgery" || sLower === "git surgery" || sLower === "surgical") {
         specialty = "General Surgery";
-      } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
+      } else if (sLower === "orthopedics" || sLower === "orthopedic surgery" || sLower === "orthopaedics") {
         specialty = "Orthopaedic surgery";
       }
 
       const pKey = `name:${normalizeArabicName(p.colD)}`;
       if (!uniquePlansMap.has(pKey)) {
-        uniquePlansMap.set(pKey, { ...p, colX: specialty });
+        uniquePlansMap.set(pKey, {
+          colA: cleanAdmissionDateStr(p.colA),
+          colB: p.colB,
+          mrn: p.mrn || "",
+          colD: p.colD,
+          colM: p.colM,
+          physician: p.colW || "",
+          diagnosis: p.colAG || "",
+          specialty: specialty,
+          los: p.colS || "",
+          alos: p.colAL || ""
+        });
       }
     });
 
     uniquePlansMap.forEach(mappedP => {
-      const specialty = mappedP.colX || "Other / غير محدد";
+      const specialty = mappedP.specialty || "Other / غير محدد";
       if (!groups[specialty]) groups[specialty] = [];
       groups[specialty].push(mappedP);
     });
   }
 
-  // Sort groups alphabetically
-  const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  // Sort group names alphabetically (keeping "Other" at the end)
+  const groupNames = Object.keys(groups).sort((a, b) => {
+    if (a.includes("Other") && !b.includes("Other")) return 1;
+    if (!a.includes("Other") && b.includes("Other")) return -1;
+    return a.localeCompare(b);
+  });
 
-  sheet.mergeCells('A1:I1');
-  const titleCell = sheet.getCell('A1');
-  titleCell.value = 'الحالات المنومة طبقاً للتخصص';
-  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
-  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } }; 
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(1).height = 90;
+  const totalPatients = Object.values(groups).reduce((acc, g) => acc + g.length, 0);
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  // -------------------------------------------------------------------------
+  // Executive Summary Table (Top KPI block)
+  // -------------------------------------------------------------------------
+  const sumHeaderRow = sheet.addRow(['#', 'Specialty / التخصص الطبي', 'Inpatients / عدد المنومين', 'Occupancy Share / نسبة الإشغال', 'Avg LOS / متوسط الإقامة', '', '', '', '', '', '']);
+  sheet.mergeCells(`B${sumHeaderRow.number}:C${sumHeaderRow.number}`);
+  sheet.mergeCells(`D${sumHeaderRow.number}:E${sumHeaderRow.number}`);
+  sumHeaderRow.height = 24;
+  sumHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } }; // Rich medical forest green
+    cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'التشخيص', 'التخصص', 'LOS', 'Elite ALOS'];
+  let sumSerial = 1;
+  groupNames.forEach(spec => {
+    const gRows = groups[spec];
+    const share = totalPatients > 0 ? (gRows.length / totalPatients) : 0;
+    const validLos = gRows.map(r => parseFloat(String(r.los).replace(/[^0-9.-]+/g, ""))).filter(n => !isNaN(n) && n > 0);
+    const avgLos = validLos.length > 0 ? (validLos.reduce((a, b) => a + b, 0) / validLos.length).toFixed(1) + " days" : "-";
+
+    const sRow = sheet.addRow([sumSerial++, spec, '', (gRows.length) + ' cases', '', (share * 100).toFixed(1) + '%', avgLos, '', '', '', '']);
+    sheet.mergeCells(`B${sRow.number}:C${sRow.number}`);
+    sheet.mergeCells(`D${sRow.number}:E${sRow.number}`);
+    sRow.height = 20;
+    sRow.eachCell({ includeEmpty: true }, (cell, colIndex) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: sumSerial % 2 === 0 ? 'FFF1F8E9' : 'FFFFFFFF' } };
+      cell.font = { name: 'Calibri', size: 10 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = { top: { style: 'thin', color: { argb: 'FFE0E0E0' } }, bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+      if (colIndex === 2) cell.font = { bold: true, name: 'Calibri', size: 10 };
+      if (colIndex === 4) cell.font = { bold: true, color: { argb: 'FF1B5E20' }, name: 'Calibri', size: 10 };
+    });
+  });
+
+  // Total summary row
+  const totRow = sheet.addRow(['', 'TOTAL ACTIVE INPATIENTS / إجمالي المنومين', '', `${totalPatients} cases`, '', '100.0%', '', '', '', '', '']);
+  sheet.mergeCells(`B${totRow.number}:C${totRow.number}`);
+  sheet.mergeCells(`D${totRow.number}:E${totRow.number}`);
+  totRow.height = 22;
+  totRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } };
+    cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF1B5E20' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'medium' }, bottom: { style: 'medium' } };
+  });
+
+  sheet.addRow([]); // Spacer row
+
+  // -------------------------------------------------------------------------
+  // Main Data Header Row
+  // -------------------------------------------------------------------------
+  const headerLabels = [
+    '#', 
+    'تاريخ الدخول / Date', 
+    'الغرفة / Room', 
+    'كود المريض / MRN', 
+    'اسم المريض / Patient Name', 
+    'الطبيب المعالج / Physician', 
+    'التخصص / Specialty', 
+    'التشخيص / Diagnosis', 
+    'الجهة والتعاقد / Contractor', 
+    'مدة الإقامة / LOS', 
+    'المستهدف / Target ALOS'
+  ];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } }; 
-    cell.font = { bold: true, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } }; // Dark Medical Green
+    cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
-    cell.border = {
-      top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
-    };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
   });
 
   let globalSerial = 1;
 
   groupNames.forEach(specialty => {
     const groupRows = groups[specialty];
+    const pctShare = totalPatients > 0 ? ((groupRows.length / totalPatients) * 100).toFixed(1) : "0.0";
     
     // Group Header Row
-    const groupHeader = sheet.addRow([`${specialty} - (${groupRows.length} Cases)`, '', '', '', '', '', '', '', '']);
-    sheet.mergeCells(`A${groupHeader.number}:I${groupHeader.number}`);
+    const groupHeader = sheet.addRow([`■  ${specialty}  —  (${groupRows.length} Cases / ${pctShare}%)  ■`, '', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(`A${groupHeader.number}:K${groupHeader.number}`);
+    groupHeader.height = 26;
     groupHeader.eachCell({ includeEmpty: true }, (cell) => {
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } };
-      cell.font = { bold: true, size: 12 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF81C784' } }; // Soft light green badge
+      cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FF003300' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.border = { top: { style: 'medium' }, bottom: { style: 'medium' } };
+      cell.border = { top: { style: 'medium', color: { argb: 'FF2E7D32' } }, bottom: { style: 'medium', color: { argb: 'FF2E7D32' } } };
     });
 
     groupRows.forEach(p => {
-      let losVal = "";
-      let eliteAlosVal = "";
-      if (losList && losList.length > 0) {
-        const losItem = losList.find(l => {
-          if (l.colD && p.colD && isNameMatch(l.colD, p.colD)) return true;
-          if (l.colB && p.colB && normalizeRoom(l.colB) === normalizeRoom(p.colB)) return true;
-          return false;
-        });
-        if (losItem) {
-          losVal = losItem.colS !== undefined && losItem.colS !== null ? String(losItem.colS) : "";
-          eliteAlosVal = losItem.colAL !== undefined && losItem.colAL !== null ? String(losItem.colAL) : "";
-        }
-      }
-      if (!losVal && p.colS !== undefined && p.colS !== null) losVal = String(p.colS);
-      if (!eliteAlosVal && p.colAL !== undefined && p.colAL !== null) eliteAlosVal = String(p.colAL);
-
-      const rowValues = [globalSerial++, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colM, p.colW, p.colX || specialty, losVal, eliteAlosVal];
+      const rowValues = [
+        globalSerial++, 
+        cleanAdmissionDateStr(p.colA), 
+        p.colB || '', 
+        p.mrn || '', 
+        p.colD || '', 
+        p.physician || '', 
+        p.specialty || specialty, 
+        p.diagnosis || '', 
+        p.colM || '', 
+        p.los !== undefined && p.los !== null ? p.los : '', 
+        p.alos !== undefined && p.alos !== null ? p.alos : ''
+      ];
       const pRow = sheet.addRow(rowValues);
+      pRow.height = 23;
       pRow.eachCell((cell, colNumber) => {
         cell.border = {
-          top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
+          top: { style: 'thin', color: { argb: 'FFD2D7D9' } }, 
+          bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } }, 
+          left: { style: 'thin', color: { argb: 'FFD2D7D9' } }, 
+          right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.font = { name: 'Calibri', size: 11 };
-        // Bold patient name
-        if (colNumber === 4) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
+        cell.font = { name: 'Calibri', size: 10 };
+
+        if (colNumber === 3 || colNumber === 4) {
+          cell.font = { bold: true, name: 'Calibri', size: 10 };
+        } else if (colNumber === 5) {
+          cell.font = { bold: true, name: 'Calibri', size: 10 }; // Bold patient name
+        } else if (colNumber === 8) {
+          cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true }; // Diagnosis left-aligned
+        } else if (colNumber === 10) {
+          cell.font = { bold: true, color: { argb: 'FF1565C0' } }; // Blue for LOS
         }
       });
     });
 
-    sheet.addRow([]); // Spacer
+    sheet.addRow([]); // Spacer row between groups
   });
 
-  sheet.getColumn(1).width = 5;
-  sheet.getColumn(2).width = 20;
-  sheet.getColumn(3).width = 15;
-  sheet.getColumn(4).width = 30;
-  sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 40;
-  sheet.getColumn(7).width = 25;
-  sheet.getColumn(8).width = 12;
-  sheet.getColumn(9).width = 15;
+  sheet.columns = [
+    { width: 6 },  // #
+    { width: 16 }, // Date
+    { width: 14 }, // Room
+    { width: 14 }, // MRN
+    { width: 32 }, // Patient Name
+    { width: 28 }, // Physician
+    { width: 22 }, // Specialty
+    { width: 38 }, // Diagnosis
+    { width: 26 }, // Contractor
+    { width: 14 }, // LOS
+    { width: 14 }  // Target ALOS
+  ];
 }
 
 // Catch-all for unknown /api routes - strictly return JSON 404
