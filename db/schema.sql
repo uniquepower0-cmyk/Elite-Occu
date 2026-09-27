@@ -146,7 +146,8 @@ EXCEPTION WHEN others THEN
 END $$;
 
 -- 9. Enhanced Real-Time Occupancy View
-CREATE OR REPLACE VIEW public.active_occupancy_view AS
+DROP VIEW IF EXISTS public.active_occupancy_view CASCADE;
+CREATE VIEW public.active_occupancy_view AS
 SELECT 
     a.id AS admission_id,
     p.id AS patient_id,
