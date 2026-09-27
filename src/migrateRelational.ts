@@ -1,4 +1,4 @@
-import { supabaseAdmin } from './supabase.js';
+import { supabase } from './supabase.js';
 
 /**
  * Migration Utility: Translates the legacy JSON blob into the new Relational schema
@@ -28,7 +28,7 @@ export async function migrateJsonToRelational(hospitalData: any[][], orListData:
       if (!patientName) continue;
 
       // 1. Upsert Patient
-      const { data: patient, error: pErr } = await supabaseAdmin
+      const { data: patient, error: pErr } = await (supabase as any)
         .from('patients')
         .upsert({ name: patientName }, { onConflict: 'name' }) // simplified conflict
         .select('id')
@@ -40,7 +40,7 @@ export async function migrateJsonToRelational(hospitalData: any[][], orListData:
       // 2. Upsert Room
       let roomId = null;
       if (roomName) {
-        const { data: room } = await supabaseAdmin
+        const { data: room } = await (supabase as any)
           .from('rooms')
           .upsert({ name: roomName }, { onConflict: 'name' })
           .select('id')
@@ -51,7 +51,7 @@ export async function migrateJsonToRelational(hospitalData: any[][], orListData:
       // 3. Upsert Physician (Staff)
       let physicianId = null;
       if (physicianName) {
-        const { data: staff } = await supabaseAdmin
+        const { data: staff } = await (supabase as any)
           .from('staff')
           .upsert({ name: physicianName, role: 'Physician' }, { onConflict: 'name' }) // Requires unique constraint on staff.name in reality
           .select('id')
@@ -60,7 +60,7 @@ export async function migrateJsonToRelational(hospitalData: any[][], orListData:
       }
 
       // 4. Create Admission
-      const { error: aErr } = await supabaseAdmin
+      const { error: aErr } = await (supabase as any)
         .from('admissions')
         .insert({
           patient_id: patient.id,

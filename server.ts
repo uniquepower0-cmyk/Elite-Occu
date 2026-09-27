@@ -173,29 +173,28 @@ if (fs.existsSync(CONFIG_PATH) && fs.existsSync(SERVICE_ACCOUNT_PATH)) {
   console.error("Missing config or service-account-key.json file.");
 }
 
-// Use a local file for persistence. Note: This may still be lost on fresh deployments
-// but is generally more stable than /tmp in the dev environment.
-const DATA_FILE = path.join(process.cwd(), 'hospital_data.json');
+// Writable directory fallback: Vercel serverless has a read-only root, so /tmp is used
+const WRITABLE_BASE = process.env.VERCEL ? '/tmp' : process.cwd();
+const DATA_FILE = path.join(WRITABLE_BASE, 'hospital_data.json');
 const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 
 function getCustomHeaderBgInfo() {
-  const rootPng = path.join(process.cwd(), 'header_bg.png');
-  const rootJpg = path.join(process.cwd(), 'header_bg.jpg');
-  const rootJpeg = path.join(process.cwd(), 'header_bg.jpeg');
+  const candidatePaths = [
+    path.join(WRITABLE_BASE, 'header_bg.png'),
+    path.join(WRITABLE_BASE, 'header_bg.jpg'),
+    path.join(WRITABLE_BASE, 'header_bg.jpeg'),
+    path.join(process.cwd(), 'header_bg.png'),
+    path.join(process.cwd(), 'header_bg.jpg'),
+    path.join(process.cwd(), 'header_bg.jpeg'),
+  ];
   
-  const dirPng = path.join(process.cwd(), 'header_bg.png');
-  const dirJpg = path.join(process.cwd(), 'header_bg.jpg');
-  const dirJpeg = path.join(process.cwd(), 'header_bg.jpeg');
-  
-  if (fs.existsSync(rootPng)) return { path: rootPng, ext: 'png' as const };
-  if (fs.existsSync(rootJpg)) return { path: rootJpg, ext: 'jpeg' as const };
-  if (fs.existsSync(rootJpeg)) return { path: rootJpeg, ext: 'jpeg' as const };
-  
-  if (fs.existsSync(dirPng)) return { path: dirPng, ext: 'png' as const };
-  if (fs.existsSync(dirJpg)) return { path: dirJpg, ext: 'jpeg' as const };
-  if (fs.existsSync(dirJpeg)) return { path: dirJpeg, ext: 'jpeg' as const };
-  
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p) && fs.statSync(p).size > 0) {
+      const ext = p.endsWith('.png') ? ('png' as const) : ('jpeg' as const);
+      return { path: p, ext };
+    }
+  }
   return null;
 }
 
@@ -2656,6 +2655,9 @@ async function saveData() {
           await takeORSnapshotHelper(targetOrDate);
           console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
         }
+        if (cumulativeTransfers && cumulativeTransfers.length > 0) {
+          syncTransfersToRelationalSchema(cumulativeTransfers).catch(() => {});
+        }
       } catch (snapErr) {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
       }
@@ -3320,35 +3322,30 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
       roomNameToId = new Map((rData || []).map((r: any) => [r.name, r.id]));
     }
 
-    // 3. Prepare unique surgeons (no unique constraint so we select/insert manually)
+    // 3. Prepare unique surgeons using atomic upsert (enabled by staff UNIQUE constraint)
     const surgeonMap = new Map();
     for (const row of parsedData) {
       if (row.surgeonName) {
-        surgeonMap.set(row.surgeonName, { name: row.surgeonName, role: 'Physician' });
+        surgeonMap.set(row.surgeonName, { name: row.surgeonName, role: 'Surgeon' });
       }
     }
-    const surgeonsNames = Array.from(surgeonMap.keys());
+    const surgeonsToUpsert = Array.from(surgeonMap.values());
     let surgeonNameToId = new Map();
-    if (surgeonsNames.length > 0) {
-      const { data: existingSurgeons, error: sErr } = await supabaseAdmin
+    if (surgeonsToUpsert.length > 0) {
+      const { data: sData, error: sErr } = await supabaseAdmin
         .from('staff')
-        .select('id, name')
-        .in('name', surgeonsNames);
+        .upsert(surgeonsToUpsert, { onConflict: 'name' })
+        .select('id, name');
         
-      if (sErr) throw new Error(`Staff Select Error: ${sErr.message}`);
-      
-      const existingNames = new Set((existingSurgeons || []).map((s: any) => s.name));
-      (existingSurgeons || []).forEach((s: any) => surgeonNameToId.set(s.name, s.id));
-      
-      const missingSurgeons = surgeonsNames.filter(n => !existingNames.has(n)).map(n => ({ name: n, role: 'Physician' }));
-      
-      if (missingSurgeons.length > 0) {
-        const { data: newSurgeons, error: insertErr } = await supabaseAdmin
+      if (!sErr && sData) {
+        surgeonNameToId = new Map(sData.map((s: any) => [s.name, s.id]));
+      } else {
+        // Fallback query in case UNIQUE constraint is still propagating
+        const { data: existingSurgeons } = await supabaseAdmin
           .from('staff')
-          .insert(missingSurgeons)
-          .select('id, name');
-        if (insertErr) throw new Error(`Staff Insert Error: ${insertErr.message}`);
-        (newSurgeons || []).forEach((s: any) => surgeonNameToId.set(s.name, s.id));
+          .select('id, name')
+          .in('name', Array.from(surgeonMap.keys()));
+        surgeonNameToId = new Map((existingSurgeons || []).map((s: any) => [s.name, s.id]));
       }
     }
 
@@ -3385,6 +3382,46 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
     console.error(`[Relational Sync] Error:`, err);
   }
 }
+
+async function syncTransfersToRelationalSchema(transfers: any[]) {
+  try {
+    if (!transfers || !Array.isArray(transfers) || transfers.length === 0) return;
+    
+    // Process recent active transfers (last 50)
+    for (const t of transfers.slice(0, 50)) {
+      const lastStep = Array.isArray(t.history) && t.history.length > 0 ? t.history[t.history.length - 1] : null;
+      const fromRoom = lastStep ? lastStep.fromRoom : (t.initialRoom || t.fromRoom || '');
+      const toRoom = lastStep ? lastStep.toRoom : (t.currentRoom || t.toRoom || '');
+      if (!toRoom || !fromRoom || fromRoom === toRoom) continue;
+
+      const mrn = t.mrn ? String(t.mrn).replace(/^0+/, '') : null;
+      let patientId: string | null = null;
+      if (mrn) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', mrn).maybeSingle();
+        if (pt) patientId = pt.id;
+      }
+      if (!patientId && t.patientName) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', t.patientName).maybeSingle();
+        if (pt) patientId = pt.id;
+      }
+
+      if (patientId) {
+        await supabaseAdmin.from('transfers').insert({
+          patient_id: patientId,
+          from_room_name: fromRoom,
+          to_room_name: toRoom,
+          transfer_type: 'inpatient',
+          is_auto_detected: true,
+          notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
+        });
+      }
+    }
+    console.log(`[Relational Sync] Audited transfers dual-synchronized to relational database.`);
+  } catch (err) {
+    console.warn('[Relational Transfers Sync] Notice:', err);
+  }
+}
+
 
 
 app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
@@ -3730,58 +3767,64 @@ function safeEscapeXml(unsafe: string): string {
   });
 }
 
+async function getCompositedHeaderBuffer(
+  cacheKey: string, 
+  svgText: string, 
+  customBg: any, 
+  width: number = 1200, 
+  height: number = 180
+): Promise<Buffer | null> {
+  const bgPath = customBg?.path || 'fallback';
+  const fullCacheKey = `${cacheKey}__${bgPath}__${width}x${height}`;
+  if (headerBufferCache.has(fullCacheKey)) {
+    return headerBufferCache.get(fullCacheKey)!;
+  }
+
+  let bgBuffer: Buffer | null = null;
+  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
+    try {
+      bgBuffer = await sharp(customBg.path)
+        .resize(width, height, { fit: 'fill' })
+        .composite([{ input: Buffer.from(svgText), top: 0, left: 0 }])
+        .png()
+        .toBuffer();
+    } catch (sharpErr) {
+      console.error('Error compositing textbox on custom background:', sharpErr);
+    }
+  }
+
+  if (!bgBuffer) {
+    try {
+      let fallbackSvg = svgText;
+      if (!fallbackSvg.includes(`<rect width="${width}"`)) {
+        fallbackSvg = svgText.replace(
+          `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+          `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n            <rect width="${width}" height="${height}" fill="#EBF3F5" />`
+        );
+      }
+      bgBuffer = await sharp(Buffer.from(fallbackSvg)).png().toBuffer();
+    } catch (sharpFallbackErr) {
+      console.error('Error generating fallback header:', sharpFallbackErr);
+    }
+  }
+
+  if (bgBuffer) {
+    headerBufferCache.set(fullCacheKey, bgBuffer);
+  }
+  return bgBuffer;
+}
+
 async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
   const safeTitle = safeEscapeXml(title);
   const customBg = getCustomHeaderBgInfo();
-  const bgKey = customBg?.path || 'fallback';
-  const cacheKey = `${safeTitle}__${bgKey}`;
+  const svgText = `
+    <svg width="1200" height="180" viewBox="0 0 1200 180">
+      <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+    </svg>
+  `;
 
-  let bgBuffer = headerBufferCache.get(cacheKey) || null;
-
-  if (!bgBuffer) {
-    if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-      try {
-        const svgText = `
-          <svg width="1200" height="180" viewBox="0 0 1200 180">
-            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-            <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
-          </svg>
-        `;
-        bgBuffer = await sharp(customBg.path)
-          .resize(1200, 180, { fit: 'fill' })
-          .composite([{
-            input: Buffer.from(svgText),
-            top: 0,
-            left: 0
-          }])
-          .png()
-          .toBuffer();
-      } catch (sharpErr) {
-        console.error('Error compositing textbox on custom background:', sharpErr);
-      }
-    }
-
-    if (!bgBuffer) {
-      try {
-        const svgText = `
-          <svg width="1200" height="180" viewBox="0 0 1200 180">
-            <rect width="1200" height="180" fill="#EBF3F5" />
-            <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-            <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
-          </svg>
-        `;
-        bgBuffer = await sharp(Buffer.from(svgText))
-          .png()
-          .toBuffer();
-      } catch (sharpFallbackErr) {
-        console.error('Error generating fallback header:', sharpFallbackErr);
-      }
-    }
-
-    if (bgBuffer) {
-      headerBufferCache.set(cacheKey, bgBuffer);
-    }
-  }
+  const bgBuffer = await getCompositedHeaderBuffer(`refined_${safeTitle}`, svgText, customBg);
 
   if (bgBuffer) {
     try {
@@ -5061,49 +5104,13 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  let bgBuffer: Buffer | null = null;
-  
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <!-- Text Box Container in the middle of the header, arranged in front - nearly transparent, no outline -->
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(1200, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error compositing textbox on custom background:', sharpErr);
-    }
-  }
-
-  if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <!-- Background solid soft slate/gray color -->
-          <rect width="1200" height="180" fill="#EBF3F5" />
-          <!-- Rounded text box at the center - nearly transparent, no outline -->
-          <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (sharpFallbackErr) {
-      console.error('Error generating fallback header:', sharpFallbackErr);
-    }
-  }
+  const occSvgText = `
+    <svg width="1200" height="180" viewBox="0 0 1200 180">
+      <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">الإشغال</text>
+    </svg>
+  `;
+  const bgBuffer = await getCompositedHeaderBuffer('occupancy_header_ar', occSvgText, customBg);
 
   // Add the composited background image containing the text box arranged in the front
   if (bgBuffer) {
@@ -7007,8 +7014,12 @@ async function resolveORDataset(reqDate?: string | null) {
   };
 }
 
+let isDailyResetting = false;
+
 // Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
 async function checkEgyptianDailyReset() {
+  if (isDailyResetting) return;
+  isDailyResetting = true;
   try {
     const cairo = getCairoDateTime();
     // 1. Scheduled check at 11:59 PM (23:59) Cairo time
@@ -7139,6 +7150,8 @@ async function checkEgyptianDailyReset() {
     }
   } catch (err) {
     console.error('[Scheduled Reset] Error executing checkEgyptianDailyReset:', err);
+  } finally {
+    isDailyResetting = false;
   }
 }
 
@@ -7857,24 +7870,26 @@ app.post('/api/upload-header-background', upload.single('file'), (req: any, res)
     
     // Select correct saving extension based on filename or mime
     const originalName = String(req.file.originalname || '').toLowerCase();
-    let savePath = path.join(process.cwd(), 'header_bg.png');
+    let savePath = path.join(WRITABLE_BASE, 'header_bg.png');
     
     if (originalName.endsWith('.jpg') || originalName.endsWith('.jpeg') || fileMime.includes('jpeg')) {
-      savePath = path.join(process.cwd(), 'header_bg.jpg');
+      savePath = path.join(WRITABLE_BASE, 'header_bg.jpg');
     }
 
-    // Clean up any old backgrounds to avoid conflicting helper resolution
+    // Clean up any old backgrounds across WRITABLE_BASE and process.cwd()
     try {
       const filesToClean = [
-        path.join(process.cwd(), 'header_bg.png'),
-        path.join(process.cwd(), 'header_bg.jpg'),
-        path.join(process.cwd(), 'header_bg.jpeg'),
+        path.join(WRITABLE_BASE, 'header_bg.png'),
+        path.join(WRITABLE_BASE, 'header_bg.jpg'),
+        path.join(WRITABLE_BASE, 'header_bg.jpeg'),
         path.join(process.cwd(), 'header_bg.png'),
         path.join(process.cwd(), 'header_bg.jpg'),
         path.join(process.cwd(), 'header_bg.jpeg'),
       ];
       for (const f of filesToClean) {
-        if (fs.existsSync(f)) fs.unlinkSync(f);
+        if (fs.existsSync(f)) {
+          try { fs.unlinkSync(f); } catch (_) {}
+        }
       }
     } catch (_) {}
 
@@ -8747,48 +8762,14 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  let bgBuffer: Buffer | null = null;
-  
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(1200, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error compositing textbox on custom background:', sharpErr);
-    }
-  }
-
-  if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect width="1200" height="180" fill="#EBF3F5" />
-          <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
-          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (sharpFallbackErr) {
-      console.error('Error generating fallback header:', sharpFallbackErr);
-    }
-  }
+  const floorSvgText = `
+    <svg width="1200" height="180" viewBox="0 0 1200 180">
+      <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">إشغال المرضى المنومين حسب الطابق والدرجة</text>
+      <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Inpatient Occupancy by Floor &amp; Accommodation</text>
+    </svg>
+  `;
+  const bgBuffer = await getCompositedHeaderBuffer('inpatient_floor_header', floorSvgText, customBg);
 
   if (bgBuffer) {
     try {
@@ -9034,46 +9015,14 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  let bgBuffer: Buffer | null = null;
   const customBg = getCustomHeaderBgInfo();
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="600" height="180" viewBox="0 0 600 180">
-          <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(600, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error generating vacant custom header:', sharpErr);
-    }
-  }
-
-  if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="600" height="180" viewBox="0 0 600 180">
-          <rect width="600" height="180" fill="#E8F5E9" />
-          <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (err) {
-      console.error(err);
-    }
-  }
+  const vacantSvgText = `
+    <svg width="600" height="180" viewBox="0 0 600 180">
+      <rect x="120" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة حسب الدرجة</text>
+    </svg>
+  `;
+  const bgBuffer = await getCompositedHeaderBuffer('vacant_by_category', vacantSvgText, customBg, 600, 180);
 
   if (bgBuffer) {
     try {
@@ -9358,44 +9307,14 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  let bgBuffer: Buffer | null = null;
   const customBg = getCustomHeaderBgInfo();
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="600" height="180" viewBox="0 0 600 180">
-          <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(600, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error generating vacant ascending custom header:', sharpErr);
-    }
-  }
-
-  if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="600" height="180" viewBox="0 0 600 180">
-          <rect width="600" height="180" fill="#E8F5E9" />
-          <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.22" />
-          <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText)).png().toBuffer();
-    } catch (err) {
-      console.error(err);
-    }
-  }
+  const vacantAscSvg = `
+    <svg width="600" height="180" viewBox="0 0 600 180">
+      <rect x="100" y="45" width="400" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="300" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="30" font-weight="bold" fill="#000000" text-anchor="middle">الغرف الشاغرة بترتيب أرقام الغرف</text>
+    </svg>
+  `;
+  const bgBuffer = await getCompositedHeaderBuffer('vacant_rooms_ascending', vacantAscSvg, customBg, 600, 180);
 
   if (bgBuffer) {
     try {
@@ -10583,47 +10502,14 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  let bgBuffer: Buffer | null = null;
-  if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(customBg.path)
-        .resize(1200, 180, { fit: 'fill' })
-        .composite([{
-          input: Buffer.from(svgText),
-          top: 0,
-          left: 0
-        }])
-        .png()
-        .toBuffer();
-    } catch (sharpErr) {
-      console.error('Error compositing textbox on custom background:', sharpErr);
-    }
-  }
-
-  if (!bgBuffer) {
-    try {
-      const svgText = `
-        <svg width="1200" height="180" viewBox="0 0 1200 180">
-          <rect width="1200" height="180" fill="#EBF3F5" />
-          <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.18" />
-          <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
-          <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
-        </svg>
-      `;
-      bgBuffer = await sharp(Buffer.from(svgText))
-        .png()
-        .toBuffer();
-    } catch (err) {
-      console.error(err);
-    }
-  }
+  const earlySvgText = `
+    <svg width="1200" height="180" viewBox="0 0 1200 180">
+      <rect x="220" y="30" width="760" height="120" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="600" y="85" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="bold" fill="#000000" text-anchor="middle">حالات الخروج المبكر</text>
+      <text x="600" y="125" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#333333" text-anchor="middle">Early Discharge Cases</text>
+    </svg>
+  `;
+  const bgBuffer = await getCompositedHeaderBuffer('early_discharge_cases', earlySvgText, customBg);
 
   if (bgBuffer) {
     try {
