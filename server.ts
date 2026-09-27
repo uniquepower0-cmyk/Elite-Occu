@@ -2682,6 +2682,9 @@ async function saveData() {
           await takeORSnapshotHelper(targetOrDate);
           console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
         }
+        if (hospitalData && hospitalData.length > 0) {
+          syncOccupancyToRelationalSchema(hospitalData).catch(() => {});
+        }
         if (cumulativeTransfers && cumulativeTransfers.length > 0) {
           syncTransfersToRelationalSchema(cumulativeTransfers).catch(() => {});
         }
@@ -3437,6 +3440,82 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
     console.log(`[Relational Sync] Successfully synced OR cases to database.`);
   } catch (err) {
     console.error(`[Relational Sync] Error:`, err);
+  }
+}
+
+async function syncOccupancyToRelationalSchema(rows: any[][]) {
+  try {
+    if (!rows || !Array.isArray(rows) || rows.length < 2) return;
+    
+    // Dynamically find start index of data
+    let startIdx = 3;
+    for (let i = 0; i < Math.min(rows.length, 10); i++) {
+      const r0 = String(rows[i][0] || "").toLowerCase();
+      const r1 = String(rows[i][1] || "").toLowerCase();
+      const r3 = String(rows[i][3] || "").toLowerCase();
+      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+        startIdx = i + 1;
+        break;
+      }
+    }
+
+    const rpcPayload: any[] = [];
+    rows.slice(startIdx).forEach(row => {
+      if (!row || row.length === 0) return;
+      const room = cleanRoomStr(String(row[1] || "").trim());
+      const name = String(row[3] || "").trim();
+      if (!room || !name) return;
+      
+      const rLower = room.toLowerCase();
+      const nLower = name.toLowerCase();
+      if (rLower === "bed" || rLower === "room" || rLower === "الغرفة" || nLower === "patient" || nLower === "name" || nLower === "المريض") return;
+      if (isOperatingRoom(room) || isProcedureOrTemporaryRoom(room) || isManuallyDischarged(name)) return;
+      const rowStr = `${room} ${name}`.toLowerCase();
+      if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return;
+
+      const mrn = String(row[2] || "").trim().replace(/^0+/, "");
+      const admDate = cleanAdmissionDateStr(row[0]);
+      const contractor = String(row[12] || "").trim();
+      const financial = String(row[5] || "").trim();
+      const physician = String(row[22] || "").trim();
+      const specialty = String(row[23] || "").trim();
+      const diagnosis = String(row[14] || "").trim();
+      const totalInvoice = String(row[25] || "").trim();
+      const remainingAmount = String(row[27] || "").trim();
+      const mobile = String(row[32] || "").trim();
+      const los = String(row[18] || "").trim();
+      const alos = String(row[37] || "").trim();
+
+      rpcPayload.push({
+        MRN: mrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`,
+        Patient: name,
+        "Bed#": room,
+        "Floor Name": getAccommodationCategory(room) || "",
+        TreatingPhysicianName: physician || null,
+        AdmissionDate: admDate || null,
+        ContractorName: contractor || null,
+        "Financial Status": financial || null,
+        "Total Invoice": totalInvoice || "0",
+        "Remaining Amount": remainingAmount || "0",
+        Specialty: specialty || null,
+        Diagnosis: diagnosis || null,
+        Mobile: mobile || null,
+        LOS: los || "0",
+        EliteALOS: alos || "0"
+      });
+    });
+
+    if (rpcPayload.length === 0) return;
+
+    console.log(`[Relational Sync] Synchronizing ${rpcPayload.length} active inpatient admissions to PostgreSQL...`);
+    const { error } = await supabaseAdmin.rpc('sync_powerbi_admissions', { payload: rpcPayload });
+    if (error) {
+      console.warn('[Relational Sync] RPC Notice (function might not be deployed yet):', error.message);
+    } else {
+      console.log(`[Relational Sync] Successfully synchronized ${rpcPayload.length} admissions via RPC.`);
+    }
+  } catch (err: any) {
+    console.warn('[Relational Occupancy Sync] Notice:', err?.message || err);
   }
 }
 

@@ -172,10 +172,16 @@ def fetch_powerbi_and_sync():
                     "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 5"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])),
                     "AdmissionDate": str(ad_val) if ad_val else None,
-                    "ContractorName": str(get_val(row, ["Financial Status", "ContractorName", "Contractor", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])),
-                    "Financial Status": str(get_val(row, ["Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])),
-                    "Total Invoice": str(get_val(row, ["Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
-                    "Remaining Amount": str(get_val(row, ["Remaining Amount", "Remaining", "Balance", "المتبقي", "الباقي", "Unnamed: 27"]))
+                    "ContractorName": str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])),
+                    "Financial Status": str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])),
+                    "Total Invoice": str(get_val(row, ["Total Invoice", "Total Amount", "Total", "FTotal", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
+                    "Remaining Amount": str(get_val(row, ["Remaining Amount", "Remaining", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])),
+                    "Specialty": str(get_val(row, ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"])),
+                    "Diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "التشخيص", "Unnamed: 14"])),
+                    "Mobile": str(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 32"])),
+                    "LOS": str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 18"])),
+                    "EliteALOS": str(get_val(row, ["EliteALOS", "ALOS", "LOS AL", "Unnamed: 37"])),
+                    "ExpectedDischarge": str(get_val(row, ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 20"]))
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -207,16 +213,17 @@ def fetch_powerbi_and_sync():
                 "Unnamed: 10": "Contractor Share",
                 "Unnamed: 11": "Remarks",
                 "Unnamed: 12": "Financial Status",
+                "Unnamed: 14": "Diagnosis",
                 "Unnamed: 18": "LOS Status",
                 "Unnamed: 20": "Expected Discharge",
                 "Unnamed: 22": "TreatingPhysicianName",
-                "Unnamed: 23": "Medical Plan X",
+                "Unnamed: 23": "Speciality",
                 "Unnamed: 24": "Transfer History",
                 "Unnamed: 25": "Total Invoice",
                 "Unnamed: 27": "Remaining Amount",
                 "Unnamed: 32": "Medical Plan AG",
                 "Unnamed: 33": "Medical Plan AH",
-                "Unnamed: 37": "LOS AL"
+                "Unnamed: 37": "EliteALOS"
             }
             legacy_occupancy_rows.append(fake_header)
             
@@ -234,23 +241,24 @@ def fetch_powerbi_and_sync():
                     1: ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"],
                     2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"],
                     3: ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"],
-                    5: ["Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
+                    5: ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
                     6: ["Service", "الخدمة", "Unnamed: 6"],
-                    8: ["Companion", "مرافق", "Unnamed: 8"],
+                    8: ["Companion", "Companions #", "مرافق", "Unnamed: 8"],
                     9: ["Patient Share", "PatientAmount", "مساهمة المريض", "نسبة المريض", "Unnamed: 9"],
                     10: ["Contractor Share", "ContractorAmount", "مساهمة الجهة", "تحمل الجهة", "Unnamed: 10"],
                     11: ["Remarks", "Notes", "ملاحظات", "Unnamed: 11"],
-                    12: ["Financial Status", "ContractorName", "Contractor", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
-                    18: ["LOS Status", "Unnamed: 18"],
-                    20: ["Expected Discharge", "Unnamed: 20"],
+                    12: ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
+                    14: ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "التشخيص", "Unnamed: 14"],
+                    18: ["LOS", "Sum(LOS)", "LOS Status", "Unnamed: 18"],
+                    20: ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 20"],
                     22: ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"],
-                    23: ["Medical Plan X", "Unnamed: 23"],
+                    23: ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"],
                     24: ["Transfer History", "Unnamed: 24"],
-                    25: ["Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
-                    27: ["Remaining Amount", "Remaining", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
-                    32: ["Medical Plan AG", "Unnamed: 32"],
-                    33: ["Medical Plan AH", "Unnamed: 33"],
-                    37: ["LOS AL", "Unnamed: 37"]
+                    25: ["Total Invoice", "FTotal", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
+                    27: ["Remaining Amount", "Remaining", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
+                    32: ["DefaultMobile", "Mobile", "Medical Plan AG", "Unnamed: 32"],
+                    33: ["Operations", "Medical Plan AH", "Unnamed: 33"],
+                    37: ["EliteALOS", "ALOS", "LOS AL", "Unnamed: 37"]
                 }
                 
                 for i in range(39):

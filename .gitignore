@@ -9,3 +9,5 @@ coverage/
 service-account-key.json
 service-account-key.json
 service-account-key.json
+__pycache__/
+*.pyc

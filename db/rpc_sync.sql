@@ -1,5 +1,6 @@
 -- ==============================================================================
--- RPC: sync_powerbi_admissions (Harmonized V2)
+-- RPC: sync_powerbi_admissions (Harmonized V2.1)
+-- Synchronizes live occupancy from PowerBI / Web Uploads to Relational Tables
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION sync_powerbi_admissions(payload JSON)
 RETURNS void LANGUAGE plpgsql AS $$
@@ -14,6 +15,10 @@ DECLARE
   v_admission_date TIMESTAMPTZ;
   v_contractor VARCHAR(255);
   v_financial VARCHAR(100);
+  v_phone VARCHAR(50);
+  v_specialty VARCHAR(100);
+  v_diagnosis TEXT;
+  v_notes TEXT;
   v_total_invoice NUMERIC(12,2);
   v_remaining_debt NUMERIC(12,2);
 BEGIN
@@ -25,10 +30,24 @@ BEGIN
       v_mrn := 'UNKNOWN-' || gen_random_uuid()::text;
     END IF;
 
-    -- Upsert Patient
-    INSERT INTO patients (mrn, name, updated_at) 
-    VALUES (v_mrn, COALESCE(NULLIF(TRIM(rec->>'Patient'), ''), 'Unknown Patient'), NOW())
-    ON CONFLICT (mrn) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
+    -- Patient Contact & Clinical attributes
+    v_phone := NULLIF(TRIM(rec->>'Mobile'), '');
+    IF v_phone = 'None' OR v_phone = 'nan' THEN v_phone := NULL; END IF;
+
+    v_specialty := COALESCE(NULLIF(TRIM(rec->>'Specialty'), ''), 'Physician');
+    IF v_specialty = 'None' OR v_specialty = 'nan' THEN v_specialty := 'Physician'; END IF;
+
+    v_diagnosis := NULLIF(TRIM(rec->>'Diagnosis'), '');
+    IF v_diagnosis = 'None' OR v_diagnosis = 'nan' THEN v_diagnosis := NULL; END IF;
+    v_notes := v_diagnosis;
+
+    -- Upsert Patient with Phone
+    INSERT INTO patients (mrn, name, phone, updated_at) 
+    VALUES (v_mrn, COALESCE(NULLIF(TRIM(rec->>'Patient'), ''), 'Unknown Patient'), v_phone, NOW())
+    ON CONFLICT (mrn) DO UPDATE 
+    SET name = EXCLUDED.name, 
+        phone = COALESCE(EXCLUDED.phone, patients.phone),
+        updated_at = NOW()
     RETURNING id INTO p_id;
 
     -- 2. Upsert Room
@@ -41,11 +60,12 @@ BEGIN
       r_id := NULL;
     END IF;
 
-    -- 3. Upsert Physician (staff table has UNIQUE constraint on name)
+    -- 3. Upsert Physician with specialty role
     IF rec->>'TreatingPhysicianName' IS NOT NULL AND rec->>'TreatingPhysicianName' != '' AND rec->>'TreatingPhysicianName' != 'None' AND rec->>'TreatingPhysicianName' != 'nan' THEN
       INSERT INTO staff (name, role)
-      VALUES (TRIM(rec->>'TreatingPhysicianName'), 'Physician')
-      ON CONFLICT (name) DO UPDATE SET role = EXCLUDED.role
+      VALUES (TRIM(rec->>'TreatingPhysicianName'), v_specialty)
+      ON CONFLICT (name) DO UPDATE 
+      SET role = CASE WHEN EXCLUDED.role != 'Physician' THEN EXCLUDED.role ELSE staff.role END
       RETURNING id INTO s_id;
     ELSE
       s_id := NULL;
@@ -59,7 +79,10 @@ BEGIN
     END;
 
     v_contractor := NULLIF(TRIM(rec->>'ContractorName'), '');
+    IF v_contractor = 'None' OR v_contractor = 'nan' THEN v_contractor := NULL; END IF;
+
     v_financial := NULLIF(TRIM(rec->>'Financial Status'), '');
+    IF v_financial = 'None' OR v_financial = 'nan' THEN v_financial := NULL; END IF;
 
     BEGIN
       v_total_invoice := COALESCE(NULLIF(regexp_replace(TRIM(rec->>'Total Invoice'), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00);
@@ -78,8 +101,8 @@ BEGIN
     WHERE patient_id = p_id AND status = 'Admitted' LIMIT 1;
     
     IF a_id IS NULL THEN
-      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date, status)
-      VALUES (p_id, r_id, s_id, v_contractor, v_financial, v_total_invoice, v_remaining_debt, COALESCE(v_admission_date, NOW()), 'Admitted')
+      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date, notes, status)
+      VALUES (p_id, r_id, s_id, v_contractor, v_financial, v_total_invoice, v_remaining_debt, COALESCE(v_admission_date, NOW()), v_notes, 'Admitted')
       RETURNING id INTO a_id;
     ELSE
       UPDATE admissions 
@@ -90,6 +113,7 @@ BEGIN
         financial_status = COALESCE(v_financial, financial_status),
         total_invoice = CASE WHEN v_total_invoice > 0 THEN v_total_invoice ELSE total_invoice END,
         remaining_debt = CASE WHEN v_remaining_debt > 0 THEN v_remaining_debt ELSE remaining_debt END,
+        notes = COALESCE(v_notes, notes),
         updated_at = NOW()
       WHERE id = a_id;
     END IF;
