@@ -141,31 +141,31 @@ BEGIN
     EXECUTE 'CREATE INDEX IF NOT EXISTS idx_or_cases_date ON public.or_cases(scheduled_date)';
     EXECUTE 'CREATE INDEX IF NOT EXISTS idx_or_cases_surgeon ON public.or_cases(surgeon_id)';
     EXECUTE 'CREATE INDEX IF NOT EXISTS idx_or_cases_patient ON public.or_cases(patient_id)';
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'Index execution notice: %', SQLERRM;
-END $$;
 
--- 9. Enhanced Real-Time Occupancy View
-DROP VIEW IF EXISTS public.active_occupancy_view CASCADE;
-CREATE VIEW public.active_occupancy_view AS
-SELECT 
-    a.id AS admission_id,
-    p.id AS patient_id,
-    p.name AS patient_name,
-    p.mrn,
-    r.name AS room_name,
-    r.ward_type,
-    s.name AS treating_physician,
-    COALESCE(a.contractor_name, cs.name) AS contractor_name,
-    a.financial_status,
-    a.admission_date,
-    a.status
-FROM public.admissions a
-JOIN public.patients p ON a.patient_id = p.id
-LEFT JOIN public.rooms r ON a.room_id = r.id
-LEFT JOIN public.staff s ON a.physician_id = s.id
-LEFT JOIN public.staff cs ON a.contractor_id = cs.id
-WHERE a.status = 'Admitted';
+    -- 9. Enhanced Real-Time Occupancy View (created dynamically after column verification)
+    EXECUTE '
+        DROP VIEW IF EXISTS public.active_occupancy_view CASCADE;
+        CREATE VIEW public.active_occupancy_view AS
+        SELECT 
+            a.id AS admission_id,
+            p.id AS patient_id,
+            p.name AS patient_name,
+            p.mrn,
+            r.name AS room_name,
+            r.ward_type,
+            s.name AS treating_physician,
+            COALESCE(a.contractor_name, cs.name) AS contractor_name,
+            a.financial_status,
+            a.admission_date,
+            a.status
+        FROM public.admissions a
+        JOIN public.patients p ON a.patient_id = p.id
+        LEFT JOIN public.rooms r ON a.room_id = r.id
+        LEFT JOIN public.staff s ON a.physician_id = s.id
+        LEFT JOIN public.staff cs ON a.contractor_id = cs.id
+        WHERE a.status = ''Admitted'';
+    ';
+END $$;
 
 -- 10. Atomic Lock Function for Daily Reset Rollover (11:59 PM Cairo)
 CREATE OR REPLACE FUNCTION public.acquire_daily_reset_lock(p_date TEXT)
