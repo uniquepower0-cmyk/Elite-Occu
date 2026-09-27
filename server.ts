@@ -1478,15 +1478,36 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   cumulativeCompanionStatus = companionStatusRaw;
 
   // 7. Extract LOS Data
-  const losSheetRaw = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    colB: cleanRoomStr(String(row[1] || "").trim()),
-    colD: String(row[3] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colS: String(row[18] || "").trim(),
-    colU: String(row[20] || "").trim(),
-    colAL: String(row[37] || "").trim()
-  })).filter(p => {
+  const losSheetRaw = rows.slice(startIdx).map(row => {
+    const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    return {
+      colA: cleanAdmissionDateStr(row[0]),
+      colB: cleanRoomStr(String(row[1] || "").trim()),
+      colC: String(row[2] || "").trim().replace(/^0+/, ""),
+      colD: String(row[3] || "").trim(),
+      colM: String(row[12] || "").trim(),
+      colO: String(row[14] || "").trim(),
+      colS: String(row[18] || "").trim(),
+      colU: String(row[20] || "").trim(),
+      colW: String(row[22] || "").trim(),
+      colX: String(row[23] || "").trim(),
+      colAL: String(row[37] || "").trim(),
+      // Aligned with relational DB schema
+      date: cleanAdmissionDateStr(row[0]),
+      room: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim().replace(/^0+/, ""),
+      name: String(row[3] || "").trim(),
+      contractor: String(row[12] || "").trim(),
+      diagnosis: String(row[14] || "").trim(),
+      los: parsedLOS,
+      expectedDischarge: String(row[20] || "").trim(),
+      physician: String(row[22] || "").trim(),
+      specialty: String(row[23] || "").trim(),
+      alos: parsedALOS,
+      variance: parsedLOS - parsedALOS
+    };
+  }).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
     if (!p.colB || p.colB === "") return false;
@@ -1499,6 +1520,8 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     if (isExcluded) return false;
     const isOR = isOperatingRoom(p.colB);
     if (isOR) return false;
+    if (isProcedureOrTemporaryRoom(p.colB)) return false;
+    if (isManuallyDischarged(p.colD)) return false;
     return true;
   });
   cumulativeLOS = losSheetRaw;
@@ -3232,16 +3255,37 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     cumulativeCompanionStatus = companionStatusRaw;
 
-    // Extract LOS Sheet: A(0), B(1), D(3), M(12), S(18), U(20), AL(37)
-    const losSheetRaw = rows.slice(startIdx).map(row => ({
-      colA: cleanAdmissionDateStr(row[0]),
-      colB: String(row[1] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colM: String(row[12] || "").trim(),
-      colS: String(row[18] || "").trim(),
-      colU: String(row[20] || "").trim(),
-      colAL: String(row[37] || "").trim()
-    })).filter(p => {
+    // Extract LOS Sheet: A(0), B(1), C(2), D(3), M(12), O(14), S(18), U(20), W(22), X(23), AL(37)
+    const losSheetRaw = rows.slice(startIdx).map(row => {
+      const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
+      const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
+      return {
+        colA: cleanAdmissionDateStr(row[0]),
+        colB: cleanRoomStr(String(row[1] || "").trim()),
+        colC: String(row[2] || "").trim().replace(/^0+/, ""),
+        colD: String(row[3] || "").trim(),
+        colM: String(row[12] || "").trim(),
+        colO: String(row[14] || "").trim(),
+        colS: String(row[18] || "").trim(),
+        colU: String(row[20] || "").trim(),
+        colW: String(row[22] || "").trim(),
+        colX: String(row[23] || "").trim(),
+        colAL: String(row[37] || "").trim(),
+        // Aligned with relational DB schema
+        date: cleanAdmissionDateStr(row[0]),
+        room: cleanRoomStr(String(row[1] || "").trim()),
+        mrn: String(row[2] || "").trim().replace(/^0+/, ""),
+        name: String(row[3] || "").trim(),
+        contractor: String(row[12] || "").trim(),
+        diagnosis: String(row[14] || "").trim(),
+        los: parsedLOS,
+        expectedDischarge: String(row[20] || "").trim(),
+        physician: String(row[22] || "").trim(),
+        specialty: String(row[23] || "").trim(),
+        alos: parsedALOS,
+        variance: parsedLOS - parsedALOS
+      };
+    }).filter(p => {
       const bLower = p.colB.toLowerCase();
       const dLower = p.colD.toLowerCase();
       if (!p.colB || p.colB === "") return false;
@@ -3257,6 +3301,8 @@ async function handleUnifiedUpload(req: any, res: any) {
 
       const isOR = isOperatingRoom(p.colB);
       if (isOR) return false;
+      if (isProcedureOrTemporaryRoom(p.colB)) return false;
+      if (isManuallyDischarged(p.colD)) return false;
       return true;
     });
 
@@ -6182,16 +6228,37 @@ async function updateHospitalState(rows: any[][]) {
 
   cumulativeCompanionStatus = companionStatusRaw;
 
-  // Extract LOS Sheet: A(0), B(1), D(3), M(12), S(18), U(20), AL(37)
-  const losSheetRaw = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    colB: String(row[1] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colS: String(row[18] || "").trim(),
-    colU: String(row[20] || "").trim(),
-    colAL: String(row[37] || "").trim()
-  })).filter(p => {
+  // Extract LOS Sheet: A(0), B(1), C(2), D(3), M(12), O(14), S(18), U(20), W(22), X(23), AL(37)
+  const losSheetRaw = rows.slice(startIdx).map(row => {
+    const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    return {
+      colA: cleanAdmissionDateStr(row[0]),
+      colB: cleanRoomStr(String(row[1] || "").trim()),
+      colC: String(row[2] || "").trim().replace(/^0+/, ""),
+      colD: String(row[3] || "").trim(),
+      colM: String(row[12] || "").trim(),
+      colO: String(row[14] || "").trim(),
+      colS: String(row[18] || "").trim(),
+      colU: String(row[20] || "").trim(),
+      colW: String(row[22] || "").trim(),
+      colX: String(row[23] || "").trim(),
+      colAL: String(row[37] || "").trim(),
+      // Aligned with relational DB schema
+      date: cleanAdmissionDateStr(row[0]),
+      room: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim().replace(/^0+/, ""),
+      name: String(row[3] || "").trim(),
+      contractor: String(row[12] || "").trim(),
+      diagnosis: String(row[14] || "").trim(),
+      los: parsedLOS,
+      expectedDischarge: String(row[20] || "").trim(),
+      physician: String(row[22] || "").trim(),
+      specialty: String(row[23] || "").trim(),
+      alos: parsedALOS,
+      variance: parsedLOS - parsedALOS
+    };
+  }).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
     if (!p.colB || p.colB === "") return false;
@@ -6207,6 +6274,8 @@ async function updateHospitalState(rows: any[][]) {
 
     const isOR = isOperatingRoom(p.colB);
     if (isOR) return false;
+    if (isProcedureOrTemporaryRoom(p.colB)) return false;
+    if (isManuallyDischarged(p.colD)) return false;
     return true;
   });
 
@@ -11139,15 +11208,58 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     views: [{ rightToLeft: false }] 
   });
 
-  const filteredData = data.filter(p => {
-    const los = parseFloat(p.colS);
-    const eliteAlos = parseFloat(p.colAL);
-    return !isNaN(los) && !isNaN(eliteAlos) && los > eliteAlos;
+  // 1. Normalize data with fallback lookups
+  const normalizedData = (data || []).map(p => {
+    const los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
+    const alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    let mrn = p.mrn || p.colC || "";
+    let physician = p.physician || p.colW || "";
+    let specialty = p.specialty || p.colX || "";
+    let diagnosis = p.diagnosis || p.colO || "";
+    const name = p.name || p.colD || "";
+    const room = cleanRoomStr(p.room || p.colB || "");
+    const contractor = p.contractor || p.colM || "";
+    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
+
+    // Fallback enrichment if mrn, physician, or specialty are missing
+    if ((!mrn || !physician || !specialty) && (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0)) {
+      const pl = cumulativeMedicalPlans.find(m => {
+        if (m.colD && name && isNameMatch(m.colD, name)) return true;
+        if (m.colB && room && normalizeRoom(m.colB) === normalizeRoom(room)) return true;
+        return false;
+      });
+      if (pl) {
+        if (!mrn && pl.mrn) mrn = pl.mrn;
+        if (!physician && pl.colW) physician = pl.colW;
+        if (!specialty && pl.colX) specialty = pl.colX;
+        if (!diagnosis && pl.colAG) diagnosis = pl.colAG;
+      }
+    }
+
+    return {
+      date,
+      room,
+      mrn,
+      name,
+      contractor,
+      diagnosis,
+      physician,
+      specialty,
+      los,
+      alos,
+      variance: los - alos
+    };
+  });
+
+  const filteredData = normalizedData.filter(p => {
+    if (!p.room || !p.name) return false;
+    if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room) || isManuallyDischarged(p.name)) return false;
+    return p.alos > 0 && p.los > p.alos;
   });
 
   const sortedData = [...filteredData].sort((a, b) => {
-    const roomA = String(a.colB || "").toUpperCase();
-    const roomB = String(b.colB || "").toUpperCase();
+    const roomA = String(a.room || "").toUpperCase();
+    const roomB = String(b.room || "").toUpperCase();
     
     const getRank = (str: string) => {
       if (str.includes("PICU")) return 6;
@@ -11170,26 +11282,75 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     return roomA.localeCompare(roomB);
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:K1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مرضى متجاوزي متوسط الإقامة', 7);
+  await applyRefinedHeader(workbook, sheet, 'مرضى متجاوزي متوسط الإقامة / Patients Exceeding Benchmark ALOS', 11);
+
+  // Top Executive Summary KPI block
+  const totalExceeding = sortedData.length;
+  const avgExcess = totalExceeding > 0 ? (sortedData.reduce((s, p) => s + (p.los - p.alos), 0) / totalExceeding).toFixed(1) : "0";
+  const maxExcess = totalExceeding > 0 ? Math.max(...sortedData.map(p => p.los - p.alos)).toFixed(0) : "0";
+  const criticalCases = sortedData.filter(p => (p.los - p.alos) >= 7).length;
+
+  const kpiHeaderRow = sheet.addRow([
+    'الحالات المتجاوزة / Exceeding Cases', '', '',
+    'متوسط التجاوز / Avg Excess Stay', '',
+    'أقصى تجاوز / Max Excess Stay', '', '',
+    'حالات حرجة (+7 أيام) / Critical (+7 Days)', '', ''
+  ]);
+  sheet.mergeCells(`A${kpiHeaderRow.number}:C${kpiHeaderRow.number}`);
+  sheet.mergeCells(`D${kpiHeaderRow.number}:E${kpiHeaderRow.number}`);
+  sheet.mergeCells(`F${kpiHeaderRow.number}:H${kpiHeaderRow.number}`);
+  sheet.mergeCells(`I${kpiHeaderRow.number}:K${kpiHeaderRow.number}`);
+  kpiHeaderRow.height = 24;
+  kpiHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } };
+    cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+
+  const kpiValRow = sheet.addRow([
+    `${totalExceeding} Cases`, '', '',
+    `+${avgExcess} Days`, '',
+    `+${maxExcess} Days`, '', '',
+    `${criticalCases} Critical Cases`, '', ''
+  ]);
+  sheet.mergeCells(`A${kpiValRow.number}:C${kpiValRow.number}`);
+  sheet.mergeCells(`D${kpiValRow.number}:E${kpiValRow.number}`);
+  sheet.mergeCells(`F${kpiValRow.number}:H${kpiValRow.number}`);
+  sheet.mergeCells(`I${kpiValRow.number}:K${kpiValRow.number}`);
+  kpiValRow.height = 24;
+  kpiValRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber <= 3 ? 'FFEBEE' : colNumber <= 5 ? 'FFF3E0' : colNumber <= 8 ? 'FFEBEE' : 'FFCDD2' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: colNumber <= 3 ? 'FFC62828' : colNumber <= 5 ? 'FFE65100' : colNumber <= 8 ? 'FFC62828' : 'FFB71C1C' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+
+  const blankRow = sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+  blankRow.height = 10;
 
   const headerLabels = [
     '#', 
     'تاريخ الدخول / Admission Date', 
     'الغرفة / Room', 
-    'المريض / Patient', 
-    'التعاقد / Contractor', 
+    'كود المريض / MRN',
+    'اسم المريض / Patient Name', 
+    'الطبيب المعالج / Treating Physician',
+    'التخصص / Specialty',
+    'الجهة والتعاقد / Contractor', 
     'المدة الفعلية / Actual LOS', 
-    'المدة المعيارية / Elite ALOS'
+    'المعيار / Benchmark ALOS',
+    'أيام التجاوز / Excess Days'
   ];
 
   const headerRow = sheet.addRow(headerLabels);
-  headerRow.height = 25;
+  headerRow.height = 26;
   headerRow.eachCell((cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } }; // Deep teal
     cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
@@ -11217,7 +11378,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
   let serial = 1;
 
   sortedData.forEach((p) => {
-    const roomStr = String(p.colB || "").toUpperCase();
+    const roomStr = String(p.room || "").toUpperCase();
     const roomNum = parseInt(roomStr.match(/\d+/)?.[0] || "0");
     let group = "OTHER"; 
     
@@ -11227,18 +11388,18 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     else if (roomStr.includes("SICU")) group = "SICU";
     else if (roomStr.includes("VIP") || roomStr.includes("VIP ISOLATION")) group = "VIP";
     else if (roomStr.includes("ICU")) group = "ICU";
-    else if (roomNum >= 101 && roomNum <= 108) group = "First Floor";
+    else if (roomNum >= 101 && roomNum <= 108) group = "First Floor (101-108)";
     else if (roomNum >= 301 && roomNum <= 319) group = "Zone A (301-319)";
     else if (roomNum >= 320 && roomNum <= 329) group = "Zone B (320-329)";
     else if (roomNum >= 330 && roomNum <= 332) group = "Zone C (330-332)";
-    else if (roomNum >= 401 && roomNum <= 422) group = "4th Floor";
+    else if (roomNum >= 401 && roomNum <= 422) group = "4th Floor (401-422)";
 
     const rColors = getGroupColors(group);
 
     if (group !== currentGroup) {
       const sepRowIdx = sheet.rowCount + 1;
-      sheet.addRow(['', '', '', '', '', '', '']);
-      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 7);
+      sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
       const separatorCell = sheet.getCell(sepRowIdx, 1);
       
       const displayGroupName = group === "VIP" ? "VIP ICU" : group;
@@ -11249,14 +11410,19 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       sheet.getRow(sepRowIdx).height = 26;
     }
 
+    const excessDays = p.los - p.alos;
     const rowValues = [
       serial++, 
-      p.colA, 
-      p.colB, 
-      p.colD, 
-      p.colM, 
-      p.colS, 
-      p.colAL
+      p.date, 
+      p.room, 
+      p.mrn,
+      p.name, 
+      p.physician || "-",
+      p.specialty || "-",
+      p.contractor || "-", 
+      `${p.los} Days`, 
+      `${p.alos} Days`,
+      `+${excessDays.toFixed(0)} Days (${((excessDays / (p.alos || 1)) * 100).toFixed(0)}% Over)`
     ];
     
     const pRow = sheet.addRow(rowValues);
@@ -11271,18 +11437,22 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 3 || colNumber === 4) {
+      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
-      if (colNumber === 6) {
+      if (colNumber === 9) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
+      }
+      if (colNumber === 11) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } };
       }
     });
     currentGroup = group;
   });
 
   sheet.columns = [
-    { width: 8 }, { width: 18 }, { width: 15 }, { width: 35 }, { width: 25 }, { width: 15 }, { width: 15 }
+    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 18 }, { width: 18 }, { width: 26 }
   ];
 }
 
@@ -13617,41 +13787,79 @@ app.get('/api/reports/companion_status', async (req, res) => {
   }
 });
 
-function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
+async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
   const sheet = workbook.addWorksheet('LOS Sheet', {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:H1');
-  const titleCell = sheet.getCell('A1');
-  titleCell.value = 'LOS Sheet';
-  titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
-  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } }; 
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(1).height = 90;
+  // 1. Normalize data with fallback lookups
+  const normalizedData = (data || []).map(p => {
+    const los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
+    const alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    let mrn = p.mrn || p.colC || "";
+    let physician = p.physician || p.colW || "";
+    let specialty = p.specialty || p.colX || "";
+    let diagnosis = p.diagnosis || p.colO || "";
+    const name = p.name || p.colD || "";
+    const room = cleanRoomStr(p.room || p.colB || "");
+    const contractor = p.contractor || p.colM || "";
+    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
 
-  addLogosToSheet(workbook, sheet, 7.0);
+    // Fallback enrichment if mrn, physician, or specialty are missing
+    if ((!mrn || !physician || !specialty) && (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0)) {
+      const pl = cumulativeMedicalPlans.find(m => {
+        if (m.colD && name && isNameMatch(m.colD, name)) return true;
+        if (m.colB && room && normalizeRoom(m.colB) === normalizeRoom(room)) return true;
+        return false;
+      });
+      if (pl) {
+        if (!mrn && pl.mrn) mrn = pl.mrn;
+        if (!physician && pl.colW) physician = pl.colW;
+        if (!specialty && pl.colX) specialty = pl.colX;
+        if (!diagnosis && pl.colAG) diagnosis = pl.colAG;
+      }
+    }
 
-  const headerLabels = ['#', 'تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'التعاقد', 'LOS', 'ALOS', 'Elite ALOS'];
-  const headerRow = sheet.addRow(headerLabels);
-  headerRow.height = 25;
-  headerRow.eachCell((cell) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE1BEE7' } }; 
-    cell.font = { bold: true, size: 11, name: 'Calibri' };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-    cell.border = {
-      top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
+    return {
+      date,
+      room,
+      mrn,
+      name,
+      contractor,
+      diagnosis,
+      physician,
+      specialty,
+      los,
+      alos,
+      expectedDischarge: p.expectedDischarge || p.colU || "",
+      variance: los - alos
     };
+  }).filter(p => {
+    if (!p.room || !p.name) return false;
+    if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room) || isManuallyDischarged(p.name)) return false;
+    const bLower = p.room.toLowerCase();
+    const dLower = p.name.toLowerCase();
+    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || dLower === "patient" || dLower === "المريض" || dLower === "name";
+    if (isHeader) return false;
+    const rowStr = `${p.room} ${p.name}`.toLowerCase();
+    if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return false;
+    return true;
   });
 
-  const separatorColor = 'FFFCE4D6'; 
-  let currentGroup: string | null = null;
-  let serial = 1;
+  // 2. Deduplicate Zone C (330 vs 330A/B, 331 vs 331A/B)
+  const has330Sub = normalizedData.some(p => { const nr = normalizeRoom(p.room); return nr === "330A" || nr === "330B"; });
+  const has331Sub = normalizedData.some(p => { const nr = normalizeRoom(p.room); return nr === "331A" || nr === "331B"; });
+  const activePatients = normalizedData.filter(p => {
+    const nr = normalizeRoom(p.room);
+    if (nr === "330" && has330Sub) return false;
+    if (nr === "331" && has331Sub) return false;
+    return true;
+  });
 
-  // Sorting by room number/department rank
-  const sortedData = [...data].sort((a, b) => {
-    const roomA = String(a.colB || "").toUpperCase();
-    const roomB = String(b.colB || "").toUpperCase();
+  // 3. Sorting by room number/department rank
+  const sortedData = [...activePatients].sort((a, b) => {
+    const roomA = String(a.room || "").toUpperCase();
+    const roomB = String(b.room || "").toUpperCase();
     const getRank = (str: string) => {
       if (str.includes("PICU")) return 6;
       if (str.includes("NICU")) return 5;
@@ -13670,8 +13878,117 @@ function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     return roomA.localeCompare(roomB);
   });
 
+  // 4. Header title and high-resolution banner
+  sheet.mergeCells('A1:K1');
+  const titleCell = sheet.getCell('A1');
+  titleCell.value = '';
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 90;
+
+  await applyRefinedHeader(workbook, sheet, 'بيان مدد الإقامة للمنومين / Inpatient Length of Stay (LOS)', 11);
+
+  // 5. Executive Summary KPI block
+  const totalInpatients = sortedData.length;
+  const validLos = sortedData.map(p => p.los).filter(n => n > 0);
+  const avgLOS = validLos.length > 0 ? (validLos.reduce((a, b) => a + b, 0) / validLos.length).toFixed(1) : "0";
+  const validAlos = sortedData.map(p => p.alos).filter(n => n > 0);
+  const avgTargetALOS = validAlos.length > 0 ? (validAlos.reduce((a, b) => a + b, 0) / validAlos.length).toFixed(1) : "N/A";
+  const exceedingPatients = sortedData.filter(p => p.alos > 0 && p.los > p.alos);
+  const exceedingCount = exceedingPatients.length;
+  const excessRate = totalInpatients > 0 ? ((exceedingCount / totalInpatients) * 100).toFixed(1) + "%" : "0%";
+  const maxStay = validLos.length > 0 ? Math.max(...validLos).toFixed(0) : "0";
+
+  const kpiHeaderRow = sheet.addRow([
+    'إجمالي المنومين / Inpatients', '',
+    'متوسط الإقامة / Hospital Avg LOS', '',
+    'متوسط المعيار / Target ALOS', '',
+    'تجاوزوا المعيار / Exceeding ALOS', '',
+    'نسبة التجاوز / Excess Rate', '',
+    'أطول إقامة / Max Stay'
+  ]);
+  sheet.mergeCells(`A${kpiHeaderRow.number}:B${kpiHeaderRow.number}`);
+  sheet.mergeCells(`C${kpiHeaderRow.number}:D${kpiHeaderRow.number}`);
+  sheet.mergeCells(`E${kpiHeaderRow.number}:F${kpiHeaderRow.number}`);
+  sheet.mergeCells(`G${kpiHeaderRow.number}:H${kpiHeaderRow.number}`);
+  sheet.mergeCells(`I${kpiHeaderRow.number}:J${kpiHeaderRow.number}`);
+  kpiHeaderRow.height = 24;
+  kpiHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } };
+    cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+
+  const kpiValRow = sheet.addRow([
+    `${totalInpatients} Cases`, '',
+    `${avgLOS} Days`, '',
+    `${avgTargetALOS} Days`, '',
+    `${exceedingCount} Cases`, '',
+    `${excessRate}`, '',
+    `${maxStay} Days`
+  ]);
+  sheet.mergeCells(`A${kpiValRow.number}:B${kpiValRow.number}`);
+  sheet.mergeCells(`C${kpiValRow.number}:D${kpiValRow.number}`);
+  sheet.mergeCells(`E${kpiValRow.number}:F${kpiValRow.number}`);
+  sheet.mergeCells(`G${kpiValRow.number}:H${kpiValRow.number}`);
+  sheet.mergeCells(`I${kpiValRow.number}:J${kpiValRow.number}`);
+  kpiValRow.height = 24;
+  kpiValRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    const isExceedingCol = colNumber >= 7 && colNumber <= 10;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isExceedingCol ? 'FFEBEE' : 'FFE0F2F1' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: isExceedingCol ? 'FFC62828' : 'FF004D40' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+
+  const blankRow = sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+  blankRow.height = 10;
+
+  // 6. Bilingual Table Headers
+  const headerLabels = [
+    '#', 
+    'تاريخ الدخول / Admission Date', 
+    'الغرفة / Room', 
+    'كود المريض / MRN',
+    'اسم المريض / Patient Name', 
+    'الطبيب المعالج / Treating Physician',
+    'التخصص / Specialty',
+    'الجهة والتعاقد / Contractor', 
+    'مدة الإقامة الحالية / Current LOS', 
+    'المعيار المستهدف / Target ALOS', 
+    'حالة الإقامة والتجاوز / Stay Status & Variance'
+  ];
+
+  const headerRow = sheet.addRow(headerLabels);
+  headerRow.height = 26;
+  headerRow.eachCell((cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } }; // Deep teal
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+      right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
+    };
+  });
+
+  const getGroupColors = (groupName: string) => {
+    const g = groupName.toUpperCase();
+    if (g.includes("CLOSED UNITS") || g.includes("ICU") || g.includes("SICU") || g.includes("CCU") || g.includes("NICU") || g.includes("PICU")) {
+      return { badge: 'FF004D40', row: 'FFE0F2F1' }; // Dark teal & light mint green
+    }
+    if (g.includes("VIP")) {
+      return { badge: 'FF2E7D32', row: 'FFEBF5EB' }; // Rich green & soft light green
+    }
+    return { badge: 'FF455A64', row: 'FFF5F7F8' };
+  };
+
+  let currentGroup: string | null = null;
+  let serial = 1;
+
   sortedData.forEach((p) => {
-    const roomStr = String(p.colB || "").toUpperCase();
+    const roomStr = String(p.room || "").toUpperCase();
     const roomNum = parseInt(roomStr.match(/\d+/)?.[0] || "0");
     let group = "OTHER"; 
     if (roomStr.includes("PICU")) group = "PICU";
@@ -13680,49 +13997,104 @@ function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     else if (roomStr.includes("SICU")) group = "SICU";
     else if (roomStr.includes("VIP") || roomStr.includes("VIP ISOLATION")) group = "VIP";
     else if (roomStr.includes("ICU")) group = "ICU";
-    else if (roomNum >= 101 && roomNum <= 108) group = "1st Floor (101-108)";
-    else if (roomNum >= 301 && roomNum <= 319) group = "301-319";
-    else if (roomNum >= 320 && roomNum <= 329) group = "320-329";
+    else if (roomNum >= 101 && roomNum <= 108) group = "First Floor (101-108)";
+    else if (roomNum >= 301 && roomNum <= 319) group = "Zone A (301-319)";
+    else if (roomNum >= 320 && roomNum <= 329) group = "Zone B (320-329)";
+    else if (roomNum >= 330 && roomNum <= 332) group = "Zone C (330-332)";
     else if (roomNum >= 401 && roomNum <= 422) group = "4th Floor (401-422)";
-    else if (!isNaN(roomNum) && roomNum > 0) group = "FLOOR_" + Math.floor(roomNum / 100); 
+    else if (!isNaN(roomNum) && roomNum > 0) group = "Floor " + Math.floor(roomNum / 100);
 
-    if (currentGroup !== null && group !== currentGroup) {
-      const sepRow = sheet.addRow(['', '', '', '', '', '', '', '']);
-      sepRow.eachCell({ includeEmpty: true }, (cell) => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: separatorColor } };
-        cell.border = {
-          top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
-        };
-      });
+    const rColors = getGroupColors(group);
+
+    if (group !== currentGroup) {
+      const sepRowIdx = sheet.rowCount + 1;
+      sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
+      const separatorCell = sheet.getCell(sepRowIdx, 1);
+      
+      const displayGroupName = group === "VIP" ? "VIP ICU" : group;
+      separatorCell.value = `■  ${displayGroupName}  ■`;
+      separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColors.badge } };
+      separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
+      separatorCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      sheet.getRow(sepRowIdx).height = 26;
     }
 
-    const rowValues = [serial++, p.colA, p.colB, p.colD, p.colM, p.colS, p.colU, p.colAL];
+    let statusText = "Normal Stay (طبيعي)";
+    let statusBg = rColors.row;
+    let statusTextColor = "FF000000";
+
+    if (p.alos > 0) {
+      if (p.los > p.alos) {
+        const diff = p.los - p.alos;
+        statusText = `+${diff.toFixed(0)} Days (تجاوز / Exceeded)`;
+        statusBg = 'FFFFEBEE';
+        statusTextColor = 'FFC62828';
+      } else if (p.los === p.alos) {
+        statusText = 'At Target (عند المعيار)';
+        statusBg = 'FFFFF3E0';
+        statusTextColor = 'FFE65100';
+      } else {
+        const rem = p.alos - p.los;
+        statusText = `${rem.toFixed(0)} Days left (ضمن المعيار)`;
+        statusBg = 'FFE8F5E9';
+        statusTextColor = 'FF2E7D32';
+      }
+    } else if (p.los > 7) {
+      statusText = '> 7 Days (إقامة طويلة)';
+      statusBg = 'FFFFF3E0';
+      statusTextColor = 'FFE65100';
+    }
+
+    const rowValues = [
+      serial++, 
+      p.date, 
+      p.room, 
+      p.mrn,
+      p.name, 
+      p.physician || "-",
+      p.specialty || "-",
+      p.contractor || "-", 
+      `${p.los} Days`, 
+      p.alos > 0 ? `${p.alos} Days` : "-",
+      statusText
+    ];
+
     const pRow = sheet.addRow(rowValues);
-    pRow.eachCell((cell) => {
+    pRow.height = 24;
+    pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber === 11 ? statusBg : rColors.row } };
       cell.border = {
-        top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
+        top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
+        right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11 };
+      cell.font = { name: 'Calibri', size: 11, color: { argb: colNumber === 11 ? statusTextColor : 'FF000000' } };
+      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
+        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      }
+      if (colNumber === 9 && p.alos > 0 && p.los > p.alos) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
+      }
+      if (colNumber === 11) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: statusTextColor } };
+      }
     });
     currentGroup = group;
   });
 
-  sheet.getColumn(1).width = 5;
-  sheet.getColumn(2).width = 18;
-  sheet.getColumn(3).width = 15;
-  sheet.getColumn(4).width = 30;
-  sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 20;
-  sheet.getColumn(7).width = 20;
-  sheet.getColumn(8).width = 20;
+  sheet.columns = [
+    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 18 }, { width: 18 }, { width: 28 }
+  ];
 }
 
 app.get('/api/reports/los_sheet', async (req, res) => {
   if (cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
-    addLOSSheet(workbook, cumulativeLOS);
+    await addLOSSheet(workbook, cumulativeLOS);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=LOS_Sheet.xlsx');
     await workbook.xlsx.write(res);
@@ -14315,7 +14687,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
     
     // 5. LOS Sheet
     if (ds.cumulativeLOS && ds.cumulativeLOS.length > 0) {
-      addLOSSheet(workbook, ds.cumulativeLOS);
+      await addLOSSheet(workbook, ds.cumulativeLOS);
     } else {
       const sheet = workbook.addWorksheet('LOS Sheet');
       sheet.addRow(['No Length of Stay (LOS) data available.']);

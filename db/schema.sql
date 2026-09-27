@@ -167,6 +167,7 @@ BEGIN
                  ELSE 0 
             END AS remaining_debt_pct,
             a.admission_date,
+            GREATEST(1, EXTRACT(DAY FROM (NOW() - a.admission_date)))::int AS current_los_days,
             a.status
         FROM public.admissions a
         JOIN public.patients p ON a.patient_id = p.id
