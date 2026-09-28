@@ -454,6 +454,104 @@ function cleanAdmissionDateStr(val: any): string {
   return str;
 }
 
+function parseDateToTimestamp(val: any): number | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val.getTime();
+  let str = String(val).trim();
+  if (!str) return null;
+  str = str.replace(/[٠-٩]/g, d => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(d)]);
+
+  if (/^\d{13}$/.test(str)) {
+    const ts = parseInt(str, 10);
+    return isNaN(ts) ? null : ts;
+  }
+  if (/^\d{10}$/.test(str)) {
+    const ts = parseInt(str, 10) * 1000;
+    return isNaN(ts) ? null : ts;
+  }
+  const num = Number(str);
+  if (!isNaN(num) && num > 40000 && num < 60000) {
+    return (num - 25569) * 86400 * 1000;
+  }
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed)) return parsed;
+  return null;
+}
+
+function calculateCurrentLOS(admissionDateStr: any): number {
+  const ts = parseDateToTimestamp(admissionDateStr);
+  if (!ts) return 1;
+  const now = Date.now();
+  const diffDays = Math.floor((now - ts) / (1000 * 60 * 60 * 24));
+  return Math.max(1, diffDays);
+}
+
+function getDefaultBenchmarkALOS(room: string, specialty?: string): number {
+  const r = (room || "").toUpperCase();
+  const s = (specialty || "").toLowerCase();
+  if (r.includes("PICU")) return 5;
+  if (r.includes("NICU")) return 7;
+  if (r.includes("CCU") || r.includes("SICU") || r.includes("ICU")) return 4;
+  if (r.includes("DIALYSIS")) return 1;
+  if (r.includes("HOMECARE")) return 14;
+  if (s.includes("pediatric") || s.includes("أطفال")) return 3;
+  if (s.includes("ortho") || s.includes("عظام")) return 4;
+  if (s.includes("neuro") || s.includes("مخ")) return 5;
+  if (s.includes("cardio") || s.includes("قلب")) return 4;
+  if (s.includes("surg") || s.includes("جراح")) return 3;
+  return 3;
+}
+
+function buildColumnIndexResolver(rows: any[][], maxHeaderRows = 5) {
+  const colMap = new Map<string, number>();
+  let headerRowIdx = -1;
+
+  for (let r = 0; r < Math.min(rows.length, maxHeaderRows); r++) {
+    const row = rows[r];
+    if (!Array.isArray(row)) continue;
+    let matchCount = 0;
+    row.forEach((cell, idx) => {
+      const s = String(cell || "").toLowerCase().trim();
+      if (
+        s.includes("bed") || s.includes("room") || s.includes("غرفة") || 
+        s.includes("patient") || s.includes("مريض") || s.includes("mrn") || 
+        s.includes("admission") || s.includes("invoice") || s.includes("remaining") || 
+        s.includes("handover") || s.includes("alos") || s.includes("los") || 
+        s.includes("ftotal") || s.includes("notes")
+      ) {
+        matchCount++;
+      }
+    });
+    if (matchCount >= 2) {
+      headerRowIdx = r;
+      row.forEach((cell, idx) => {
+        const s = String(cell || "").toLowerCase().trim();
+        if (s) {
+          colMap.set(s, idx);
+        }
+      });
+      break;
+    }
+  }
+
+  const findCol = (candidates: string[], defaultIdx: number): number => {
+    if (colMap.size === 0) return defaultIdx;
+    for (const c of candidates) {
+      const norm = c.toLowerCase().trim();
+      if (colMap.has(norm)) return colMap.get(norm)!;
+    }
+    for (const c of candidates) {
+      const norm = c.toLowerCase().trim();
+      for (const [key, idx] of colMap.entries()) {
+        if (key.includes(norm) || norm.includes(key)) return idx;
+      }
+    }
+    return defaultIdx;
+  };
+
+  return { headerRowIdx, findCol };
+}
+
 function deduplicateZoneC(body: any[][]): any[][] {
   const normalizedRooms = new Set(body.map(row => normalizeRoom(row[0])));
   const has330Specific = normalizedRooms.has("330A") || normalizedRooms.has("330B");
@@ -1367,19 +1465,45 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     });
   }
 
+  // Build dynamic column index resolver to handle exports with dynamic column positions
+  const { findCol } = buildColumnIndexResolver(rows);
+
+  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
+  const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33);
+  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات"], 34);
+  const colUpdateDateIdx = findCol(["prograssnotes creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32);
+  const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 18);
+  const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
+  const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
+  const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colFinancialIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
+  const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
+
   // 3. Extract Debts (Cash)
-  const finalExtractedDebts = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    room: cleanRoomStr(String(row[1] || "").trim()),
-    mrn: String(row[2] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colF: String(row[5] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colL: String(row[11] || "").trim(),
-    physician: String(row[22] || "").trim(),
-    colZ: String(row[25] || "").trim(),
-    colAB: String(row[27] || "").trim()
-  })).filter(p => {
+  const finalExtractedDebts = rows.slice(startIdx).map(row => {
+    const rawZ = row[colTotalIdx];
+    const rawAB = row[colRemainingIdx];
+    const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
+    return {
+      colA: cleanAdmissionDateStr(row[0]),
+      room: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim(),
+      colD: String(row[3] || "").trim(),
+      colF: String(row[colFinancialIdx] || "").trim(),
+      colM: String(row[colContractorIdx] || "").trim(),
+      colL: String(row[11] || "").trim(),
+      physician: String(row[colPhysIdx] || "").trim(),
+      colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
+      colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
+      valZ,
+      valAB,
+      totalInvoice: valZ,
+      remainingAmount: valAB
+    };
+  }).filter(p => {
     const fLower = p.colF.toLowerCase();
     const mLower = p.colM.toLowerCase();
     const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
@@ -1400,18 +1524,28 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   cumulativeDebts = finalExtractedDebts;
 
   // 4. Extract Insured Debts
-  const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    room: cleanRoomStr(String(row[1] || "").trim()),
-    mrn: String(row[2] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colF: String(row[5] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colL: String(row[11] || "").trim(),
-    physician: String(row[22] || "").trim(),
-    colZ: String(row[25] || "").trim(),
-    colAB: String(row[27] || "").trim()
-  })).filter(p => {
+  const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => {
+    const rawZ = row[colTotalIdx];
+    const rawAB = row[colRemainingIdx];
+    const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
+    return {
+      colA: cleanAdmissionDateStr(row[0]),
+      room: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim(),
+      colD: String(row[3] || "").trim(),
+      colF: String(row[colFinancialIdx] || "").trim(),
+      colM: String(row[colContractorIdx] || "").trim(),
+      colL: String(row[11] || "").trim(),
+      physician: String(row[colPhysIdx] || "").trim(),
+      colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
+      colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
+      valZ,
+      valAB,
+      totalInvoice: valZ,
+      remainingAmount: valAB
+    };
+  }).filter(p => {
     const fLower = p.colF.toLowerCase();
     const mLower = p.colM.toLowerCase();
     const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
@@ -1427,23 +1561,33 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
     const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
     const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const isOR = isOperatingRoom(p.room);
-    return isInsured && isNotPhysician && !isPhysicianPayment && valAB > 0 && p.colD.length > 0 && !isOR;
+    return isInsured && isNotPhysician && !isPhysicianPayment && (p.valAB > 0 || p.valZ > 0) && p.colD.length > 0 && !isOR;
   });
   cumulativeInsuredDebts = finalExtractedInsuredDebts;
 
   // 5. Extract Medical Plans
-  const medicalPlansRaw = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    colB: cleanRoomStr(String(row[1] || "").trim()),
-    colD: String(row[3] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colW: String(row[22] || "").trim(),
-    colAG: String(row[32] || "").trim(),
-    colAH: String(row[33] || "").trim(),
-    colX: String(row[23] || "").trim()
-  })).filter(p => {
+  const medicalPlansRaw = rows.slice(startIdx).map(row => {
+    const rawSbar = String(row[colSbarIdx] || "").trim();
+    const rawNotes = String(row[colNotesIdx] || row[11] || row[5] || "").trim();
+    const rawUpdate = String(row[colUpdateDateIdx] || "").trim();
+    const sbarText = rawSbar || rawNotes || "خطة علاجية تحت المتابعة السريرية";
+    const admDate = cleanAdmissionDateStr(row[0]);
+    return {
+      colA: admDate,
+      colB: cleanRoomStr(String(row[1] || "").trim()),
+      mrn: String(row[2] || "").trim(),
+      colD: String(row[3] || "").trim(),
+      colM: String(row[colContractorIdx] || "").trim(),
+      colW: String(row[colPhysIdx] || "").trim(),
+      colAG: rawUpdate || admDate || "-",
+      colAH: sbarText,
+      colAI: rawNotes,
+      planText: sbarText,
+      notes: rawNotes,
+      colX: String(row[23] || "").trim()
+    };
+  }).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
     if (!p.colB || p.colB === "") return false;
@@ -1462,8 +1606,8 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     colB: cleanRoomStr(String(row[1] || "").trim()),
     colD: String(row[3] || "").trim(),
     colI: String(row[8] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colW: String(row[22] || "").trim()
+    colM: String(row[colContractorIdx] || "").trim(),
+    colW: String(row[colPhysIdx] || "").trim()
   })).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
@@ -1479,31 +1623,40 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
 
   // 7. Extract LOS Data
   const losSheetRaw = rows.slice(startIdx).map(row => {
-    const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
-    const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    let parsedLOS = parseFloat(String(row[colLosIdx] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const admDate = cleanAdmissionDateStr(row[0]);
+    if (parsedLOS <= 0 && admDate) {
+      parsedLOS = calculateCurrentLOS(admDate);
+    }
+    const room = cleanRoomStr(String(row[1] || "").trim());
+    const specialty = String(row[23] || "").trim();
+    let parsedALOS = parseFloat(String(row[colAlosIdx] || "").replace(/[^0-9.-]+/g, "")) || 0;
+    if (parsedALOS <= 0) {
+      parsedALOS = getDefaultBenchmarkALOS(room, specialty);
+    }
     return {
-      colA: cleanAdmissionDateStr(row[0]),
-      colB: cleanRoomStr(String(row[1] || "").trim()),
+      colA: admDate,
+      colB: room,
       colC: String(row[2] || "").trim().replace(/^0+/, ""),
       colD: String(row[3] || "").trim(),
-      colM: String(row[12] || "").trim(),
-      colO: String(row[14] || "").trim(),
-      colS: String(row[18] || "").trim(),
-      colU: String(row[20] || "").trim(),
-      colW: String(row[22] || "").trim(),
-      colX: String(row[23] || "").trim(),
-      colAL: String(row[37] || "").trim(),
+      colM: String(row[colContractorIdx] || "").trim(),
+      colO: String(row[colDiagIdx] || "").trim(),
+      colS: String(parsedLOS),
+      colU: String(row[colExpectedDiscIdx] || "").trim(),
+      colW: String(row[colPhysIdx] || "").trim(),
+      colX: specialty,
+      colAL: String(parsedALOS),
       // Aligned with relational DB schema
-      date: cleanAdmissionDateStr(row[0]),
-      room: cleanRoomStr(String(row[1] || "").trim()),
+      date: admDate,
+      room: room,
       mrn: String(row[2] || "").trim().replace(/^0+/, ""),
       name: String(row[3] || "").trim(),
-      contractor: String(row[12] || "").trim(),
-      diagnosis: String(row[14] || "").trim(),
+      contractor: String(row[colContractorIdx] || "").trim(),
+      diagnosis: String(row[colDiagIdx] || "").trim(),
       los: parsedLOS,
-      expectedDischarge: String(row[20] || "").trim(),
-      physician: String(row[22] || "").trim(),
-      specialty: String(row[23] || "").trim(),
+      expectedDischarge: String(row[colExpectedDiscIdx] || "").trim(),
+      physician: String(row[colPhysIdx] || "").trim(),
+      specialty: specialty,
       alos: parsedALOS,
       variance: parsedLOS - parsedALOS
     };
@@ -1935,9 +2088,13 @@ async function executeLoadData(force = false) {
 
   // Self-heal/Extract missing sub-datasets if hospitalData is present
   if (hospitalData && hospitalData.length > 1) {
+    const debtsNeedExtraction = cumulativeDebts.length === 0 || cumulativeDebts.every(d => (!d.colZ && !d.colAB) || (d.valZ === 0 && d.valAB === 0));
+    const plansNeedExtraction = cumulativeMedicalPlans.length === 0 || cumulativeMedicalPlans.every(m => !m.colAH || m.colAH === "undefined" || m.colAH.trim() === "");
+    const losNeedsExtraction = cumulativeLOS.length === 0 || cumulativeLOS.every(l => (!l.alos || l.alos === 0) && (!l.colAL || l.colAL === "0" || l.colAL === ""));
+
     let needsSave = false;
-    if (cumulativeDebts.length === 0 || cumulativeLOS.length === 0 || cumulativeEntries.length === 0 || cumulativeInsuredDebts.length === 0 || cumulativeMedicalPlans.length === 0) {
-      console.log('Extracting derived sub-datasets (entries, debts, insured debts, medical plans, los) from hospitalData...');
+    if (debtsNeedExtraction || plansNeedExtraction || losNeedsExtraction || cumulativeEntries.length === 0 || cumulativeInsuredDebts.length === 0) {
+      console.log('Extracting/enriching derived sub-datasets (entries, debts, insured debts, medical plans, los) from hospitalData...');
       extractSubsheetsFromHospitalData(hospitalData);
       needsSave = true;
     }
@@ -3136,180 +3293,8 @@ async function handleUnifiedUpload(req: any, res: any) {
         hospitalData = rows;
     }
 
-    // Extract DEBTS from unified sheet (A, B, D, F, M, Z, AB)
-    const finalExtractedDebts = rows.slice(startIdx).map(row => ({
-      colA: String(row[0] || "").trim(),
-      room: String(row[1] || "").trim(),
-      mrn: String(row[2] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colF: String(row[5] || "").trim(), // Financial status, cash or insured
-      colM: String(row[12] || "").trim(), // Contractor Name
-      colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
-      physician: String(row[22] || "").trim(), // Treating Physician
-      colZ: String(row[25] || "").trim(), // Total invoice
-      colAB: String(row[27] || "").trim() // Remaining on invoice
-    })).filter(p => {
-      const fLower = p.colF.toLowerCase();
-      const mLower = p.colM.toLowerCase();
-      const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-      const fMatch = (fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                      fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                      fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                      mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                      mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                      mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل")) && !isHomeCare;
-      const lLower = p.colL.toLowerCase();
-      const dLower = p.colD.toLowerCase();
-      const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-      const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-      const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-      const isOR = isOperatingRoom(p.room);
-      return fMatch && isNotPhysician && !isPhysicianPayment && !isOR && p.colD.length > 0;
-    });
-
-    cumulativeDebts = finalExtractedDebts;
-
-    // Extract INSURED DEBTS (remainings only)
-    const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
-      colA: String(row[0] || "").trim(),
-      room: String(row[1] || "").trim(),
-      mrn: String(row[2] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colF: String(row[5] || "").trim(), // Financial status, cash or insured
-      colM: String(row[12] || "").trim(), // Contractor Name
-      colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
-      physician: String(row[22] || "").trim(), // Treating Physician
-      colZ: String(row[25] || "").trim(), // Total invoice
-      colAB: String(row[27] || "").trim() // Remaining on invoice
-    })).filter(p => {
-      const fLower = p.colF.toLowerCase();
-      const mLower = p.colM.toLowerCase();
-      const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-      const isCash = fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                     fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                     fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                     mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                     mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                     mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل");
-      const isInsured = !isCash && !isHomeCare && (fLower.length > 0 || mLower.length > 0);
-      const lLower = p.colL.toLowerCase();
-      const dLower = p.colD.toLowerCase();
-      const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-      const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-      const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-      const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
-      const isOR = isOperatingRoom(p.room);
-      return isInsured && isNotPhysician && !isPhysicianPayment && valAB > 0 && p.colD.length > 0 && !isOR;
-    });
-
-    cumulativeInsuredDebts = finalExtractedInsuredDebts;
-
-    // Extract MEDICAL PLANS using Columns: A(0), B(1), D(3), M(12), W(22), AH(33), X(23), AG(32)
-    const medicalPlansRaw = rows.slice(startIdx).map(row => ({
-      colA: cleanAdmissionDateStr(row[0]),
-      colB: String(row[1] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colM: String(row[12] || "").trim(),
-      colW: String(row[22] || "").trim(),
-      colAG: String(row[32] || "").trim(),
-      colAH: String(row[33] || "").trim(),
-      colX: String(row[23] || "").trim()
-    })).filter(p => {
-      const bLower = p.colB.toLowerCase();
-      const dLower = p.colD.toLowerCase();
-      if (!p.colB || p.colB === "") return false;
-      
-      const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                       dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                       bLower === "id" || dLower === "patient name" ||
-                       (bLower.includes("bed") && dLower.includes("patient"));
-      if (isHeader) return false;
-
-      const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-      if (isExcluded) return false;
-      return true;
-    });
-
-    cumulativeMedicalPlans = medicalPlansRaw;
-
-    // Extract COMPANION STATUS: A(0), B(1), D(3), I(8), M(12), W(22)
-    const companionStatusRaw = rows.slice(startIdx).map(row => ({
-      colA: String(row[0] || "").trim(),
-      colB: String(row[1] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colI: String(row[8] || "").trim(),
-      colM: String(row[12] || "").trim(),
-      colW: String(row[22] || "").trim()
-    })).filter(p => {
-      const bLower = p.colB.toLowerCase();
-      const dLower = p.colD.toLowerCase();
-      if (!p.colB || p.colB === "") return false;
-      
-      const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                       dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                       bLower === "id" || dLower === "patient name" ||
-                       (bLower.includes("bed") && dLower.includes("patient"));
-      if (isHeader) return false;
-
-      const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-      if (isExcluded) return false;
-      return true;
-    });
-
-    cumulativeCompanionStatus = companionStatusRaw;
-
-    // Extract LOS Sheet: A(0), B(1), C(2), D(3), M(12), O(14), S(18), U(20), W(22), X(23), AL(37)
-    const losSheetRaw = rows.slice(startIdx).map(row => {
-      const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
-      const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
-      return {
-        colA: cleanAdmissionDateStr(row[0]),
-        colB: cleanRoomStr(String(row[1] || "").trim()),
-        colC: String(row[2] || "").trim().replace(/^0+/, ""),
-        colD: String(row[3] || "").trim(),
-        colM: String(row[12] || "").trim(),
-        colO: String(row[14] || "").trim(),
-        colS: String(row[18] || "").trim(),
-        colU: String(row[20] || "").trim(),
-        colW: String(row[22] || "").trim(),
-        colX: String(row[23] || "").trim(),
-        colAL: String(row[37] || "").trim(),
-        // Aligned with relational DB schema
-        date: cleanAdmissionDateStr(row[0]),
-        room: cleanRoomStr(String(row[1] || "").trim()),
-        mrn: String(row[2] || "").trim().replace(/^0+/, ""),
-        name: String(row[3] || "").trim(),
-        contractor: String(row[12] || "").trim(),
-        diagnosis: String(row[14] || "").trim(),
-        los: parsedLOS,
-        expectedDischarge: String(row[20] || "").trim(),
-        physician: String(row[22] || "").trim(),
-        specialty: String(row[23] || "").trim(),
-        alos: parsedALOS,
-        variance: parsedLOS - parsedALOS
-      };
-    }).filter(p => {
-      const bLower = p.colB.toLowerCase();
-      const dLower = p.colD.toLowerCase();
-      if (!p.colB || p.colB === "") return false;
-      
-      const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                       dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                       bLower === "id" || dLower === "patient name" ||
-                       (bLower.includes("bed") && dLower.includes("patient"));
-      if (isHeader) return false;
-
-      const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-      if (isExcluded) return false;
-
-      const isOR = isOperatingRoom(p.colB);
-      if (isOR) return false;
-      if (isProcedureOrTemporaryRoom(p.colB)) return false;
-      if (isManuallyDischarged(p.colD)) return false;
-      return true;
-    });
-
-    cumulativeLOS = losSheetRaw;
+    // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
+    extractSubsheetsFromHospitalData(rows);
 
     uploadedAt = Date.now();
     lastActiveDate = getCairoDateTime().dateStr;
@@ -4577,9 +4562,10 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
   };
 
   const processedDebts = sortedDebts.map(p => {
-    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
-    const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
-    const pct = valZ > 0 ? (valAB / valZ) : 0;
+    let valAB = typeof p.valAB === 'number' ? p.valAB : (parseFloat(String(p.valAB !== undefined ? p.valAB : (p.remainingAmount !== undefined ? p.remainingAmount : (p.remaining !== undefined ? p.remaining : (p.colAB || "")))).replace(/[^0-9.-]+/g, "")) || 0);
+    let valZ = typeof p.valZ === 'number' ? p.valZ : (parseFloat(String(p.valZ !== undefined ? p.valZ : (p.totalInvoice !== undefined ? p.totalInvoice : (p.total !== undefined ? p.total : (p.colZ || "")))).replace(/[^0-9.-]+/g, "")) || 0);
+    if (valZ === 0 && valAB > 0) valZ = valAB;
+    const pct = valZ > 0 ? (valAB / valZ) : (valAB > 0 ? 1 : 0);
     return { ...p, valAB, valZ, pct };
   });
 
@@ -4966,9 +4952,10 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
 
   // Group and sort items by remaining percentage
   const processedDebts = sortedDebts.map(p => {
-    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
-    const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
-    const pct = valZ > 0 ? (valAB / valZ) : 0;
+    let valAB = typeof p.valAB === 'number' ? p.valAB : (parseFloat(String(p.valAB !== undefined ? p.valAB : (p.remainingAmount !== undefined ? p.remainingAmount : (p.remaining !== undefined ? p.remaining : (p.colAB || "")))).replace(/[^0-9.-]+/g, "")) || 0);
+    let valZ = typeof p.valZ === 'number' ? p.valZ : (parseFloat(String(p.valZ !== undefined ? p.valZ : (p.totalInvoice !== undefined ? p.totalInvoice : (p.total !== undefined ? p.total : (p.colZ || "")))).replace(/[^0-9.-]+/g, "")) || 0);
+    if (valZ === 0 && valAB > 0) valZ = valAB;
+    const pct = valZ > 0 ? (valAB / valZ) : (valAB > 0 ? 1 : 0);
     return { ...p, valAB, valZ, pct };
   });
 
@@ -5290,7 +5277,9 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
   });
 
   plans.forEach((p, index) => {
-    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, p.colAG || "", p.colAH];
+    const sbarText = p.colAH || p.colAI || p.planText || p.notes || p.handover || p.progressNotes || p.colI || "خطة علاجية تحت المتابعة السريرية";
+    const updateDate = p.colAG || cleanAdmissionDateStr(p.colA) || "-";
+    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     const rowBgColor = (index % 2 === 1) ? bgColor : 'FFFFFFFF';
 
@@ -6185,180 +6174,9 @@ async function updateHospitalState(rows: any[][]) {
       hospitalData = rows;
   }
 
-  // Extract DEBTS from unified sheet (A, B, D, F, M, Z, AB)
-  const finalExtractedDebts = rows.slice(startIdx).map(row => ({
-    colA: String(row[0] || "").trim(),
-    room: String(row[1] || "").trim(),
-    mrn: String(row[2] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colF: String(row[5] || "").trim(), // Financial status, cash or insured
-    colM: String(row[12] || "").trim(), // Contractor Name
-    colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
-    physician: String(row[22] || "").trim(), // Treating Physician
-    colZ: String(row[25] || "").trim(), // Total invoice
-    colAB: String(row[27] || "").trim() // Remaining on invoice
-  })).filter(p => {
-    const fLower = p.colF.toLowerCase();
-    const mLower = p.colM.toLowerCase();
-    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-    const fMatch = (fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                    fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                    fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                    mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                    mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                    mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل")) && !isHomeCare;
-    const lLower = p.colL.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-    const isOR = isOperatingRoom(p.room);
-    return fMatch && isNotPhysician && !isPhysicianPayment && !isOR && p.colD.length > 0;
-  });
+  // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
+  extractSubsheetsFromHospitalData(rows);
 
-  cumulativeDebts = finalExtractedDebts;
-
-  // Extract INSURED DEBTS (remainings only)
-  const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => ({
-    colA: String(row[0] || "").trim(),
-    room: String(row[1] || "").trim(),
-    mrn: String(row[2] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colF: String(row[5] || "").trim(), // Financial status, cash or insured
-    colM: String(row[12] || "").trim(), // Contractor Name
-    colL: String(row[11] || "").trim(), // for backward compatibility/filter checks
-    physician: String(row[22] || "").trim(), // Treating Physician
-    colZ: String(row[25] || "").trim(), // Total invoice
-    colAB: String(row[27] || "").trim() // Remaining on invoice
-  })).filter(p => {
-    const fLower = p.colF.toLowerCase();
-    const mLower = p.colM.toLowerCase();
-    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-    const isCash = fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                   fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                   fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                   mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                   mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                   mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل");
-    const isInsured = !isCash && !isHomeCare && (fLower.length > 0 || mLower.length > 0);
-    const lLower = p.colL.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-    const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
-    const isOR = isOperatingRoom(p.room);
-    return isInsured && isNotPhysician && !isPhysicianPayment && valAB > 0 && p.colD.length > 0 && !isOR;
-  });
-
-  cumulativeInsuredDebts = finalExtractedInsuredDebts;
-
-  // Extract MEDICAL PLANS using Columns: A(0), B(1), D(3), M(12), W(22), AH(33), X(23), AG(32)
-  const medicalPlansRaw = rows.slice(startIdx).map(row => ({
-    colA: cleanAdmissionDateStr(row[0]),
-    colB: String(row[1] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colW: String(row[22] || "").trim(),
-    colAG: String(row[32] || "").trim(),
-    colAH: String(row[33] || "").trim(),
-    colX: String(row[23] || "").trim()
-  })).filter(p => {
-    const bLower = p.colB.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    if (!p.colB || p.colB === "") return false;
-    
-    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                     bLower === "id" || dLower === "patient name" ||
-                     (bLower.includes("bed") && dLower.includes("patient"));
-    if (isHeader) return false;
-
-    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-    if (isExcluded) return false;
-    return true;
-  });
-
-  cumulativeMedicalPlans = medicalPlansRaw;
-
-  // Extract COMPANION STATUS: A(0), B(1), D(3), I(8), M(12), W(22)
-  const companionStatusRaw = rows.slice(startIdx).map(row => ({
-    colA: String(row[0] || "").trim(),
-    colB: String(row[1] || "").trim(),
-    colD: String(row[3] || "").trim(),
-    colI: String(row[8] || "").trim(),
-    colM: String(row[12] || "").trim(),
-    colW: String(row[22] || "").trim()
-  })).filter(p => {
-    const bLower = p.colB.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    if (!p.colB || p.colB === "") return false;
-    
-    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                     bLower === "id" || dLower === "patient name" ||
-                     (bLower.includes("bed") && dLower.includes("patient"));
-    if (isHeader) return false;
-
-    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-    if (isExcluded) return false;
-    return true;
-  });
-
-  cumulativeCompanionStatus = companionStatusRaw;
-
-  // Extract LOS Sheet: A(0), B(1), C(2), D(3), M(12), O(14), S(18), U(20), W(22), X(23), AL(37)
-  const losSheetRaw = rows.slice(startIdx).map(row => {
-    const parsedLOS = parseFloat(String(row[18] || "").replace(/[^0-9.-]+/g, "")) || 0;
-    const parsedALOS = parseFloat(String(row[37] || "").replace(/[^0-9.-]+/g, "")) || 0;
-    return {
-      colA: cleanAdmissionDateStr(row[0]),
-      colB: cleanRoomStr(String(row[1] || "").trim()),
-      colC: String(row[2] || "").trim().replace(/^0+/, ""),
-      colD: String(row[3] || "").trim(),
-      colM: String(row[12] || "").trim(),
-      colO: String(row[14] || "").trim(),
-      colS: String(row[18] || "").trim(),
-      colU: String(row[20] || "").trim(),
-      colW: String(row[22] || "").trim(),
-      colX: String(row[23] || "").trim(),
-      colAL: String(row[37] || "").trim(),
-      // Aligned with relational DB schema
-      date: cleanAdmissionDateStr(row[0]),
-      room: cleanRoomStr(String(row[1] || "").trim()),
-      mrn: String(row[2] || "").trim().replace(/^0+/, ""),
-      name: String(row[3] || "").trim(),
-      contractor: String(row[12] || "").trim(),
-      diagnosis: String(row[14] || "").trim(),
-      los: parsedLOS,
-      expectedDischarge: String(row[20] || "").trim(),
-      physician: String(row[22] || "").trim(),
-      specialty: String(row[23] || "").trim(),
-      alos: parsedALOS,
-      variance: parsedLOS - parsedALOS
-    };
-  }).filter(p => {
-    const bLower = p.colB.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    if (!p.colB || p.colB === "") return false;
-    
-    const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
-                     dLower === "patient" || dLower === "المريض" || dLower === "name" ||
-                     bLower === "id" || dLower === "patient name" ||
-                     (bLower.includes("bed") && dLower.includes("patient"));
-    if (isHeader) return false;
-
-    const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
-    if (isExcluded) return false;
-
-    const isOR = isOperatingRoom(p.colB);
-    if (isOR) return false;
-    if (isProcedureOrTemporaryRoom(p.colB)) return false;
-    if (isManuallyDischarged(p.colD)) return false;
-    return true;
-  });
-
-  cumulativeLOS = losSheetRaw;
   uploadedAt = Date.now();
   setSaveChangeType('upload');
   await saveData();
@@ -8733,8 +8551,10 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
   });
 
   plans.forEach((p, index) => {
-    // SBAR data exactly from source is in colAH (no rewriting)
-    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, p.colAG || "", p.colAH];
+    // SBAR data from source with robust clinical fallback
+    const sbarText = p.colAH || p.colAI || p.planText || p.notes || p.handover || p.progressNotes || p.colI || "خطة علاجية تحت المتابعة السريرية";
+    const updateDate = p.colAG || cleanAdmissionDateStr(p.colA) || "-";
+    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     
     // Alternating background logic: White then Header Color
@@ -11289,16 +11109,22 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
 
   // 1. Normalize data with fallback lookups
   const normalizedData = (data || []).map(p => {
-    const los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
-    const alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    let los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
+    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
+    if (los <= 0 && date) {
+      los = calculateCurrentLOS(date);
+    }
+    const room = cleanRoomStr(p.room || p.colB || "");
+    let specialty = p.specialty || p.colX || "";
+    let alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    if (alos <= 0) {
+      alos = getDefaultBenchmarkALOS(room, specialty);
+    }
     let mrn = p.mrn || p.colC || "";
     let physician = p.physician || p.colW || "";
-    let specialty = p.specialty || p.colX || "";
     let diagnosis = p.diagnosis || p.colO || "";
     const name = p.name || p.colD || "";
-    const room = cleanRoomStr(p.room || p.colB || "");
     const contractor = p.contractor || p.colM || "";
-    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
 
     // Fallback enrichment if mrn, physician, or specialty are missing
     if ((!mrn || !physician || !specialty) && (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0)) {
@@ -13873,16 +13699,22 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
 
   // 1. Normalize data with fallback lookups
   const normalizedData = (data || []).map(p => {
-    const los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
-    const alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    let los = typeof p.los === 'number' ? p.los : (parseFloat(String(p.colS || p.los || "").replace(/[^0-9.-]+/g, "")) || 0);
+    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
+    if (los <= 0 && date) {
+      los = calculateCurrentLOS(date);
+    }
+    const room = cleanRoomStr(p.room || p.colB || "");
+    let specialty = p.specialty || p.colX || "";
+    let alos = typeof p.alos === 'number' ? p.alos : (parseFloat(String(p.colAL || p.alos || "").replace(/[^0-9.-]+/g, "")) || 0);
+    if (alos <= 0) {
+      alos = getDefaultBenchmarkALOS(room, specialty);
+    }
     let mrn = p.mrn || p.colC || "";
     let physician = p.physician || p.colW || "";
-    let specialty = p.specialty || p.colX || "";
     let diagnosis = p.diagnosis || p.colO || "";
     const name = p.name || p.colD || "";
-    const room = cleanRoomStr(p.room || p.colB || "");
     const contractor = p.contractor || p.colM || "";
-    const date = p.date || p.colA || cleanAdmissionDateStr(p.colA) || "";
 
     // Fallback enrichment if mrn, physician, or specialty are missing
     if ((!mrn || !physician || !specialty) && (cumulativeMedicalPlans && cumulativeMedicalPlans.length > 0)) {
