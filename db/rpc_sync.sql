@@ -32,7 +32,7 @@ BEGIN
 
     -- Patient Contact & Clinical attributes
     v_phone := NULLIF(TRIM(rec->>'Mobile'), '');
-    IF v_phone = 'None' OR v_phone = 'nan' THEN v_phone := NULL; END IF;
+    IF v_phone = 'None' OR v_phone = 'nan' OR v_phone = 'null' OR v_phone = 'undefined' THEN v_phone := NULL; END IF;
 
     v_specialty := COALESCE(NULLIF(TRIM(rec->>'Specialty'), ''), 'Physician');
     IF v_specialty = 'None' OR v_specialty = 'nan' THEN v_specialty := 'Physician'; END IF;
@@ -46,7 +46,11 @@ BEGIN
     VALUES (v_mrn, COALESCE(NULLIF(TRIM(rec->>'Patient'), ''), 'Unknown Patient'), v_phone, NOW())
     ON CONFLICT (mrn) DO UPDATE 
     SET name = EXCLUDED.name, 
-        phone = COALESCE(EXCLUDED.phone, patients.phone),
+        phone = CASE 
+          WHEN EXCLUDED.phone IS NOT NULL AND TRIM(EXCLUDED.phone) NOT IN ('', 'None', 'nan', 'null', 'undefined') 
+          THEN EXCLUDED.phone 
+          ELSE patients.phone 
+        END,
         updated_at = NOW()
     RETURNING id INTO p_id;
 
@@ -111,8 +115,16 @@ BEGIN
         physician_id = COALESCE(s_id, physician_id),
         contractor_name = COALESCE(v_contractor, contractor_name),
         financial_status = COALESCE(v_financial, financial_status),
-        total_invoice = CASE WHEN v_total_invoice > 0 THEN v_total_invoice ELSE total_invoice END,
-        remaining_debt = CASE WHEN v_remaining_debt > 0 THEN v_remaining_debt ELSE remaining_debt END,
+        total_invoice = CASE 
+          WHEN rec->>'Total Invoice' IS NOT NULL AND TRIM(rec->>'Total Invoice') NOT IN ('', 'None', 'nan', 'null') 
+          THEN v_total_invoice 
+          ELSE total_invoice 
+        END,
+        remaining_debt = CASE 
+          WHEN rec->>'Remaining Amount' IS NOT NULL AND TRIM(rec->>'Remaining Amount') NOT IN ('', 'None', 'nan', 'null') 
+          THEN v_remaining_debt 
+          ELSE remaining_debt 
+        END,
         notes = COALESCE(v_notes, notes),
         updated_at = NOW()
       WHERE id = a_id;

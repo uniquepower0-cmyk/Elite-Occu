@@ -295,6 +295,24 @@ function cleanRoomStr(s: string): string {
   return val;
 }
 
+function cleanPhoneStr(val: any): string {
+  if (val === null || val === undefined) return "";
+  let s = String(val).trim();
+  if (!s || s === "None" || s === "nan" || s === "null" || s === "undefined") return "";
+
+  // If Excel float e.g. "501234567.0" or "966501234567.0"
+  if (s.endsWith(".0")) {
+    s = s.slice(0, -2);
+  }
+  // Convert Arabic numerals to Western digits
+  s = s.replace(/[٠-٩]/g, d => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(d)]);
+  // Preserve leading plus if international
+  const hasPlus = s.startsWith("+");
+  s = s.replace(/[^\d]/g, "");
+  if (!s || s.length < 5) return "";
+  return hasPlus ? "+" + s : s;
+}
+
 function parseRoomNumbers(text: string): string[] {
   if (!text) return [];
   return text
@@ -517,7 +535,8 @@ function buildColumnIndexResolver(rows: any[][], maxHeaderRows = 5) {
         s.includes("patient") || s.includes("مريض") || s.includes("mrn") || 
         s.includes("admission") || s.includes("invoice") || s.includes("remaining") || 
         s.includes("handover") || s.includes("alos") || s.includes("los") || 
-        s.includes("ftotal") || s.includes("notes")
+        s.includes("ftotal") || s.includes("notes") ||
+        s.includes("mobile") || s.includes("phone") || s.includes("جوال") || s.includes("هاتف")
       ) {
         matchCount++;
       }
@@ -1480,6 +1499,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
   const colFinancialIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
   const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
 
   // 3. Extract Debts (Cash)
   const finalExtractedDebts = rows.slice(startIdx).map(row => {
@@ -1487,6 +1507,15 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     const rawAB = row[colRemainingIdx];
     const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
     const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
+    let mobile = cleanPhoneStr(row[colMobileIdx]);
+    if (!mobile && colMobileIdx !== 4 && row[4]) {
+      const mob4 = cleanPhoneStr(row[4]);
+      if (mob4.length >= 7) mobile = mob4;
+    }
+    if (!mobile && colMobileIdx !== 32 && row[32]) {
+      const mob32 = cleanPhoneStr(row[32]);
+      if (mob32.length >= 7) mobile = mob32;
+    }
     return {
       colA: cleanAdmissionDateStr(row[0]),
       room: cleanRoomStr(String(row[1] || "").trim()),
@@ -1501,7 +1530,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       valZ,
       valAB,
       totalInvoice: valZ,
-      remainingAmount: valAB
+      remainingAmount: valAB,
+      mobile: mobile || undefined,
+      phone: mobile || undefined
     };
   }).filter(p => {
     const fLower = p.colF.toLowerCase();
@@ -1529,6 +1560,15 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     const rawAB = row[colRemainingIdx];
     const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
     const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
+    let mobile = cleanPhoneStr(row[colMobileIdx]);
+    if (!mobile && colMobileIdx !== 4 && row[4]) {
+      const mob4 = cleanPhoneStr(row[4]);
+      if (mob4.length >= 7) mobile = mob4;
+    }
+    if (!mobile && colMobileIdx !== 32 && row[32]) {
+      const mob32 = cleanPhoneStr(row[32]);
+      if (mob32.length >= 7) mobile = mob32;
+    }
     return {
       colA: cleanAdmissionDateStr(row[0]),
       room: cleanRoomStr(String(row[1] || "").trim()),
@@ -1543,7 +1583,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       valZ,
       valAB,
       totalInvoice: valZ,
-      remainingAmount: valAB
+      remainingAmount: valAB,
+      mobile: mobile || undefined,
+      phone: mobile || undefined
     };
   }).filter(p => {
     const fLower = p.colF.toLowerCase();
@@ -3444,11 +3486,26 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       }
     }
 
+    const { findCol } = buildColumnIndexResolver(rows);
+    const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1);
+    const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
+    const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
+    const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
+    const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
+    const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
+    const colFinancialIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
+    const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
+    const colSpecIdx = findCol(["speciality", "specialty", "التخصص"], 23);
+    const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
+    const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
+    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 18);
+    const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
+
     const rpcPayload: any[] = [];
     rows.slice(startIdx).forEach(row => {
       if (!row || row.length === 0) return;
-      const room = cleanRoomStr(String(row[1] || "").trim());
-      const name = String(row[3] || "").trim();
+      const room = cleanRoomStr(String(row[colRoomIdx] || "").trim());
+      const name = String(row[colNameIdx] || "").trim();
       if (!room || !name) return;
       
       const rLower = room.toLowerCase();
@@ -3458,21 +3515,35 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       const rowStr = `${room} ${name}`.toLowerCase();
       if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return;
 
-      const mrn = String(row[2] || "").trim().replace(/^0+/, "");
+      const rawMrn = String(row[colMrnIdx] || "").trim();
+      const mrn = rawMrn.replace(/^0+/, "");
       const admDate = cleanAdmissionDateStr(row[0]);
-      const contractor = String(row[12] || "").trim();
-      const financial = String(row[5] || "").trim();
-      const physician = String(row[22] || "").trim();
-      const specialty = String(row[23] || "").trim();
-      const diagnosis = String(row[14] || "").trim();
-      const totalInvoice = String(row[25] || "").trim();
-      const remainingAmount = String(row[27] || "").trim();
-      const mobile = String(row[32] || "").trim();
-      const los = String(row[18] || "").trim();
-      const alos = String(row[37] || "").trim();
+      const contractor = String(row[colContractorIdx] || "").trim();
+      const financial = String(row[colFinancialIdx] || "").trim();
+      const physician = String(row[colPhysIdx] || "").trim();
+      const specialty = String(row[colSpecIdx] || "").trim();
+      const diagnosis = String(row[colDiagIdx] || "").trim();
+      
+      const rawTot = row[colTotalIdx];
+      const rawRem = row[colRemainingIdx];
+      const totalInvoice = (rawTot !== undefined && rawTot !== null && String(rawTot).trim() !== "") ? String(rawTot).trim().replace(/,/g, "") : "0";
+      const remainingAmount = (rawRem !== undefined && rawRem !== null && String(rawRem).trim() !== "") ? String(rawRem).trim().replace(/,/g, "") : "0";
+      
+      let mobile = cleanPhoneStr(row[colMobileIdx]);
+      if (!mobile && colMobileIdx !== 4 && row[4]) {
+        const mob4 = cleanPhoneStr(row[4]);
+        if (mob4.length >= 7) mobile = mob4;
+      }
+      if (!mobile && colMobileIdx !== 32 && row[32]) {
+        const mob32 = cleanPhoneStr(row[32]);
+        if (mob32.length >= 7) mobile = mob32;
+      }
+
+      const los = String(row[colLosIdx] || "").trim();
+      const alos = String(row[colAlosIdx] || "").trim();
 
       rpcPayload.push({
-        MRN: mrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`,
+        MRN: mrn || rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`,
         Patient: name,
         "Bed#": room,
         "Floor Name": getAccommodationCategory(room) || "",
@@ -3480,8 +3551,8 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
         AdmissionDate: admDate || null,
         ContractorName: contractor || null,
         "Financial Status": financial || null,
-        "Total Invoice": totalInvoice || "0",
-        "Remaining Amount": remainingAmount || "0",
+        "Total Invoice": totalInvoice,
+        "Remaining Amount": remainingAmount,
         Specialty: specialty || null,
         Diagnosis: diagnosis || null,
         Mobile: mobile || null,
@@ -3498,6 +3569,42 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       console.warn('[Relational Sync] RPC Notice (function might not be deployed yet):', error.message);
     } else {
       console.log(`[Relational Sync] Successfully synchronized ${rpcPayload.length} admissions via RPC.`);
+    }
+
+    // Direct batch upsert to patients table to guarantee phone numbers and names are updated
+    try {
+      const ptsWithPhone: any[] = [];
+      const ptsWithoutPhone: any[] = [];
+      const seenMrns = new Set<string>();
+
+      for (const item of rpcPayload) {
+        const pMrn = item.MRN;
+        if (!pMrn || pMrn.startsWith("UNKNOWN-") || seenMrns.has(pMrn)) continue;
+        seenMrns.add(pMrn);
+        if (item.Mobile) {
+          ptsWithPhone.push({
+            mrn: pMrn,
+            name: item.Patient || 'Unknown Patient',
+            phone: item.Mobile,
+            updated_at: new Date().toISOString()
+          });
+        } else {
+          ptsWithoutPhone.push({
+            mrn: pMrn,
+            name: item.Patient || 'Unknown Patient',
+            updated_at: new Date().toISOString()
+          });
+        }
+      }
+
+      for (let i = 0; i < ptsWithPhone.length; i += 50) {
+        await supabaseAdmin.from('patients').upsert(ptsWithPhone.slice(i, i + 50), { onConflict: 'mrn' });
+      }
+      for (let i = 0; i < ptsWithoutPhone.length; i += 50) {
+        await supabaseAdmin.from('patients').upsert(ptsWithoutPhone.slice(i, i + 50), { onConflict: 'mrn' });
+      }
+    } catch (ptErr: any) {
+      console.warn('[Relational Sync] Direct patient upsert notice:', ptErr?.message || ptErr);
     }
   } catch (err: any) {
     console.warn('[Relational Occupancy Sync] Notice:', err?.message || err);
@@ -3548,24 +3655,54 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
     const allDebts = [...(cashDebts || []), ...(insuredDebts || [])];
     if (allDebts.length === 0) return;
 
-    for (const d of allDebts) {
-      const mrn = d.mrn ? String(d.mrn).trim() : null;
-      const patientName = d.colD ? String(d.colD).trim() : null;
-      if (!mrn && !patientName) continue;
+    console.log(`[Relational Debts Sync] Synchronizing remaining and total for ${allDebts.length} debt records...`);
+    let updatedCount = 0;
+    let insertedCount = 0;
 
-      const totalVal = parseFloat(String(d.colZ).replace(/[^0-9.-]+/g, "")) || 0;
-      const remainingVal = parseFloat(String(d.colAB).replace(/[^0-9.-]+/g, "")) || 0;
-      const contractor = d.colM ? String(d.colM).trim() : null;
-      const financial = d.colF ? String(d.colF).trim() : null;
+    for (const d of allDebts) {
+      const rawMrn = d.mrn ? String(d.mrn).trim() : null;
+      const cleanMrn = rawMrn ? rawMrn.replace(/^0+/, "") : null;
+      const patientName = d.colD ? String(d.colD).trim() : (d.patientName || null);
+      if (!rawMrn && !patientName) continue;
+
+      const rawTotal = d.totalInvoice !== undefined ? d.totalInvoice : (d.valZ !== undefined ? d.valZ : d.colZ);
+      const rawRemaining = d.remainingAmount !== undefined ? d.remainingAmount : (d.valAB !== undefined ? d.valAB : d.colAB);
+      const totalVal = typeof rawTotal === 'number' ? rawTotal : (parseFloat(String(rawTotal || "").replace(/[^0-9.-]+/g, "")) || 0);
+      const remainingVal = typeof rawRemaining === 'number' ? rawRemaining : (parseFloat(String(rawRemaining || "").replace(/[^0-9.-]+/g, "")) || 0);
+      const contractor = d.colM ? String(d.colM).trim() : (d.contractor || null);
+      const financial = d.colF ? String(d.colF).trim() : (d.financial || null);
+      const phoneVal = cleanPhoneStr(d.phone || d.mobile || d.colE);
 
       let patientId: string | null = null;
-      if (mrn) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', mrn).maybeSingle();
+      // 1. Try finding patient by clean MRN
+      if (cleanMrn) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', cleanMrn).maybeSingle();
         if (pt) patientId = pt.id;
       }
-      if (!patientId && patientName) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', patientName).maybeSingle();
+      // 2. Try raw MRN
+      if (!patientId && rawMrn && rawMrn !== cleanMrn) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', rawMrn).maybeSingle();
         if (pt) patientId = pt.id;
+      }
+      // 3. Try patient name
+      if (!patientId && patientName) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').ilike('name', patientName).maybeSingle();
+        if (pt) patientId = pt.id;
+      }
+
+      // 4. If patient still not found, upsert patient so debt record is not lost
+      if (!patientId) {
+        const targetMrn = cleanMrn || rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`;
+        const newPtData: any = {
+          mrn: targetMrn,
+          name: patientName || 'Unknown Patient',
+          updated_at: new Date().toISOString()
+        };
+        if (phoneVal) newPtData.phone = phoneVal;
+        const { data: newPt } = await supabaseAdmin.from('patients').upsert(newPtData, { onConflict: 'mrn' }).select('id').maybeSingle();
+        if (newPt) patientId = newPt.id;
+      } else if (phoneVal) {
+        await supabaseAdmin.from('patients').update({ phone: phoneVal, updated_at: new Date().toISOString() }).eq('id', patientId);
       }
 
       if (patientId) {
@@ -3577,14 +3714,56 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
         if (contractor) updatePayload.contractor_name = contractor;
         if (financial) updatePayload.financial_status = financial;
 
-        await supabaseAdmin
+        // Try updating active admission first
+        const { data: updatedAdms } = await supabaseAdmin
           .from('admissions')
           .update(updatePayload)
           .eq('patient_id', patientId)
-          .eq('status', 'Admitted');
+          .eq('status', 'Admitted')
+          .select('id');
+
+        if (updatedAdms && updatedAdms.length > 0) {
+          updatedCount++;
+        } else {
+          // If no active admission was updated, update any recent admission for this patient
+          const { data: existingAdm } = await supabaseAdmin
+            .from('admissions')
+            .select('id')
+            .eq('patient_id', patientId)
+            .order('admission_date', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (existingAdm) {
+            await supabaseAdmin
+              .from('admissions')
+              .update(updatePayload)
+              .eq('id', existingAdm.id);
+            updatedCount++;
+          } else {
+            // Insert a new admission record for this patient with the debt values
+            let roomId: string | null = null;
+            const roomName = d.room || d.colB;
+            if (roomName) {
+              const { data: rData } = await supabaseAdmin.from('rooms').select('id').eq('name', roomName).maybeSingle();
+              if (rData) roomId = rData.id;
+            }
+            await supabaseAdmin.from('admissions').insert({
+              patient_id: patientId,
+              room_id: roomId,
+              contractor_name: contractor,
+              financial_status: financial,
+              total_invoice: totalVal,
+              remaining_debt: remainingVal,
+              admission_date: d.colA ? (cleanAdmissionDateStr(d.colA) || new Date().toISOString()) : new Date().toISOString(),
+              status: 'Admitted'
+            });
+            insertedCount++;
+          }
+        }
       }
     }
-    console.log(`[Relational Sync] Audited debts dual-synchronized to admissions table.`);
+    console.log(`[Relational Debts Sync] Successfully synced debts to admissions table: ${updatedCount} updated, ${insertedCount} inserted.`);
   } catch (err) {
     console.warn('[Relational Debts Sync] Notice:', err);
   }

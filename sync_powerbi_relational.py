@@ -112,10 +112,10 @@ def fetch_existing_supabase_state():
 # --- FETCH & SYNC ---
 
 def fetch_powerbi_and_sync():
-    export_url = "http://10.12.0.11/powerbi/api/explore/reports/ca9cb448-faa1-41d0-ad8e-f4af14ec7bbd/export/xlsx"
+    export_url = "http://10.12.0.11/powerbi/api/explore/reports/9a59efe5-2722-460f-a720-a720d8d1c298/export/xlsx"
     
     raw_payload = """
-    {"exportDataType":0,"executeSemanticQueryRequest":{"version":"1.0.0","queries":[{"Query":{"Commands":[{"SemanticQueryDataShapeCommand":{"Query":{"Version":2,"From":[{"Name":"b","Entity":"BedoCCupancy_Soussi","Type":0}],"Select":[{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"AdmissionDate"},"Name":"BedoCCupancy_Soussi.AdmissionDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Bed#"},"Name":"BedoCCupancy_Soussi.BedName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Patient"},"Name":"BedoCCupancy_Soussi.EnglishFullName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Financial Status"},"Name":"BedoCCupancy_Soussi.FinancialStatusGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Floor Name"},"Name":"BedoCCupancy_Soussi.FloorName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Notes"},"Name":"BedoCCupancy_Soussi.Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Age"},"Name":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"MRN"},"Name":"BedoCCupancy_Soussi.PatientBarcode"},{"Measure":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Companions #"},"Name":"BedoCCupancy_Soussi.Count of Companions"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PaymentBy"},"Name":"BedoCCupancy_Soussi.PaymentBy"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Visit"},"Name":"BedoCCupancy_Soussi.VisitTypeGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ContractorName"},"Name":"BedoCCupancy_Soussi.ContractorName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FloorStructureName_EN"},"Name":"BedoCCupancy_Soussi.FloorStructureName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG"},"Name":"BedoCCupancy_Soussi.DRG"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Created by DIG"},"Name":"BedoCCupancy_Soussi.Expr1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG Diagnosis"},"Name":"BedoCCupancy_Soussi.Expr3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LOS"},"Name":"Sum(BedoCCupancy_Soussi.LOS)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"GeometricMeanLOS"},"Name":"BedoCCupancy_Soussi.GeometricMeanLOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Speciality"},"Name":"BedoCCupancy_Soussi.Speciality"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Date Of Patients"},"Name":"BedoCCupancy_Soussi.NewPatients"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ALOS"},"Name":"BedoCCupancy_Soussi.ALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ICD-10 Diagnosis"},"Name":"BedoCCupancy_Soussi.Name"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Payments"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Payments)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Weight"},"Name":"BedoCCupancy_Soussi.Weight"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Difference"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Difference)"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FTotal"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.FTotal)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"SSO"},"Name":"BedoCCupancy_Soussi.1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC Weight"},"Name":"BedoCCupancy_Soussi.2"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC GLOS"},"Name":"BedoCCupancy_Soussi.3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes"},"Name":"BedoCCupancy_Soussi.PrograssNotes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"OR Notes"},"Name":"BedoCCupancy_Soussi.OR Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Operations"},"Name":"BedoCCupancy_Soussi.Operations"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DefaultMobile"},"Name":"BedoCCupancy_Soussi.DefaultMobile"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"TreatingPhysicianName"},"Name":"BedoCCupancy_Soussi.TreatingPhysicianName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes Creation Date"},"Name":"BedoCCupancy_Soussi.PrograssNotes Creation Date"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"},"Name":"BedoCCupancy_Soussi.DischargeExpectedDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Hand Over"},"Name":"BedoCCupancy_Soussi.Hand Over"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteALOS"},"Name":"BedoCCupancy_Soussi.EliteALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteWeight"},"Name":"BedoCCupancy_Soussi.EliteWeight"}],"OrderBy":[{"Direction":2,"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"}}}]},"Binding":{"Primary":{"Groupings":[{"Projections":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38],"Subtotal":0}]},"DataReduction":{"Primary":{"Top":{"Count":1000000}},"Secondary":{"Top":{"Count":100}}},"Version":1}}},{"ExportDataCommand":{"Columns":[{"QueryName":"BedoCCupancy_Soussi.AdmissionDate","Name":"AdmissionDate"},{"QueryName":"BedoCCupancy_Soussi.BedName_EN","Name":"Bed#"},{"QueryName":"BedoCCupancy_Soussi.EnglishFullName","Name":"Patient"},{"QueryName":"BedoCCupancy_Soussi.FinancialStatusGUID","Name":"Financial Status"},{"QueryName":"BedoCCupancy_Soussi.FloorName_EN","Name":"Floor Name"},{"QueryName":"BedoCCupancy_Soussi.Notes","Name":"Notes"},{"QueryName":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)","Name":"Age"},{"QueryName":"BedoCCupancy_Soussi.PatientBarcode","Name":"MRN"},{"QueryName":"BedoCCupancy_Soussi.Count of Companions","Name":"Companions #"},{"QueryName":"BedoCCupancy_Soussi.PaymentBy","Name":"PaymentBy"},{"QueryName":"BedoCCupancy_Soussi.VisitTypeGUID","Name":"Visit"},{"QueryName":"BedoCCupancy_Soussi.ContractorName","Name":"ContractorName"},{"QueryName":"BedoCCupancy_Soussi.FloorStructureName_EN","Name":"FloorStructureName_EN"},{"QueryName":"BedoCCupancy_Soussi.DRG","Name":"DRG"},{"QueryName":"BedoCCupancy_Soussi.Expr1","Name":"Created by DIG"},{"QueryName":"BedoCCupancy_Soussi.Expr3","Name":"DRG Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.LOS)","Name":"LOS"},{"QueryName":"BedoCCupancy_Soussi.GeometricMeanLOS","Name":"GLOS"},{"QueryName":"BedoCCupancy_Soussi.Speciality","Name":"Speciality"},{"QueryName":"BedoCCupancy_Soussi.NewPatients","Name":"Date Of Patients"},{"QueryName":"BedoCCupancy_Soussi.ALOS","Name":"ALOS"},{"QueryName":"BedoCCupancy_Soussi.Name","Name":"ICD-10 Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.Payments)","Name":"Sum of Payments"},{"QueryName":"BedoCCupancy_Soussi.Weight","Name":"Weight"},{"QueryName":"Sum(BedoCCupancy_Soussi.Difference)","Name":"Remaining"},{"QueryName":"Sum(BedoCCupancy_Soussi.FTotal)","Name":"Sum of FTotal"},{"QueryName":"BedoCCupancy_Soussi.1","Name":"SSO"},{"QueryName":"BedoCCupancy_Soussi.2","Name":"LTC Weight"},{"QueryName":"BedoCCupancy_Soussi.3","Name":"LTC GLOS"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes","Name":"Handover"},{"QueryName":"BedoCCupancy_Soussi.OR Notes","Name":"OR Notes"},{"QueryName":"BedoCCupancy_Soussi.Operations","Name":"Operations"},{"QueryName":"BedoCCupancy_Soussi.DefaultMobile","Name":"DefaultMobile"},{"QueryName":"BedoCCupancy_Soussi.TreatingPhysicianName","Name":"TreatingPhysicianName"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes Creation Date","Name":"PrograssNotes Creation Date"},{"QueryName":"BedoCCupancy_Soussi.DischargeExpectedDate","Name":"DischargeExpectedDate"},{"QueryName":"BedoCCupancy_Soussi.Hand Over","Name":"Prograssnotes"},{"QueryName":"BedoCCupancy_Soussi.EliteALOS","Name":"EliteALOS"},{"QueryName":"BedoCCupancy_Soussi.EliteWeight","Name":"EliteWeight"}],"Ordering":[0,1,7,2,32,3,6,4,5,8,10,9,11,12,21,13,14,15,16,17,20,23,33,18,19,25,22,24,26,27,28,35,34,29,36,30,31,37,38],"FiltersDescription":"No filters applied"}}]}}],"cancelQueries":[],"modelId":"477100070","userPreferredLocale":"en-US"}}
+    {"exportDataType":0,"executeSemanticQueryRequest":{"version":"1.0.0","queries":[{"Query":{"Commands":[{"SemanticQueryDataShapeCommand":{"Query":{"Version":2,"From":[{"Name":"b","Entity":"BedOccupancyMedicalDirector_soussi","Type":0}],"Select":[{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"AdmissionDate"},"Name":"BedoCCupancy_Soussi.AdmissionDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Bed#"},"Name":"BedoCCupancy_Soussi.BedName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Patient"},"Name":"BedoCCupancy_Soussi.EnglishFullName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Financial Status"},"Name":"BedoCCupancy_Soussi.FinancialStatusGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Floor Name"},"Name":"BedoCCupancy_Soussi.FloorName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Notes"},"Name":"BedoCCupancy_Soussi.Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Age"},"Name":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"MRN"},"Name":"BedoCCupancy_Soussi.PatientBarcode"},{"Measure":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Companions #"},"Name":"BedoCCupancy_Soussi.Count of Companions"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PaymentBy"},"Name":"BedoCCupancy_Soussi.PaymentBy"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Visit"},"Name":"BedoCCupancy_Soussi.VisitTypeGUID"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ContractorName"},"Name":"BedoCCupancy_Soussi.ContractorName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FloorStructureName_EN"},"Name":"BedoCCupancy_Soussi.FloorStructureName_EN"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG"},"Name":"BedoCCupancy_Soussi.DRG"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Created by DIG"},"Name":"BedoCCupancy_Soussi.Expr1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DRG Diagnosis"},"Name":"BedoCCupancy_Soussi.Expr3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LOS"},"Name":"Sum(BedoCCupancy_Soussi.LOS)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"GeometricMeanLOS"},"Name":"BedoCCupancy_Soussi.GeometricMeanLOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Speciality"},"Name":"BedoCCupancy_Soussi.Speciality"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Date Of Patients"},"Name":"BedoCCupancy_Soussi.NewPatients"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ALOS"},"Name":"BedoCCupancy_Soussi.ALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"ICD-10 Diagnosis"},"Name":"BedoCCupancy_Soussi.Name"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Payments"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Payments)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Weight"},"Name":"BedoCCupancy_Soussi.Weight"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Difference"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.Difference)"},{"Aggregation":{"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"FTotal"}},"Function":0},"Name":"Sum(BedoCCupancy_Soussi.FTotal)"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"SSO"},"Name":"BedoCCupancy_Soussi.1"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC Weight"},"Name":"BedoCCupancy_Soussi.2"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"LTC GLOS"},"Name":"BedoCCupancy_Soussi.3"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes"},"Name":"BedoCCupancy_Soussi.PrograssNotes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"OR Notes"},"Name":"BedoCCupancy_Soussi.OR Notes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Operations"},"Name":"BedoCCupancy_Soussi.Operations"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DefaultMobile"},"Name":"BedoCCupancy_Soussi.DefaultMobile"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"TreatingPhysicianName"},"Name":"BedoCCupancy_Soussi.TreatingPhysicianName"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"PrograssNotes Creation Date"},"Name":"BedoCCupancy_Soussi.PrograssNotes Creation Date"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"},"Name":"BedoCCupancy_Soussi.DischargeExpectedDate","NativeReferenceName":"DischargeExpectedDate"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Hand Over"},"Name":"BedoCCupancy_Soussi.Hand Over","NativeReferenceName":"Prograssnotes"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteALOS"},"Name":"BedoCCupancy_Soussi.EliteALOS","NativeReferenceName":"EliteALOS"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"EliteWeight"},"Name":"BedoCCupancy_Soussi.EliteWeight","NativeReferenceName":"EliteWeight"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"Medication Names"},"Name":"BedOccupancyMedicalDirector_soussi.Medication Names","NativeReferenceName":"Medication Names"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"IntialAssessment"},"Name":"BedOccupancyMedicalDirector_soussi.IntialAssessment","NativeReferenceName":"IntialAssessment"},{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"VTE Summary"},"Name":"BedOccupancyMedicalDirector_soussi.VTE Summary","NativeReferenceName":"VTE Summary"}],"OrderBy":[{"Direction":2,"Expression":{"Column":{"Expression":{"SourceRef":{"Source":"b"}},"Property":"DischargeExpectedDate"}}}]},"Binding":{"Primary":{"Groupings":[{"Projections":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41],"Subtotal":0}]},"DataReduction":{"Primary":{"Top":{"Count":1000000}},"Secondary":{"Top":{"Count":100}}},"Version":1}}},{"ExportDataCommand":{"Columns":[{"QueryName":"BedoCCupancy_Soussi.AdmissionDate","Name":"AdmissionDate"},{"QueryName":"BedoCCupancy_Soussi.BedName_EN","Name":"Bed#"},{"QueryName":"BedoCCupancy_Soussi.EnglishFullName","Name":"Patient"},{"QueryName":"BedoCCupancy_Soussi.FinancialStatusGUID","Name":"Financial Status"},{"QueryName":"BedoCCupancy_Soussi.FloorName_EN","Name":"Floor Name"},{"QueryName":"BedoCCupancy_Soussi.Notes","Name":"Notes"},{"QueryName":"Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)","Name":"Age"},{"QueryName":"BedoCCupancy_Soussi.PatientBarcode","Name":"MRN"},{"QueryName":"BedoCCupancy_Soussi.Count of Companions","Name":"Companions #"},{"QueryName":"BedoCCupancy_Soussi.PaymentBy","Name":"PaymentBy"},{"QueryName":"BedoCCupancy_Soussi.VisitTypeGUID","Name":"Visit"},{"QueryName":"BedoCCupancy_Soussi.ContractorName","Name":"ContractorName"},{"QueryName":"BedoCCupancy_Soussi.FloorStructureName_EN","Name":"FloorStructureName_EN"},{"QueryName":"BedoCCupancy_Soussi.DRG","Name":"DRG"},{"QueryName":"BedoCCupancy_Soussi.Expr1","Name":"Created by DIG"},{"QueryName":"BedoCCupancy_Soussi.Expr3","Name":"DRG Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.LOS)","Name":"LOS"},{"QueryName":"BedoCCupancy_Soussi.GeometricMeanLOS","Name":"GLOS"},{"QueryName":"BedoCCupancy_Soussi.Speciality","Name":"Speciality"},{"QueryName":"BedoCCupancy_Soussi.NewPatients","Name":"Date Of Patients"},{"QueryName":"BedoCCupancy_Soussi.ALOS","Name":"ALOS"},{"QueryName":"BedoCCupancy_Soussi.Name","Name":"ICD-10 Diagnosis"},{"QueryName":"Sum(BedoCCupancy_Soussi.Payments)","Name":"Sum of Payments"},{"QueryName":"BedoCCupancy_Soussi.Weight","Name":"Weight"},{"QueryName":"Sum(BedoCCupancy_Soussi.Difference)","Name":"Remaining"},{"QueryName":"Sum(BedoCCupancy_Soussi.FTotal)","Name":"Sum of FTotal"},{"QueryName":"BedoCCupancy_Soussi.1","Name":"SSO"},{"QueryName":"BedoCCupancy_Soussi.2","Name":"LTC Weight"},{"QueryName":"BedoCCupancy_Soussi.3","Name":"LTC GLOS"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes","Name":"Handover"},{"QueryName":"BedoCCupancy_Soussi.OR Notes","Name":"OR Notes"},{"QueryName":"BedoCCupancy_Soussi.Operations","Name":"Operations"},{"QueryName":"BedoCCupancy_Soussi.DefaultMobile","Name":"DefaultMobile"},{"QueryName":"BedoCCupancy_Soussi.TreatingPhysicianName","Name":"TreatingPhysicianName"},{"QueryName":"BedoCCupancy_Soussi.PrograssNotes Creation Date","Name":"PrograssNotes Creation Date"},{"QueryName":"BedoCCupancy_Soussi.DischargeExpectedDate","Name":"DischargeExpectedDate"},{"QueryName":"BedoCCupancy_Soussi.Hand Over","Name":"Prograssnotes"},{"QueryName":"BedoCCupancy_Soussi.EliteALOS","Name":"EliteALOS"},{"QueryName":"BedoCCupancy_Soussi.EliteWeight","Name":"EliteWeight"},{"QueryName":"BedOccupancyMedicalDirector_soussi.Medication Names","Name":"Medication Names"},{"QueryName":"BedOccupancyMedicalDirector_soussi.IntialAssessment","Name":"IntialAssessment"},{"QueryName":"BedOccupancyMedicalDirector_soussi.VTE Summary","Name":"VTE Summary"}],"Ordering":[0,1,7,2,32,3,6,4,5,8,10,9,11,12,21,13,14,15,16,17,20,23,33,18,19,25,22,24,26,27,28,35,34,29,36,30,31,37,38,39,40,41],"FiltersDescription":"No filters applied"}}]}}],"cancelQueries":[],"modelId":"282542116","userPreferredLocale":"en-US"}}
     """
     
     while True:
@@ -147,6 +147,31 @@ def fetch_powerbi_and_sync():
                 if isinstance(val, (datetime.date, datetime.datetime, pd.Timestamp)): return val.isoformat()
                 return val
 
+            def clean_num(val):
+                if val is None or pd.isna(val): return "0.00"
+                s = str(val).strip().replace(",", "")
+                try:
+                    f = float(s)
+                    return f"{f:.2f}"
+                except:
+                    return "0.00"
+
+            def clean_phone(val):
+                if val is None or pd.isna(val): return ""
+                s = str(val).strip()
+                if s.endswith(".0"):
+                    s = s[:-2]
+                if s.lower() in ["none", "nan", "null", "undefined", ""]:
+                    return ""
+                arabic_digits = "٠١٢٣٤٥٦٧٨٩"
+                for idx, c in enumerate(arabic_digits):
+                    s = s.replace(c, str(idx))
+                has_plus = s.startswith("+")
+                s = re.sub(r"[^\d]", "", s)
+                if not s or len(s) < 5:
+                    return ""
+                return ("+" + s) if has_plus else s
+
             raw_records = df.to_dict(orient="records")
             new_occupancy_rows = [{k: clean_val(v) for k, v in row.items()} for row in raw_records]
 
@@ -165,23 +190,39 @@ def fetch_powerbi_and_sync():
                     
                 ad_val = get_val(row, ["AdmissionDate"])
                 
+                mob_val = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
+                if not mob_val:
+                    m4 = clean_phone(row.get("Unnamed: 4"))
+                    if len(m4) >= 7:
+                        mob_val = m4
+                    else:
+                        m32 = clean_phone(row.get("Unnamed: 32"))
+                        if len(m32) >= 7:
+                            mob_val = m32
+
+                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                clean_mrn = raw_mrn.lstrip("0") if raw_mrn else ""
+
                 rpc_payload.append({
-                    "MRN": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])),
-                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "Unknown"),
+                    "MRN": clean_mrn or raw_mrn or f"UNKNOWN-{uuid.uuid4().hex[:8]}",
+                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "Unknown Patient"),
                     "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])),
-                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 5"])),
+                    "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7", "Unnamed: 4", "Unnamed: 5"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])),
                     "AdmissionDate": str(ad_val) if ad_val else None,
                     "ContractorName": str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])),
                     "Financial Status": str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])),
-                    "Total Invoice": str(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
-                    "Remaining Amount": str(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])),
+                    "Total Invoice": clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
+                    "Remaining Amount": clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])),
                     "Specialty": str(get_val(row, ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"])),
                     "Diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"])),
-                    "Mobile": str(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 32"])),
+                    "Mobile": mob_val,
                     "LOS": str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 18"])),
                     "EliteALOS": str(get_val(row, ["EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"])),
-                    "ExpectedDischarge": str(get_val(row, ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 20"]))
+                    "ExpectedDischarge": str(get_val(row, ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])),
+                    "Medication Names": str(get_val(row, ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"])),
+                    "IntialAssessment": str(get_val(row, ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"])),
+                    "VTE Summary": str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"]))
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -190,13 +231,52 @@ def fetch_powerbi_and_sync():
             if rpc_res.status_code not in [200, 204]:
                 log(f"RPC Relational Sync Failed: {rpc_res.text}")
             else:
-                log("Relational Database successfully synchronized!")
+                log("Relational Database admissions successfully synchronized via RPC!")
+
+            # Also directly upsert patients to PostgreSQL to guarantee phone numbers and names are updated
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            try:
+                pts_with_phone = []
+                pts_without_phone = []
+                seen_mrns = set()
+                for item in rpc_payload:
+                    m = item.get("MRN")
+                    if not m or m.startswith("UNKNOWN-") or m in seen_mrns:
+                        continue
+                    seen_mrns.add(m)
+                    p_entry = {
+                        "mrn": m,
+                        "name": item.get("Patient") or "Unknown Patient",
+                        "updated_at": now_iso
+                    }
+                    if item.get("Mobile"):
+                        p_entry["phone"] = item["Mobile"]
+                        pts_with_phone.append(p_entry)
+                    else:
+                        pts_without_phone.append(p_entry)
+
+                base_rest = SUPABASE_REST_URL.replace("/granular_state", "")
+                if pts_with_phone:
+                    requests.post(
+                        f"{base_rest}/patients?on_conflict=mrn",
+                        headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
+                        json=pts_with_phone,
+                        verify=False
+                    )
+                if pts_without_phone:
+                    requests.post(
+                        f"{base_rest}/patients?on_conflict=mrn",
+                        headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
+                        json=pts_without_phone,
+                        verify=False
+                    )
+            except Exception as pt_err:
+                log(f"Notice: Direct patient upsert: {pt_err}")
 
             # ---------------------------------------------------------
             # 2. LEGACY JSON SYNC (Keeps existing frontend alive)
             # ---------------------------------------------------------
             existing = fetch_existing_supabase_state()
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
             legacy_occupancy_rows = []
             
@@ -206,9 +286,10 @@ def fetch_powerbi_and_sync():
                 "Unnamed: 1": "Bed",
                 "Unnamed: 2": "MRN",
                 "Unnamed: 3": "Patient",
-                "Unnamed: 4": "Floor Name",
+                "Unnamed: 4": "DefaultMobile",
                 "Unnamed: 5": "Financial Class",
-                "Unnamed: 6": "Service",
+                "Unnamed: 6": "Age",
+                "Unnamed: 7": "Floor Name",
                 "Unnamed: 8": "Companion",
                 "Unnamed: 9": "Patient Share",
                 "Unnamed: 10": "Contractor Share",
@@ -222,10 +303,14 @@ def fetch_powerbi_and_sync():
                 "Unnamed: 24": "Transfer History",
                 "Unnamed: 25": "Total Invoice",
                 "Unnamed: 27": "Remaining Amount",
-                "Unnamed: 32": "Medical Plan AG",
+                "Unnamed: 32": "Creation Date",
                 "Unnamed: 33": "Medical Plan AH",
                 "Unnamed: 34": "Medical Plan AI",
-                "Unnamed: 37": "EliteALOS"
+                "Unnamed: 37": "EliteALOS",
+                "Unnamed: 38": "EliteWeight",
+                "Unnamed: 39": "Medication Names",
+                "Unnamed: 40": "IntialAssessment",
+                "Unnamed: 41": "VTE Summary"
             }
             legacy_occupancy_rows.append(fake_header)
             
@@ -234,7 +319,7 @@ def fetch_powerbi_and_sync():
                 if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1", ""] or "no filters" in bed_val.lower():
                     continue
                     
-                # Dynamically construct all 39 possible columns to support every legacy sheet (Debts, LOS, Medical Plans, etc)
+                # Dynamically construct all columns to support every legacy sheet (Debts, LOS, Medical Plans, etc)
                 legacy_row = {}
                 
                 # We handle the primary known columns with explicit fallbacks
@@ -243,10 +328,10 @@ def fetch_powerbi_and_sync():
                     1: ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"],
                     2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"],
                     3: ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"],
-                    4: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 4"],
+                    4: ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Floor Name", "Unnamed: 4"],
                     5: ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
-                    6: ["Service", "الخدمة", "Unnamed: 6"],
-                    7: ["Age", "PatientAgeDBComputed", "Unnamed: 7"],
+                    6: ["Age", "PatientAgeDBComputed", "Service", "الخدمة", "Unnamed: 6"],
+                    7: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Age", "PatientAgeDBComputed", "Unnamed: 7"],
                     8: ["Companion", "Companions #", "Count of Companions", "مرافق", "Unnamed: 8"],
                     9: ["Patient Share", "PatientAmount", "مساهمة المريض", "نسبة المريض", "Unnamed: 9"],
                     10: ["Contractor Share", "ContractorAmount", "مساهمة الجهة", "تحمل الجهة", "Unnamed: 10"],
@@ -259,14 +344,26 @@ def fetch_powerbi_and_sync():
                     23: ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"],
                     24: ["Transfer History", "Unnamed: 24"],
                     25: ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
+                    26: ["Sum of Payments", "Payments", "Unnamed: 26"],
                     27: ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
+                    28: ["SSO", "Unnamed: 28"],
+                    29: ["LTC Weight", "Unnamed: 29"],
+                    30: ["LTC GLOS", "Unnamed: 30"],
+                    31: ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31"],
                     32: ["PrograssNotes Creation Date", "Creation Date", "Medical Plan AG", "تاريخ الخطة", "DefaultMobile", "Unnamed: 32"],
                     33: ["Handover", "PrograssNotes", "Medical Plan AH", "الخطة الطبية", "Operations", "Unnamed: 33"],
                     34: ["Prograssnotes", "Hand Over", "Notes", "Medical Plan AI", "Unnamed: 34"],
-                    37: ["EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"]
+                    35: ["OR Notes", "Unnamed: 35"],
+                    36: ["Operations", "Unnamed: 36"],
+                    37: ["EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"],
+                    38: ["EliteWeight", "Weight", "Unnamed: 38"],
+                    39: ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"],
+                    40: ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"],
+                    41: ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"]
                 }
                 
-                for i in range(39):
+                total_cols = max(42, len(header_row))
+                for i in range(total_cols):
                     col_key = "No filters applied" if i == 0 else f"Unnamed: {i}"
                     if i in known_mappings:
                         val = clean_val(get_val(row, known_mappings[i]))
@@ -277,18 +374,89 @@ def fetch_powerbi_and_sync():
                         
                 legacy_occupancy_rows.append(legacy_row)
             
+            # ---------------------------------------------------------
+            # 3. EXTRACT AND SYNC DEBTS (Cash & Insured)
+            # ---------------------------------------------------------
+            cash_debts = []
+            insured_debts = []
+            
+            for row in raw_records:
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
+                if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1", ""] or "no filters" in bed_val.lower():
+                    continue
+                patient_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                if not patient_name or patient_name.lower() in ["patient", "المريض", "name", "unknown"]:
+                    continue
+                
+                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip()
+                contractor = str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip()
+                f_low = fin_status.lower()
+                m_low = contractor.lower()
+                
+                if "home care" in m_low or "homecare" in m_low:
+                    continue
+                    
+                cash_keywords = ["cash", "كاش", "elite", "نقدي", "نقدى", "افراد", "أفراد", "شخصي", "شخصى", "self", "private", "personal", "individual", "بدون جهة", "بدون جهه", "عميل"]
+                is_cash = any(kw in f_low or kw in m_low for kw in cash_keywords)
+                
+                t_val = clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"]))
+                r_val = clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"]))
+                
+                f_tot = float(t_val)
+                f_rem = float(r_val)
+                
+                debt_mob = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
+                if not debt_mob:
+                    dm4 = clean_phone(row.get("Unnamed: 4"))
+                    if len(dm4) >= 7: debt_mob = dm4
+
+                debt_item = {
+                    "colA": clean_val(get_val(row, ["AdmissionDate"])),
+                    "room": bed_val,
+                    "mrn": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip(),
+                    "colD": patient_name,
+                    "colF": fin_status,
+                    "colM": contractor,
+                    "physician": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
+                    "colZ": str(f_tot),
+                    "colAB": str(f_rem),
+                    "valZ": f_tot,
+                    "valAB": f_rem,
+                    "totalInvoice": f_tot,
+                    "remainingAmount": f_rem,
+                    "mobile": debt_mob,
+                    "phone": debt_mob
+                }
+                
+                if is_cash:
+                    cash_debts.append(debt_item)
+                else:
+                    insured_debts.append(debt_item)
+
+            log(f"Extracted {len(cash_debts)} Cash Debts and {len(insured_debts)} Insured Debts.")
+
             # Send the reconstructed rigid array so legacy backend parses it flawlessly
             granular_nodes = [
                 {
                     "path": "state/occupancy",
                     "data": {"current": legacy_occupancy_rows, "previous": existing.get("previous")},
                     "updated_at": now_iso
+                },
+                {
+                    "path": "state/debts",
+                    "data": {"items": cash_debts},
+                    "updated_at": now_iso
+                },
+                {
+                    "path": "state/insured_debts",
+                    "data": {"items": insured_debts},
+                    "updated_at": now_iso
                 }
             ]
             sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
             
             if sb_response.status_code in [200, 201]:
-                log("Legacy JSON state updated.")
+                log(f"Legacy JSON state and Debts successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured).")
                 return True
 
         except Exception as e:
