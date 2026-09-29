@@ -1487,10 +1487,11 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   // Build dynamic column index resolver to handle exports with dynamic column positions
   const { findCol } = buildColumnIndexResolver(rows);
 
+  const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
   const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
   const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
   const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33);
-  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات"], 34);
+  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], 34);
   const colUpdateDateIdx = findCol(["prograssnotes creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32);
   const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 18);
   const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
@@ -1498,64 +1499,76 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
   const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
   const colFinancialIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
+  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "الدفع"], 11);
+  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
   const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
   const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
 
-  // 3. Extract Debts (Cash)
-  const finalExtractedDebts = rows.slice(startIdx).map(row => {
-    const rawZ = row[colTotalIdx];
-    const rawAB = row[colRemainingIdx];
-    const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
-    const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
-    let mobile = cleanPhoneStr(row[colMobileIdx]);
-    if (!mobile && colMobileIdx !== 4 && row[4]) {
-      const mob4 = cleanPhoneStr(row[4]);
-      if (mob4.length >= 7) mobile = mob4;
-    }
-    if (!mobile && colMobileIdx !== 32 && row[32]) {
-      const mob32 = cleanPhoneStr(row[32]);
-      if (mob32.length >= 7) mobile = mob32;
-    }
-    return {
-      colA: cleanAdmissionDateStr(row[0]),
-      room: cleanRoomStr(String(row[1] || "").trim()),
-      mrn: String(row[2] || "").trim(),
-      colD: String(row[3] || "").trim(),
-      colF: String(row[colFinancialIdx] || "").trim(),
-      colM: String(row[colContractorIdx] || "").trim(),
-      colL: String(row[11] || "").trim(),
-      physician: String(row[colPhysIdx] || "").trim(),
-      colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
-      colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
-      valZ,
-      valAB,
-      totalInvoice: valZ,
-      remainingAmount: valAB,
-      mobile: mobile || undefined,
-      phone: mobile || undefined
-    };
-  }).filter(p => {
-    const fLower = p.colF.toLowerCase();
-    const mLower = p.colM.toLowerCase();
-    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-    const fMatch = (fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                    fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                    fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                    mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                    mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                    mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل")) && !isHomeCare;
-    const lLower = p.colL.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-    const isOR = isOperatingRoom(p.room);
-    return fMatch && isNotPhysician && !isPhysicianPayment && !isOR && p.colD.length > 0;
-  });
-  cumulativeDebts = finalExtractedDebts;
+  const isExcludedDebtCase = (p: {
+    room: string;
+    patientName: string;
+    financialStatus: string;
+    contractor: string;
+    paymentBy: string;
+    notes?: string;
+  }): boolean => {
+    if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room)) return true;
 
-  // 4. Extract Insured Debts
-  const finalExtractedInsuredDebts = rows.slice(startIdx).map(row => {
+    const fLower = (p.financialStatus || "").toLowerCase();
+    const mLower = (p.contractor || "").toLowerCase();
+    const lLower = (p.paymentBy || "").toLowerCase();
+    const nLower = (p.notes || "").toLowerCase();
+    const dLower = (p.patientName || "").toLowerCase();
+
+    // Exclude header rows
+    if (dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name") return true;
+
+    // Exclude Home Care
+    if (mLower.includes("home care") || mLower.includes("homecare") || fLower.includes("home care") || fLower.includes("homecare")) return true;
+
+    // 1. Exclude if payment is by physician
+    if (
+      lLower.includes("physician") ||
+      lLower.includes("طبيب") ||
+      lLower.includes("فيزيشن") ||
+      lLower.includes("doctor") ||
+      lLower.includes("دكتور")
+    ) {
+      return true;
+    }
+
+    // Direct physician/doctor contractor or financial status
+    if (
+      mLower === "طبيب" || mLower === "physician" || mLower === "doctor" || mLower === "دكتور" ||
+      fLower === "طبيب" || fLower === "physician" || fLower === "doctor" || fLower === "دكتور"
+    ) {
+      return true;
+    }
+
+    // 2. Exclude if patient is Doctor Case / حالة طبيب
+    const doctorCaseKeywords = [
+      "doctor case", "doctor_case", "doctorcase", "doctor-case",
+      "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+      "cash doctor", "كاش طبيب", "كاش دكتور",
+      "doctor case surgery"
+    ];
+    for (const kw of doctorCaseKeywords) {
+      if (lLower.includes(kw) || fLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
+        return true;
+      }
+    }
+
+    // Check for standalone DC / D.C. abbreviation
+    const combined = ` ${lLower} ${fLower} ${mLower} ${nLower} `;
+    if (/\b(dc|d\.c\.)\b/i.test(combined)) {
+      return true;
+    }
+
+    return false;
+  };
+
+  // 3. Extract Raw Debts
+  const rawDebts = rows.slice(startIdx).map(row => {
     const rawZ = row[colTotalIdx];
     const rawAB = row[colRemainingIdx];
     const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
@@ -1569,14 +1582,27 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       const mob32 = cleanPhoneStr(row[32]);
       if (mob32.length >= 7) mobile = mob32;
     }
+
+    const admDate = cleanAdmissionDateStr(
+      (row[colAdmIdx] !== undefined && row[colAdmIdx] !== null && String(row[colAdmIdx]).trim() !== "") 
+        ? row[colAdmIdx] 
+        : row[0]
+    );
+    const payBy = String(row[colPaymentByIdx] || row[11] || "").trim();
+    const remarks = String(row[colRemarksIdx] || "").trim();
+
     return {
-      colA: cleanAdmissionDateStr(row[0]),
+      colA: admDate,
+      date: admDate,
+      admissionDate: admDate,
       room: cleanRoomStr(String(row[1] || "").trim()),
       mrn: String(row[2] || "").trim(),
       colD: String(row[3] || "").trim(),
       colF: String(row[colFinancialIdx] || "").trim(),
       colM: String(row[colContractorIdx] || "").trim(),
-      colL: String(row[11] || "").trim(),
+      colL: payBy,
+      paymentBy: payBy,
+      notes: remarks,
       physician: String(row[colPhysIdx] || "").trim(),
       colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
       colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
@@ -1587,26 +1613,43 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       mobile: mobile || undefined,
       phone: mobile || undefined
     };
-  }).filter(p => {
+  });
+
+  const cashKeywords = [
+    "cash", "كاش", "elite", "نقدي", "نقدى", "افراد", "أفراد", 
+    "شخصي", "شخصى", "self", "private", "personal", "individual", 
+    "بدون جهة", "بدون جهه", "عميل"
+  ];
+
+  cumulativeDebts = rawDebts.filter(p => {
     const fLower = p.colF.toLowerCase();
     const mLower = p.colM.toLowerCase();
-    const isHomeCare = mLower.includes("home care") || mLower.includes("homecare");
-    const isCash = fLower.includes("cash") || fLower.includes("كاش") || fLower.includes("elite") || 
-                   fLower.includes("نقدي") || fLower.includes("نقدى") || fLower.includes("افراد") || fLower.includes("أفراد") || 
-                   fLower.includes("شخصي") || fLower.includes("شخصى") || fLower.includes("self") || fLower.includes("private") || fLower.includes("personal") || fLower.includes("individual") || fLower.includes("بدون جهة") || fLower.includes("بدون جهه") || fLower.includes("عميل") ||
-                   mLower.includes("cash") || mLower.includes("كاش") || mLower.includes("elite") || 
-                   mLower.includes("نقدي") || mLower.includes("نقدى") || mLower.includes("افراد") || mLower.includes("أفراد") || 
-                   mLower.includes("شخصي") || mLower.includes("شخصى") || mLower.includes("self") || mLower.includes("private") || mLower.includes("personal") || mLower.includes("individual") || mLower.includes("بدون جهة") || mLower.includes("بدون جهه") || mLower.includes("عميل");
-    const isInsured = !isCash && !isHomeCare && (fLower.length > 0 || mLower.length > 0);
-    const lLower = p.colL.toLowerCase();
-    const dLower = p.colD.toLowerCase();
-    const isHeader = dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name";
-    const isNotPhysician = !lLower.includes("physician") && (lLower.length > 0 || p.room.length > 0 || (p.colD.length > 0 && !isHeader));
-    const isPhysicianPayment = lLower.includes("physician") || lLower.includes("طبيب") || lLower.includes("فيزيشن");
-    const isOR = isOperatingRoom(p.room);
-    return isInsured && isNotPhysician && !isPhysicianPayment && (p.valAB > 0 || p.valZ > 0) && p.colD.length > 0 && !isOR;
+    const isCash = cashKeywords.some(kw => fLower.includes(kw) || mLower.includes(kw));
+
+    return isCash && !isExcludedDebtCase({
+      room: p.room,
+      patientName: p.colD,
+      financialStatus: p.colF,
+      contractor: p.colM,
+      paymentBy: p.colL,
+      notes: p.notes
+    }) && p.colD.length > 0;
   });
-  cumulativeInsuredDebts = finalExtractedInsuredDebts;
+
+  cumulativeInsuredDebts = rawDebts.filter(p => {
+    const fLower = p.colF.toLowerCase();
+    const mLower = p.colM.toLowerCase();
+    const isCash = cashKeywords.some(kw => fLower.includes(kw) || mLower.includes(kw));
+
+    return !isCash && !isExcludedDebtCase({
+      room: p.room,
+      patientName: p.colD,
+      financialStatus: p.colF,
+      contractor: p.colM,
+      paymentBy: p.colL,
+      notes: p.notes
+    }) && (p.valAB > 0 || p.valZ > 0) && p.colD.length > 0;
+  });
 
   // 5. Extract Medical Plans
   const medicalPlansRaw = rows.slice(startIdx).map(row => {

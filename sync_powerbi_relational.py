@@ -158,6 +158,21 @@ def fetch_powerbi_and_sync():
                 except:
                     return "0.00"
 
+            def clean_date(val):
+                if val is None or pd.isna(val): return None
+                if isinstance(val, (datetime.date, datetime.datetime, pd.Timestamp)):
+                    return val.strftime("%m/%d/%Y %H:%M")
+                s = str(val).strip()
+                if not s or s.lower() in ["none", "nan", "null", "nat", "no filters applied", "admissiondate", "admission date"]:
+                    return None
+                try:
+                    dt = pd.to_datetime(s)
+                    if pd.notna(dt):
+                        return dt.strftime("%m/%d/%Y %H:%M")
+                except:
+                    pass
+                return s
+
             def clean_phone(val):
                 if val is None or pd.isna(val): return ""
                 s = str(val).strip()
@@ -190,7 +205,16 @@ def fetch_powerbi_and_sync():
                 if str(get_val(row, ["Bed#", "BedName_EN"])) == "Bed#":
                     continue
                     
-                ad_val = get_val(row, ["AdmissionDate"])
+                ad_val = clean_date(get_val(row, [
+                    "AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ",
+                    "BedoCCupancy_Soussi.AdmissionDate", "No filters applied", "Unnamed: 0"
+                ]))
+                if not ad_val:
+                    first_col_key = list(row.keys())[0] if len(row) > 0 else None
+                    if first_col_key and pd.notna(row.get(first_col_key)):
+                        candidate = clean_date(row.get(first_col_key))
+                        if candidate and str(candidate).lower() != "admissiondate":
+                            ad_val = candidate
                 
                 mob_val = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
                 if not mob_val:
@@ -382,22 +406,69 @@ def fetch_powerbi_and_sync():
             cash_debts = []
             insured_debts = []
             
+            def is_doctor_case_or_physician_payment(fin_status, contractor, payment_by, notes="", name=""):
+                f_low = (fin_status or "").lower()
+                m_low = (contractor or "").lower()
+                l_low = (payment_by or "").lower()
+                n_low = (notes or "").lower()
+                d_low = (name or "").lower()
+
+                # 1. Exclude if payment is by physician
+                physician_payment_kws = ["physician", "طبيب", "فيزيشن", "doctor", "دكتور"]
+                if any(kw in l_low for kw in physician_payment_kws):
+                    return True
+
+                if m_low in ["طبيب", "physician", "doctor", "دكتور"] or f_low in ["طبيب", "physician", "doctor", "دكتور"]:
+                    return True
+
+                # 2. Exclude if patient is Doctor Case / حالة طبيب
+                dc_keywords = [
+                    "doctor case", "doctor_case", "doctorcase", "doctor-case",
+                    "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+                    "cash doctor", "كاش طبيب", "كاش دكتور",
+                    "doctor case surgery"
+                ]
+                for kw in dc_keywords:
+                    if kw in l_low or kw in f_low or kw in m_low or kw in n_low or kw in d_low:
+                        return True
+
+                combined = f" {l_low} {f_low} {m_low} {n_low} "
+                if re.search(r"\b(dc|d\.c\.)\b", combined):
+                    return True
+
+                return False
+
             for row in raw_records:
                 bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
                 if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1", ""] or "no filters" in bed_val.lower():
                     continue
+
+                b_low = bed_val.lower()
+                if (
+                    b_low in ["or", "o.r", "or1", "or2", "or3", "or4", "or5", "or6", "عمليات", "غرفة عمليات"] or
+                    b_low.startswith("or-") or b_low.startswith("or ") or b_low.startswith("or -")
+                ):
+                    continue
+
                 patient_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
                 if not patient_name or patient_name.lower() in ["patient", "المريض", "name", "unknown"]:
                     continue
                 
                 fin_status = str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip()
                 contractor = str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip()
+                pay_by = str(get_val(row, ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11", "Unnamed: 9"]) or "").strip()
+                notes_val = str(get_val(row, ["Notes", "Remarks", "ملاحظات", "Unnamed: 8", "Unnamed: 5"]) or "").strip()
+                
                 f_low = fin_status.lower()
                 m_low = contractor.lower()
                 
-                if "home care" in m_low or "homecare" in m_low:
+                if "home care" in m_low or "homecare" in m_low or "home care" in f_low or "homecare" in f_low:
                     continue
                     
+                # Exclude if patient is Doctor Case or payment is by physician
+                if is_doctor_case_or_physician_payment(fin_status, contractor, pay_by, notes_val, patient_name):
+                    continue
+
                 cash_keywords = ["cash", "كاش", "elite", "نقدي", "نقدى", "افراد", "أفراد", "شخصي", "شخصى", "self", "private", "personal", "individual", "بدون جهة", "بدون جهه", "عميل"]
                 is_cash = any(kw in f_low or kw in m_low for kw in cash_keywords)
                 
@@ -412,13 +483,30 @@ def fetch_powerbi_and_sync():
                     dm4 = clean_phone(row.get("Unnamed: 4"))
                     if len(dm4) >= 7: debt_mob = dm4
 
+                # Admission Date resolution
+                adm_date = clean_date(get_val(row, [
+                    "AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ",
+                    "BedoCCupancy_Soussi.AdmissionDate", "No filters applied", "Unnamed: 0"
+                ]))
+                if not adm_date:
+                    first_col_key = list(row.keys())[0] if len(row) > 0 else None
+                    if first_col_key and pd.notna(row.get(first_col_key)):
+                        candidate = clean_date(row.get(first_col_key))
+                        if candidate and str(candidate).lower() != "admissiondate":
+                            adm_date = candidate
+
                 debt_item = {
-                    "colA": clean_val(get_val(row, ["AdmissionDate"])),
+                    "colA": str(adm_date) if adm_date else "",
+                    "date": str(adm_date) if adm_date else "",
+                    "admissionDate": str(adm_date) if adm_date else "",
                     "room": bed_val,
                     "mrn": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip(),
                     "colD": patient_name,
                     "colF": fin_status,
                     "colM": contractor,
+                    "colL": pay_by,
+                    "paymentBy": pay_by,
+                    "notes": notes_val,
                     "physician": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
                     "colZ": str(f_tot),
                     "colAB": str(f_rem),
@@ -433,7 +521,8 @@ def fetch_powerbi_and_sync():
                 if is_cash:
                     cash_debts.append(debt_item)
                 else:
-                    insured_debts.append(debt_item)
+                    if f_rem > 0 or f_tot > 0:
+                        insured_debts.append(debt_item)
 
             log(f"Extracted {len(cash_debts)} Cash Debts and {len(insured_debts)} Insured Debts.")
 
