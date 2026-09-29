@@ -7,6 +7,7 @@ import json
 import time
 import urllib3
 import datetime
+import zoneinfo
 import requests
 import schedule
 import pandas as pd
@@ -15,6 +16,22 @@ from requests_ntlm import HttpNtlmAuth
 
 # Suppress insecure HTTPS connection warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+CAIRO_TZ = zoneinfo.ZoneInfo("Africa/Cairo")
+
+def get_cairo_now():
+    return datetime.datetime.now(CAIRO_TZ)
+
+def is_today_cairo(iso_str, today_cairo_str):
+    if not iso_str:
+        return False
+    try:
+        clean = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.datetime.fromisoformat(clean)
+        dt_cairo = dt.astimezone(CAIRO_TZ)
+        return dt_cairo.strftime("%Y-%m-%d") == today_cairo_str
+    except:
+        return False
 
 # --- CONFIGURATION & CREDENTIALS ---
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://uuvomcxbgldgtmuqtymk.supabase.co")
@@ -89,27 +106,45 @@ def fortinet_reconnect():
         failure_countdown(5, "Fortinet Authentication")
 
 # --- LEGACY STATE (Kept alive to prevent frontend breaking during transition) ---
-def fetch_existing_supabase_state():
-    get_url = f"{SUPABASE_REST_URL}?or=(path.like.state/*,path.like.settings/*)&select=path,data"
+def fetch_existing_supabase_state(cairo_date_str=None):
+    if not cairo_date_str:
+        cairo_date_str = get_cairo_now().strftime("%Y-%m-%d")
+    get_url = f"{SUPABASE_REST_URL}?or=(path.like.state/*,path.like.settings/*)&select=path,data,updated_at"
     state_map = {}
+    time_map = {}
     try:
         res = requests.get(get_url, headers=SUPABASE_HEADERS, timeout=15, verify=False)
         if res.status_code == 200:
             for record in res.json():
-                state_map[record["path"]] = record["data"]
+                p = record.get("path")
+                if p:
+                    state_map[p] = record.get("data")
+                    time_map[p] = record.get("updated_at")
     except:
         pass
     
     # Minimal fallback mappings
     dataset = state_map.get("state/dataset") or {}
     occ = state_map.get("state/occupancy") or {}
+
+    # Dialysis cases: only keep if updated TODAY in Cairo time (otherwise start empty for new day)
     dial = state_map.get("state/dialysis") or {}
-    existing_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
+    raw_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
+    dial_updated = time_map.get("state/dialysis")
+    existing_dial = raw_dial if (raw_dial and is_today_cairo(dial_updated, cairo_date_str)) else []
+
+    # Transfers: only keep if updated TODAY in Cairo time (otherwise start empty for new day)
+    trans = state_map.get("state/transfers") or {}
+    raw_trans = trans.get("items", []) if isinstance(trans, dict) else (trans if isinstance(trans, list) else [])
+    trans_updated = time_map.get("state/transfers")
+    existing_trans = raw_trans if (raw_trans and is_today_cairo(trans_updated, cairo_date_str)) else []
+
     return {
         "previous": occ.get("previous") or dataset.get("current"),
+        "occupancy_current": occ.get("current") or [],
         "discharged": (state_map.get("state/discharged") or {}).get("patients", []),
         "entries": (state_map.get("state/entries") or {}).get("items", []),
-        "transfers": (state_map.get("state/transfers") or {}).get("items", []),
+        "transfers": existing_trans,
         "orList": (state_map.get("state/or_list") or {}).get("items", []),
         "dialysis": existing_dial
     }
@@ -302,10 +337,12 @@ def fetch_powerbi_and_sync():
             except Exception as pt_err:
                 log(f"Notice: Direct patient upsert: {pt_err}")
 
-            # ---------------------------------------------------------
-            # 2. LEGACY JSON SYNC (Keeps existing frontend alive)
-            # ---------------------------------------------------------
-            existing = fetch_existing_supabase_state()
+            cairo_now = get_cairo_now()
+            cairo_date_str = cairo_now.strftime("%Y-%m-%d")
+            cairo_time_str = cairo_now.strftime("%m/%d/%y %H:%M")
+            is_1159_pm = (cairo_now.hour == 23 and cairo_now.minute == 59)
+
+            existing = fetch_existing_supabase_state(cairo_date_str)
             
             legacy_occupancy_rows = []
             
@@ -650,13 +687,133 @@ def fetch_powerbi_and_sync():
                 }
                 dialysis_cases.append(dial_item)
 
-            cumulative_dialysis = list(existing.get("dialysis") or [])
-            for p in dialysis_cases:
-                p_name = p.get("name", "").strip().lower()
-                if p_name and not any(ex.get("name", "").strip().lower() == p_name for ex in cumulative_dialysis if ex.get("name")):
-                    cumulative_dialysis.append(p)
+            # ---------------------------------------------------------
+            # 5. CUMULATIVE DIALYSIS & TRANSFERS WITH 11:59 PM CAIRO RESET
+            # ---------------------------------------------------------
+            def is_procedure_or_temporary_room(room_str):
+                if not room_str:
+                    return True
+                r = str(room_str).strip().lower()
+                if r in ["or", "o.r", "or1", "or2", "or3", "or4", "or5", "or6", "عمليات", "غرفة عمليات"]:
+                    return True
+                if r.startswith("or-") or r.startswith("or ") or r.startswith("or -"):
+                    return True
+                proc_keywords = [
+                    "theatre", "cath lab", "dialysis", "diyalsis", "endoscopy", "recovery", "pacu", "holding"
+                ]
+                return any(kw in r for kw in proc_keywords)
 
-            log(f"Extracted {len(dialysis_cases)} Dialysis cases (cumulative today: {len(cumulative_dialysis)}).")
+            def extract_patient_rooms(rows):
+                res = {}
+                if not rows:
+                    return res
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    bed = str(get_val(r, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
+                    mrn = str(get_val(r, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip().lstrip("0")
+                    name = str(get_val(r, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                    phys = str(get_val(r, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip()
+                    cont = str(get_val(r, ["ContractorName", "Contractor", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip()
+                    
+                    if not name or name.lower() in ["patient", "المريض", "name", "unknown", "englishfullname"]:
+                        continue
+                    if not bed or bed.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "unnamed: 1", ""]:
+                        continue
+                        
+                    key = mrn if mrn else name.lower()
+                    res[key] = {
+                        "mrn": mrn,
+                        "name": name,
+                        "room": bed,
+                        "physician": phys,
+                        "contractor": cont
+                    }
+                return res
+
+            if is_1159_pm:
+                log(f"[Scheduled Reset] 11:59 PM Cairo time reached for {cairo_date_str}. Resetting daily dialysis cases and transfer cases...")
+                cumulative_dialysis = []
+                cumulative_transfers = []
+            else:
+                # Keep dialysis cumulative throughout the day
+                cumulative_dialysis = list(existing.get("dialysis") or [])
+                for p in dialysis_cases:
+                    p_name = p.get("name", "").strip().lower()
+                    if p_name and not any(ex.get("name", "").strip().lower() == p_name for ex in cumulative_dialysis if ex.get("name")):
+                        cumulative_dialysis.append(p)
+
+                # Keep transfers cumulative throughout the day
+                prev_rooms = extract_patient_rooms(existing.get("occupancy_current"))
+                curr_rooms = extract_patient_rooms(raw_records)
+                cumulative_transfers = list(existing.get("transfers") or [])
+
+                for key, curr in curr_rooms.items():
+                    if key in prev_rooms:
+                        prev = prev_rooms[key]
+                        prev_r = prev["room"].strip()
+                        curr_r = curr["room"].strip()
+                        if (
+                            prev_r and curr_r and
+                            prev_r.lower() != curr_r.lower() and
+                            not is_procedure_or_temporary_room(prev_r) and
+                            not is_procedure_or_temporary_room(curr_r)
+                        ):
+                            # Check if this patient already has a transfer record in cumulative_transfers
+                            rec = None
+                            for t in cumulative_transfers:
+                                t_mrn = str(t.get("mrn", "")).strip().lstrip("0")
+                                t_name = str(t.get("name", "")).strip().lower()
+                                if curr["mrn"] and t_mrn and curr["mrn"] == t_mrn:
+                                    rec = t
+                                    break
+                                if curr["name"].lower() == t_name:
+                                    rec = t
+                                    break
+
+                            if not rec:
+                                new_rec = {
+                                    "id": f"transfer-{int(time.time()*1000)}-{uuid.uuid4().hex[:6]}",
+                                    "name": curr["name"],
+                                    "mrn": curr["mrn"],
+                                    "initialRoom": prev_r,
+                                    "currentRoom": curr_r,
+                                    "journey": [prev_r, curr_r],
+                                    "history": [{
+                                        "fromRoom": prev_r,
+                                        "toRoom": curr_r,
+                                        "date": cairo_time_str,
+                                        "physician": curr["physician"] or prev.get("physician", ""),
+                                        "contractor": curr["contractor"] or prev.get("contractor", "")
+                                    }],
+                                    "lastTransferDate": cairo_time_str,
+                                    "physician": curr["physician"] or prev.get("physician", ""),
+                                    "contractor": curr["contractor"] or prev.get("contractor", ""),
+                                    "notes": f"Transferred from {prev_r} to {curr_r}"
+                                }
+                                cumulative_transfers.insert(0, new_rec)
+                                log(f"[Patient Transfer] \"{curr['name']}\" moved from \"{prev_r}\" to \"{curr_r}\"")
+                            else:
+                                journey = rec.get("journey") or [rec.get("initialRoom", prev_r)]
+                                history = rec.get("history") or []
+                                last_room = journey[-1] if journey else ""
+                                if last_room.lower() != curr_r.lower() and rec.get("currentRoom", "").lower() != curr_r.lower():
+                                    journey.append(curr_r)
+                                    history.append({
+                                        "fromRoom": prev_r,
+                                        "toRoom": curr_r,
+                                        "date": cairo_time_str,
+                                        "physician": curr["physician"] or prev.get("physician", ""),
+                                        "contractor": curr["contractor"] or prev.get("contractor", "")
+                                    })
+                                    rec["journey"] = journey
+                                    rec["history"] = history
+                                    rec["currentRoom"] = curr_r
+                                    rec["lastTransferDate"] = cairo_time_str
+                                    log(f"[Patient Transfer Journey Extended] \"{curr['name']}\" moved to \"{curr_r}\"")
+
+            log(f"Dialysis cases: {len(dialysis_cases)} current / {len(cumulative_dialysis)} cumulative today.")
+            log(f"Transfer cases: {len(cumulative_transfers)} cumulative today.")
 
             # Send the reconstructed rigid array so legacy backend parses it flawlessly
             granular_nodes = [
@@ -679,18 +836,35 @@ def fetch_powerbi_and_sync():
                     "path": "state/dialysis",
                     "data": {"items": cumulative_dialysis},
                     "updated_at": now_iso
+                },
+                {
+                    "path": "state/transfers",
+                    "data": {"items": cumulative_transfers},
+                    "updated_at": now_iso
                 }
             ]
             sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
             
             if sb_response.status_code in [200, 201]:
-                log(f"Legacy JSON state, Debts, and Dialysis successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis).")
+                log(f"Legacy JSON state, Debts, Dialysis, and Transfers successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers).")
                 return True
 
         except Exception as e:
             log(f"Sync error: {e}")
 
         failure_countdown(5, "Data Fetch & Sync")
+
+last_cairo_reset_date = ""
+
+def check_cairo_1159_reset():
+    global last_cairo_reset_date
+    now_cairo = get_cairo_now()
+    if now_cairo.hour == 23 and now_cairo.minute == 59:
+        today_str = now_cairo.strftime("%Y-%m-%d")
+        if last_cairo_reset_date != today_str:
+            last_cairo_reset_date = today_str
+            log(f"[Scheduled Reset] 11:59 PM Cairo time reached ({today_str}). Triggering daily reset for dialysis & transfers...")
+            run_sync_job()
 
 def run_sync_job():
     log("=== STARTING SYNC JOB ===")
@@ -703,6 +877,7 @@ if __name__ == "__main__":
     schedule.every(5).minutes.do(run_sync_job)
 
     while True:
+        check_cairo_1159_reset()
         schedule.run_pending()
         next_run = schedule.next_run()
         if next_run:
