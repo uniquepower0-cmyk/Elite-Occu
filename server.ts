@@ -336,16 +336,82 @@ function isOperatingRoom(roomStr: string): boolean {
 function isDialysisRoom(roomStr: string): boolean {
   if (!roomStr) return false;
   const r = String(roomStr).trim().toLowerCase();
-  return (
-    r.includes("dialysis") ||
-    r.includes("diyalsis") ||
-    r.includes("dialys") ||
-    r.includes("hemodialysis") ||
-    r.includes("غسيل") ||
-    r.includes("كلوي") ||
-    r.includes("كلى") ||
-    r.includes("استصفاء")
-  );
+  const roomDialysisKeywords = [
+    "dialysis", "diyalsis", "dialys", "hemodialysis", "haemodialysis", 
+    "hemo dialysis", "haemo dialysis", "غسيل", "استصفاء", "ديلزة"
+  ];
+  if (roomDialysisKeywords.some(kw => r.includes(kw))) {
+    return true;
+  }
+  if (/\b(hd|hemo|dial)\s*[-#_]?\s*\d*\b/i.test(r) && !r.includes("icu") && !r.includes("ccu")) {
+    return true;
+  }
+  return false;
+}
+
+function isDialysisCase(p: {
+  room?: string;
+  floor?: string;
+  service?: string;
+  specialty?: string;
+  diagnosis?: string;
+  financial?: string;
+  visitType?: string;
+  notes?: string;
+  name?: string;
+}): boolean {
+  if (!p) return false;
+  const r = (p.room || "").trim().toLowerCase();
+  const f = (p.floor || "").trim().toLowerCase();
+  const s = (p.service || "").trim().toLowerCase();
+  const spec = (p.specialty || "").trim().toLowerCase();
+  const diag = (p.diagnosis || "").trim().toLowerCase();
+  const fin = (p.financial || "").trim().toLowerCase();
+  const visit = (p.visitType || "").trim().toLowerCase();
+  const notes = (p.notes || "").trim().toLowerCase();
+
+  // 1. Room/Bed name matches
+  if (isDialysisRoom(r)) return true;
+
+  // 2. Floor / Ward / Unit matches
+  const floorKws = [
+    "dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى", 
+    "وحدة الغسيل", "قسم الغسيل", "استصفاء", "ديلزة", "وحدة غسيل"
+  ];
+  if (floorKws.some(kw => f.includes(kw))) return true;
+
+  // 3. Service matches
+  if (s.includes("dialysis") || s.includes("hemodialysis") || s.includes("haemodialysis") || s.includes("غسيل")) {
+    return true;
+  }
+
+  // 4. Visit type or Financial status indicates Dialysis session
+  if (
+    visit.includes("dialysis") || visit.includes("hemodialysis") || visit.includes("غسيل") ||
+    fin.includes("جلسة غسيل") || fin.includes("جلسات غسيل") || fin.includes("جلسه غسيل") ||
+    fin.includes("dialysis session")
+  ) {
+    return true;
+  }
+
+  // 5. Notes or Diagnosis explicitly indicates regular Hemodialysis / Dialysis session
+  const diagKws = [
+    "regular hemodialysis", "regular hd", "maintenance hemodialysis", "routine hemodialysis",
+    "جلسة غسيل كلوي", "جلسه غسيل كلوي", "جلسات غسيل", "غسيل كلوي دوري", "hemodialysis session"
+  ];
+  if (diagKws.some(kw => diag.includes(kw) || notes.includes(kw))) {
+    return true;
+  }
+
+  // 6. Specialty is Nephrology / Dialysis AND room is in Daycase / station / chair
+  if (
+    (spec.includes("dialysis") || spec.includes("غسيل") || spec.includes("nephrology") || spec.includes("أمراض كلى")) &&
+    (r.includes("dc") || r.includes("daycase") || r.includes("day case") || r.includes("chair") || r.includes("station") || f.includes("day") || s.includes("day"))
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function formatDateToUserFormat(dateObj: Date): string {
@@ -569,6 +635,95 @@ function buildColumnIndexResolver(rows: any[][], maxHeaderRows = 5) {
   };
 
   return { headerRowIdx, findCol };
+}
+
+const DIALYSIS_EXCLUSIONS = [
+  "homecare", "home care", "رعاية منزلية",
+  "wellbaby", "well baby", "حضانة طبيعية",
+  "endoscopy operation theatre", "operation room", "cath lab operation theatre", "غرفة عمليات"
+];
+
+function extractDialysisRowsFromData(sourceData: any[][], skip: number = 0): any[] {
+  if (!sourceData || sourceData.length <= skip) return [];
+
+  const { findCol } = buildColumnIndexResolver(sourceData);
+
+  const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
+  const colBedIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1);
+  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
+  const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال"], 4);
+  const colFinIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
+  const colFloorIdx = findCol(["floor name", "floorname_en", "floor", "floorstructurename_en", "الطابق", "الدور", "القسم"], 7);
+  const colVisitIdx = findCol(["visit", "visittypeguid", "visit type", "نوع الزيارة"], 10);
+  const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
+  const colSpecIdx = findCol(["speciality", "specialty", "التخصص"], 23);
+  const colNotesIdx = findCol(["notes", "remarks", "handover", "prograssnotes", "ملاحظات", "الخطة الطبية"], 8);
+
+  const results: any[] = [];
+
+  for (let i = skip; i < sourceData.length; i++) {
+    const row = sourceData[i];
+    if (!row || !Array.isArray(row)) continue;
+
+    const patientName = String(row[colNameIdx] ?? "").trim();
+    if (!patientName) continue;
+    const pLower = patientName.toLowerCase();
+    if (pLower === "patient" || pLower === "المريض" || pLower === "patient name" || pLower === "اسم المريض" || pLower === "name" || pLower === "unknown") {
+      continue;
+    }
+
+    const room = cleanRoomStr(String(row[colBedIdx] ?? "").trim());
+    const floor = String(row[colFloorIdx] ?? "").trim();
+    const contractor = String(row[colContractorIdx] ?? "").trim();
+    const financial = String(row[colFinIdx] ?? "").trim();
+    const visitType = String(row[colVisitIdx] ?? "").trim();
+    const diagnosis = String(row[colDiagIdx] ?? "").trim();
+    const physician = String(row[colPhysIdx] ?? "").trim();
+    const specialty = String(row[colSpecIdx] ?? "").trim();
+    const notes = String(row[colNotesIdx] ?? "").trim();
+    const mrn = String(row[colMrnIdx] ?? "").trim();
+    const mobile = cleanPhoneStr(row[colMobileIdx]);
+    const admDate = cleanAdmissionDateStr(row[colAdmIdx]);
+
+    if (isOperatingRoom(room)) continue;
+
+    const isDial = isDialysisCase({
+      room,
+      floor,
+      service: specialty || floor,
+      specialty,
+      diagnosis,
+      financial,
+      visitType,
+      notes,
+      name: patientName
+    });
+
+    if (!isDial) continue;
+
+    const rowAsString = `${room} ${patientName} ${floor} ${contractor} ${financial} ${visitType} ${notes}`.toLowerCase();
+    if (DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw))) {
+      continue;
+    }
+
+    results.push({
+      room: room || "Dialysis",
+      name: patientName,
+      physician: physician || "",
+      contractor: contractor || "",
+      date: admDate || "",
+      mrn: mrn || "",
+      mobile: mobile || "",
+      floor: floor || "",
+      diagnosis: diagnosis || "",
+      specialty: specialty || ""
+    });
+  }
+
+  return results;
 }
 
 function deduplicateZoneC(body: any[][]): any[][] {
@@ -1461,19 +1616,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   }
 
   // 2. Extract Dialysis
-  const dialRows = rows.slice(startIdx).map(row => ({
-    room: cleanRoomStr(String(row[1] || "").trim()),
-    name: String(row[3] || "").trim(),
-    physician: String(row[22] || "").trim(),
-    contractor: String(row[12] || "").trim(),
-    date: cleanAdmissionDateStr(row[0]),
-  })).filter(p => {
-    if (!p.room || !p.name) return false;
-    const isDialysis = isDialysisRoom(p.room);
-    const rowAsString = Object.values(p).join(" ").toLowerCase();
-    const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
-    return isDialysis && !isGloballyExcluded;
-  });
+  const dialRows = extractDialysisRowsFromData(rows, startIdx);
   if (cumulativeDialysis.length === 0) {
     cumulativeDialysis = dialRows;
   } else {
@@ -3241,25 +3384,7 @@ async function handleUnifiedUpload(req: any, res: any) {
       });
     }
 
-    const extractDialysisRows = (sourceData: any[][], skip: number) => {
-      if (!sourceData || sourceData.length <= skip) return [];
-      return sourceData.slice(skip).map(row => ({
-        room: cleanRoomStr(String(row[1] || "").trim()),
-        name: String(row[3] || "").trim(),
-        physician: String(row[22] || "").trim(),
-        contractor: String(row[12] || "").trim(),
-        date: cleanAdmissionDateStr(row[0]),
-      })).filter(p => {
-        if (!p.room || !p.name) return false;
-        const isDialysis = isDialysisRoom(p.room);
-        const rowAsString = Object.values(p).join(" ").toLowerCase();
-        const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
-        
-        return isDialysis && !isGloballyExcluded;
-      });
-    };
-
-    const dialRowsNew = extractDialysisRows(rows, startIdx);
+    const dialRowsNew = extractDialysisRowsFromData(rows, startIdx);
 
     // Determine previous patient baseline: use active hospitalData or previousHospitalData
     const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
@@ -4564,8 +4689,11 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
   });
 
   const processedData = dialysisPatients.filter(p => {
+    if (!p) return false;
+    const room = String(p.room || "").trim();
+    if (isOperatingRoom(room)) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
-    return !GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
+    return !DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw));
   });
 
   sheet.mergeCells('A1:F1');
@@ -5948,8 +6076,11 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
 
   // Apply room filter to dialysis: hide if moved to globally excluded room (just in case)
   const processedData = dialysisPatients.filter(p => {
+    if (!p) return false;
+    const room = String(p.room || "").trim();
+    if (isOperatingRoom(room)) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
-    return !GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
+    return !DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw));
   });
 
   processedData.sort((a, b) => {
@@ -6284,25 +6415,7 @@ async function updateHospitalState(rows: any[][]) {
     });
   }
 
-  const extractDialysisRows = (sourceData: any[][], skip: number) => {
-    if (!sourceData || sourceData.length <= skip) return [];
-    return sourceData.slice(skip).map(row => ({
-      room: cleanRoomStr(String(row[1] || "").trim()),
-      name: String(row[3] || "").trim(),
-      physician: String(row[22] || "").trim(),
-      contractor: String(row[12] || "").trim(),
-      date: cleanAdmissionDateStr(row[0]),
-    })).filter(p => {
-      if (!p.room || !p.name) return false;
-      const isDialysis = isDialysisRoom(p.room);
-      const rowAsString = Object.values(p).join(" ").toLowerCase();
-      const isGloballyExcluded = GLOBAL_EXCLUSIONS.some(kw => rowAsString.includes(kw));
-      
-      return isDialysis && !isGloballyExcluded;
-    });
-  };
-
-  const dialRowsNew = extractDialysisRows(rows, startIdx);
+  const dialRowsNew = extractDialysisRowsFromData(rows, startIdx);
 
   const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
 

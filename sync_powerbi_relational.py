@@ -103,12 +103,15 @@ def fetch_existing_supabase_state():
     # Minimal fallback mappings
     dataset = state_map.get("state/dataset") or {}
     occ = state_map.get("state/occupancy") or {}
+    dial = state_map.get("state/dialysis") or {}
+    existing_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
     return {
         "previous": occ.get("previous") or dataset.get("current"),
         "discharged": (state_map.get("state/discharged") or {}).get("patients", []),
         "entries": (state_map.get("state/entries") or {}).get("items", []),
         "transfers": (state_map.get("state/transfers") or {}).get("items", []),
-        "orList": (state_map.get("state/or_list") or {}).get("items", [])
+        "orList": (state_map.get("state/or_list") or {}).get("items", []),
+        "dialysis": existing_dial
     }
 
 # --- FETCH & SYNC ---
@@ -526,6 +529,135 @@ def fetch_powerbi_and_sync():
 
             log(f"Extracted {len(cash_debts)} Cash Debts and {len(insured_debts)} Insured Debts.")
 
+            # ---------------------------------------------------------
+            # 4. EXTRACT AND SYNC DIALYSIS CASES
+            # ---------------------------------------------------------
+            dialysis_cases = []
+
+            def is_dialysis_room(room_str):
+                if not room_str:
+                    return False
+                r = str(room_str).strip().lower()
+                room_kws = [
+                    "dialysis", "diyalsis", "dialys", "hemodialysis", "haemodialysis",
+                    "hemo dialysis", "haemo dialysis", "غسيل", "استصفاء", "ديلزة"
+                ]
+                if any(kw in r for kw in room_kws):
+                    return True
+                if re.search(r"\b(hd|hemo|dial)\s*[-#_]?\s*\d*\b", r) and "icu" not in r and "ccu" not in r:
+                    return True
+                return False
+
+            def is_dialysis_case(row):
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
+                patient_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                
+                if not patient_name or patient_name.lower() in ["patient", "المريض", "name", "unknown"]:
+                    return False
+                    
+                b_low = bed_val.lower()
+                if (
+                    b_low in ["or", "o.r", "or1", "or2", "or3", "or4", "or5", "or6", "عمليات", "غرفة عمليات"] or
+                    b_low.startswith("or-") or b_low.startswith("or ") or b_low.startswith("or -")
+                ):
+                    return False
+
+                floor_val = str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7"])).strip().lower()
+                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip().lower()
+                contractor = str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip().lower()
+                visit = str(get_val(row, ["Visit", "VisitTypeGUID", "Visit Type", "نوع الزيارة", "Unnamed: 10"]) or "").strip().lower()
+                specialty = str(get_val(row, ["Speciality", "Specialty", "التخصص", "Unnamed: 23"]) or "").strip().lower()
+                diag = str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"]) or "").strip().lower()
+                notes = str(get_val(row, ["Notes", "Remarks", "Handover", "Prograssnotes", "ملاحظات", "الخطة الطبية", "Unnamed: 8", "Unnamed: 33", "Unnamed: 34"]) or "").strip().lower()
+
+                # Home care / Well baby exclusions
+                if any(ex in contractor or ex in fin_status or ex in floor_val for ex in ["homecare", "home care", "wellbaby", "well baby"]):
+                    return False
+
+                # 1. Room/Bed name match
+                if is_dialysis_room(bed_val):
+                    return True
+
+                # 2. Floor / Ward / Unit match
+                floor_kws = [
+                    "dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى",
+                    "وحدة الغسيل", "قسم الغسيل", "استصفاء", "ديلزة", "وحدة غسيل"
+                ]
+                if any(kw in floor_val for kw in floor_kws):
+                    return True
+
+                # 3. Visit type or Financial status indicates Dialysis session
+                if (
+                    "dialysis" in visit or "hemodialysis" in visit or "غسيل" in visit or
+                    "جلسة غسيل" in fin_status or "جلسات غسيل" in fin_status or "جلسه غسيل" in fin_status or
+                    "dialysis session" in fin_status
+                ):
+                    return True
+
+                # 4. Notes or Diagnosis explicitly indicates regular Hemodialysis
+                diag_kws = [
+                    "regular hemodialysis", "regular hd", "maintenance hemodialysis", "routine hemodialysis",
+                    "جلسة غسيل كلوي", "جلسه غسيل كلوي", "جلسات غسيل", "غسيل كلوي دوري", "hemodialysis session",
+                    "chronic hemodialysis", "end stage renal", "esrd on hemodialysis", "esrd on hd"
+                ]
+                if any(kw in diag or kw in notes for kw in diag_kws):
+                    return True
+
+                # 5. Specialty is Nephrology / Dialysis AND bed/room is in daycase / DC / chair / station
+                if (
+                    any(kw in specialty for kw in ["dialysis", "غسيل", "nephrology", "أمراض كلى", "كلى", "امراض كلى"]) and
+                    any(kw in b_low or kw in floor_val for kw in ["dc", "daycase", "day case", "chair", "station", "day"])
+                ):
+                    return True
+
+                return False
+
+            for row in raw_records:
+                if not is_dialysis_case(row):
+                    continue
+
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
+                patient_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                
+                # Admission Date resolution
+                adm_date = clean_date(get_val(row, [
+                    "AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ",
+                    "BedoCCupancy_Soussi.AdmissionDate", "No filters applied", "Unnamed: 0"
+                ]))
+                if not adm_date:
+                    first_col_key = list(row.keys())[0] if len(row) > 0 else None
+                    if first_col_key and pd.notna(row.get(first_col_key)):
+                        candidate = clean_date(row.get(first_col_key))
+                        if candidate and str(candidate).lower() != "admissiondate":
+                            adm_date = candidate
+
+                mob = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
+                if not mob:
+                    dm4 = clean_phone(row.get("Unnamed: 4"))
+                    if len(dm4) >= 7: mob = dm4
+
+                dial_item = {
+                    "room": bed_val if bed_val else "Dialysis",
+                    "name": patient_name,
+                    "physician": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
+                    "contractor": str(get_val(row, ["ContractorName", "Contractor", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip(),
+                    "date": str(adm_date) if adm_date else "",
+                    "mrn": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip(),
+                    "mobile": mob,
+                    "floor": str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Unnamed: 7"])).strip(),
+                    "diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Unnamed: 14"])).strip(),
+                    "specialty": str(get_val(row, ["Speciality", "Specialty", "Unnamed: 23"])).strip()
+                }
+                dialysis_cases.append(dial_item)
+
+            cumulative_dialysis = list(existing.get("dialysis") or [])
+            for p in dialysis_cases:
+                p_name = p.get("name", "").strip().lower()
+                if p_name and not any(ex.get("name", "").strip().lower() == p_name for ex in cumulative_dialysis if ex.get("name")):
+                    cumulative_dialysis.append(p)
+
+            log(f"Extracted {len(dialysis_cases)} Dialysis cases (cumulative today: {len(cumulative_dialysis)}).")
+
             # Send the reconstructed rigid array so legacy backend parses it flawlessly
             granular_nodes = [
                 {
@@ -542,12 +674,17 @@ def fetch_powerbi_and_sync():
                     "path": "state/insured_debts",
                     "data": {"items": insured_debts},
                     "updated_at": now_iso
+                },
+                {
+                    "path": "state/dialysis",
+                    "data": {"items": cumulative_dialysis},
+                    "updated_at": now_iso
                 }
             ]
             sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
             
             if sb_response.status_code in [200, 201]:
-                log(f"Legacy JSON state and Debts successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured).")
+                log(f"Legacy JSON state, Debts, and Dialysis successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis).")
                 return True
 
         except Exception as e:
