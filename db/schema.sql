@@ -218,3 +218,10 @@ DO $$ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.or_cases;
 EXCEPTION WHEN others THEN null;
 END $$;
+
+-- 13. Ensure rtdb_nodes uses REPLICA IDENTITY DEFAULT to avoid broadcasting unmodified payload columns
+DO $$ BEGIN
+    ALTER TABLE public.rtdb_nodes REPLICA IDENTITY DEFAULT;
+EXCEPTION WHEN others THEN null;
+END $$;
+

@@ -435,8 +435,8 @@ export default function App() {
     console.log('[Auto-Fetch Schedule] Registering real-time database listener & auto-fetch schedule...');
     fetchData();
 
-    // 1. Supabase Realtime channel subscription on rtdb_nodes (granular state/* nodes and general updates)
-    // Only subscribe when the anon key is configured — without it requests return 401
+    // 1. Supabase Realtime channel subscription on rtdb_nodes filtered strictly to state/metadata
+    // Listening only to state/metadata avoids transmitting large datasets over WebSocket while catching all state updates
     let channel: ReturnType<typeof supabase.channel> | null = null;
     if (SUPABASE_ANON_KEY) {
       channel = supabase
@@ -446,19 +446,10 @@ export default function App() {
           {
             event: '*',
             schema: 'public',
-            table: 'rtdb_nodes'
+            table: 'rtdb_nodes',
+            filter: 'path=eq.state/metadata'
           },
           (payload: any) => {
-            const path = payload?.new?.path || payload?.old?.path || '';
-            // Determine what kind of change this is
-            const isStateChange = path.startsWith('state/') || path.startsWith('settings/') || path === 'audit_logs';
-            const isHistoryChange = path.startsWith('history/');
-
-            // Ignore paths we don't care about
-            if (path && !isStateChange && !isHistoryChange) {
-              return;
-            }
-
             const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
             if (newUpdatedAt && newUpdatedAt === lastDbTimestampRef.current) {
               // Already synced to this database snapshot, ignore echo
@@ -471,19 +462,13 @@ export default function App() {
 
             if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
             realtimeDebounceTimerRef.current = setTimeout(() => {
-              console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType, path);
+              console.log('⚡ [Auto-Fetch Schedule] Real-time database update detected from Supabase! Auto-fetching fresh state...', payload?.eventType);
               setIsDbUpdatePulsing(true);
               setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
 
-              // Refresh occupancy data on state/settings/audit changes (force bypass cache)
-              if (isStateChange) {
-                fetchData({ silent: true, force: true });
-              }
-
-              // Refresh occupancy history view on history/ path changes
-              if (isHistoryChange) {
-                setOccupancyHistoryRefreshKey(k => k + 1);
-              }
+              // Refresh occupancy data and history key
+              fetchData({ silent: true });
+              setOccupancyHistoryRefreshKey(k => k + 1);
 
               setTimeout(() => {
                 setIsDbUpdatePulsing(false);
@@ -491,9 +476,8 @@ export default function App() {
               setTimeout(() => {
                 setDbUpdateMessage(null);
               }, 5000);
-            }, 500);
+            }, 2000);
           }
-
         )
         .subscribe((status) => {
           console.log('[Auto-Fetch Schedule] Supabase real-time subscription status:', status);
@@ -531,13 +515,15 @@ export default function App() {
     };
   }, [isAuthenticated]);
 
-  // 3. Proactive Cloud Database Auto-Sync Poller (guarantees real-time change detection across all clients)
+  // 3. Proactive Cloud Database Auto-Sync Poller (fallback drift detection)
+  // Pauses when tab is hidden in background; runs every 60s if Realtime is active, 20s if disconnected
   useEffect(() => {
     if (!isAuthenticated) return;
 
     let isPolling = false;
     const checkDbSyncStatus = async () => {
-      if (isPolling || isFetchingRef.current) return;
+      // Avoid background tabs or concurrent fetches draining egress
+      if (document.hidden || isPolling || isFetchingRef.current) return;
       isPolling = true;
       try {
         const res = await fetch('/api/database/auto-sync-status');
@@ -550,7 +536,7 @@ export default function App() {
             setCloudDatabaseUpdatedAt(serverDbUpdated);
             setIsDbUpdatePulsing(true);
             setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
-            await fetchData({ silent: true, force: true });
+            await fetchData({ silent: true });
             setOccupancyHistoryRefreshKey(k => k + 1);
 
             setTimeout(() => setIsDbUpdatePulsing(false), 3000);
@@ -567,10 +553,11 @@ export default function App() {
       }
     };
 
-    // Check cloud database update status every 5 seconds
-    const interval = setInterval(checkDbSyncStatus, 5000);
+    // 60s interval when Realtime WebSocket is connected, 20s when disconnected
+    const pollIntervalMs = realtimeConnected ? 60000 : 20000;
+    const interval = setInterval(checkDbSyncStatus, pollIntervalMs);
     return () => clearInterval(interval);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, realtimeConnected]);
 
   // Scheduled Auto-Fetch Timer from Database on interval
   useEffect(() => {

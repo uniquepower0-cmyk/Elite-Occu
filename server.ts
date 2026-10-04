@@ -1914,6 +1914,11 @@ let isServerAutoSyncing = false;
 let activeLoadDataPromise: Promise<void> | null = null;
 
 async function loadData(force = false): Promise<void> {
+  // Egress optimization: If hospitalData is in memory and was fetched within the last 2500ms,
+  // reuse the in-memory dataset to prevent redundant Supabase PostgREST queries
+  if (!force && hospitalData && (Date.now() - lastServerFetchTimestamp < 2500)) {
+    return;
+  }
   if (activeLoadDataPromise && !force) {
     return activeLoadDataPromise;
   }
@@ -2007,10 +2012,10 @@ async function executeLoadData(force = false) {
       });
     };
 
-    // Query granular state nodes
+    // Query granular state nodes with explicit columns
     const { data: stateNodes, error: sbErr } = await supabaseAdmin
       .from('rtdb_nodes')
-      .select('*')
+      .select('path, data, updated_at')
       .like('path', 'state/%');
 
     const stateMap: Record<string, any> = {};
@@ -3185,10 +3190,10 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
     } finally {
       isServerAutoSyncing = false;
     }
-  }, 350);
+  }, 1500);
 }
 
-// Check database updated_at on scheduled interval (every 10s) as a reliable background fallback
+// Check database updated_at on scheduled interval as a reliable background fallback
 async function checkDatabaseSyncSchedule() {
   try {
     const { data: node, error } = await supabaseAdmin
@@ -3218,19 +3223,24 @@ function setupServerDatabaseAutoSync() {
   try {
     console.log('[Supabase Realtime] Initializing exact-row Realtime Subscriptions...');
 
-    // 1. Subscribe to legacy RTDB nodes (Keeps existing frontend synced instantly without polling)
+    // 1. Subscribe to state/metadata node only to avoid WebSocket payload bloat
     supabaseAdmin
       .channel('legacy_rtdb_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'rtdb_nodes' }, (payload) => {
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'rtdb_nodes',
+        filter: 'path=eq.state/metadata'
+      }, (payload) => {
         const path = (payload.new as any)?.path;
-        console.log(`[Realtime] Instant change detected in legacy rtdb_nodes: ${path || 'unknown'}`);
+        console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'}`);
         // Avoid duplicate triggers if this server instance initiated the write
         if (!isServerAutoSyncing) {
           triggerServerAutoFetchFromDatabase('realtime-push');
         }
       })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to legacy rtdb_nodes.');
+        if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to rtdb_nodes (state/metadata filter).');
       });
 
     // 2. Subscribe to NEW Relational Tables (Admissions, Transfers, OR Cases)
@@ -6753,7 +6763,10 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 
 app.get('/api/occupancy/data', async (req, res) => {
   const force = req.query.force === 'true' || req.query.reload === 'true';
-  if (force || (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0))) {
+  const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
+  const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
+
+  if ((force && isStale) || isDataMissing) {
     try {
       await loadData(force);
     } catch (err) {
@@ -8062,28 +8075,35 @@ app.get('/api/history/changelog', async (req, res) => {
 });
 
 // Database Auto-Fetch & Synchronization Status Endpoint
+// Returns in-memory state to avoid PostgREST query egress on every client poll
 app.get('/api/database/auto-sync-status', async (req, res) => {
   try {
-    // Proactively check if there is a newer database version in Supabase
-    try {
-      const { data: node } = await supabaseAdmin
-        .from('rtdb_nodes')
-        .select('updated_at')
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (node && node.updated_at) {
-        const cloudUpdated = String(node.updated_at);
-        if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
-          console.log(`[Auto-Fetch Schedule] Newer database version detected via status check (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
-          lastKnownDatabaseUpdatedAt = cloudUpdated;
-          await loadData(true);
-        } else if (!lastKnownDatabaseUpdatedAt) {
-          lastKnownDatabaseUpdatedAt = cloudUpdated;
+    const forceCheck = req.query.force_check === 'true';
+    const now = Date.now();
+    // Only query Supabase if explicitly forced or if no fetch has happened for >60s and no timestamp is known
+    const shouldCheckCloud = forceCheck || (!lastKnownDatabaseUpdatedAt && (now - lastServerFetchTimestamp > 60000));
+
+    if (shouldCheckCloud) {
+      try {
+        const { data: node } = await supabaseAdmin
+          .from('rtdb_nodes')
+          .select('updated_at')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (node && node.updated_at) {
+          const cloudUpdated = String(node.updated_at);
+          if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
+            console.log(`[Auto-Fetch Schedule] Newer database version detected via status check (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
+            lastKnownDatabaseUpdatedAt = cloudUpdated;
+            await loadData(true);
+          } else if (!lastKnownDatabaseUpdatedAt) {
+            lastKnownDatabaseUpdatedAt = cloudUpdated;
+          }
         }
+      } catch (checkErr) {
+        // Non-blocking
       }
-    } catch (checkErr) {
-      // Non-blocking
     }
 
     const cairo = getCairoDateTime();
