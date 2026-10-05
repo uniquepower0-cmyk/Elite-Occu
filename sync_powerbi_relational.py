@@ -319,7 +319,7 @@ def fetch_powerbi_and_sync():
                     else:
                         pts_without_phone.append(p_entry)
 
-                base_rest = SUPABASE_REST_URL.replace("/granular_state", "")
+                base_rest = f"{SUPABASE_URL}/rest/v1"
                 if pts_with_phone:
                     requests.post(
                         f"{base_rest}/patients?on_conflict=mrn",
@@ -841,6 +841,22 @@ def fetch_powerbi_and_sync():
                     "path": "state/transfers",
                     "data": {"items": cumulative_transfers},
                     "updated_at": now_iso
+                },
+                {
+                    "path": "state/metadata",
+                    "data": {
+                        "uploadedAt": now_iso,
+                        "lastDatabaseUpdatedAt": now_iso,
+                        "lastActiveDate": cairo_date_str,
+                        "counts": {
+                            "occupiedBeds": max(0, len(legacy_occupancy_rows) - 1),
+                            "debts": len(cash_debts),
+                            "insuredDebts": len(insured_debts),
+                            "dialysis": len(cumulative_dialysis),
+                            "transfers": len(cumulative_transfers)
+                        }
+                    },
+                    "updated_at": now_iso
                 }
             ]
             sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
@@ -848,6 +864,8 @@ def fetch_powerbi_and_sync():
             if sb_response.status_code in [200, 201]:
                 log(f"Legacy JSON state, Debts, Dialysis, and Transfers successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers).")
                 return True
+            else:
+                log(f"Supabase upsert failed with status {sb_response.status_code}: {sb_response.text}")
 
         except Exception as e:
             log(f"Sync error: {e}")
@@ -874,7 +892,7 @@ def run_sync_job():
 if __name__ == "__main__":
     log("Service Online. Initializing first run...")
     run_sync_job()
-    schedule.every(5).minutes.do(run_sync_job)
+    schedule.every(30).minutes.do(run_sync_job)
 
     while True:
         check_cairo_1159_reset()

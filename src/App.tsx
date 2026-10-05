@@ -267,12 +267,12 @@ export default function App() {
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
   const [useAlternativeLogo, setUseAlternativeLogo] = useState(false);
 
-  // Auto-Fetch Schedule from Database State
+  // Auto-Fetch Schedule from Database State (Default: 30m)
   const [autoFetchScheduleRate, setAutoFetchScheduleRate] = useState<string>(() => {
     const saved = localStorage.getItem('elite_auto_fetch_rate');
-    return saved === '5m' ? '5m' : 'off';
+    return (saved === '30m' || saved === '5m') ? '30m' : 'off';
   });
-  const [nextFetchCountdown, setNextFetchCountdown] = useState<number>(300);
+  const [nextFetchCountdown, setNextFetchCountdown] = useState<number>(1800);
   const [lastSyncedTimestamp, setLastSyncedTimestamp] = useState<number | null>(Date.now());
   const [cloudDatabaseUpdatedAt, setCloudDatabaseUpdatedAt] = useState<string | number | null>(null);
   const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
@@ -559,12 +559,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isAuthenticated, realtimeConnected]);
 
-  // Scheduled Auto-Fetch Timer from Database on interval
+  // Scheduled Auto-Fetch Timer from Database on interval (30 minutes)
   useEffect(() => {
     if (!isAuthenticated) return;
-    if (autoFetchScheduleRate !== '5m') return;
+    if (autoFetchScheduleRate !== '30m') return;
 
-    const rateSeconds = 5 * 60; // 5 minutes (300 seconds)
+    const rateSeconds = 30 * 60; // 30 minutes (1800 seconds)
 
     setNextFetchCountdown(rateSeconds);
 
@@ -2879,16 +2879,16 @@ export default function App() {
                         ⚡ Instant Only (Default)
                       </button>
                       <button
-                        onClick={() => handleUpdateScheduleRate('5m')}
-                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '5m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
-                        title="Auto-fetch every 5 minutes"
+                        onClick={() => handleUpdateScheduleRate('30m')}
+                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '30m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
+                        title="Auto-fetch every 30 minutes"
                       >
-                        ⏱️ Every 5 Minutes
+                        ⏱️ Every 30 Minutes
                       </button>
                     </div>
 
-                    {autoFetchScheduleRate === '5m' && (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 5m fetch">
+                    {autoFetchScheduleRate === '30m' && (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 30m fetch">
                         <Clock className="h-3 w-3 text-emerald-600" />
                         <span>
                           {Math.floor(nextFetchCountdown / 60)}:{(nextFetchCountdown % 60).toString().padStart(2, '0')}
