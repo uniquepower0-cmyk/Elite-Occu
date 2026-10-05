@@ -2449,7 +2449,7 @@ app.get('/api/db-parity', async (req, res) => {
     // 1. Fetch Supabase state nodes
     const { data: stateNodes, error: sbErr } = await supabaseAdmin
       .from('rtdb_nodes')
-      .select('*')
+      .select('path, data, updated_at')
       .like('path', 'state/%');
 
     const stateMap: Record<string, any> = {};
@@ -2463,9 +2463,9 @@ app.get('/api/db-parity', async (req, res) => {
       }
     }
 
-    const { data: sbProfiles, count: profilesCount } = await supabaseAdmin
+    const { count: profilesCount } = await supabaseAdmin
       .from('profiles')
-      .select('*', { count: 'exact' });
+      .select('id', { count: 'exact', head: true });
 
     const { data: sbAuditNode } = await supabaseAdmin
       .from('rtdb_nodes')
@@ -2511,7 +2511,7 @@ app.get('/api/db-parity', async (req, res) => {
         medicalPlans: parseMaybe(medItems).length || (Array.isArray(cumulativeMedicalPlans) ? cumulativeMedicalPlans.length : 0),
         companionStatus: parseMaybe(compItems).length || (Array.isArray(cumulativeCompanionStatus) ? cumulativeCompanionStatus.length : 0),
         losData: parseMaybe(losItems).length || (Array.isArray(cumulativeLOS) ? cumulativeLOS.length : 0),
-        profilesCount: profilesCount || (sbProfiles?.length || 0),
+        profilesCount: profilesCount || 0,
         auditLogsCount: Array.isArray(sbAuditNode?.data) ? sbAuditNode.data.length : 0
       }
     };
@@ -3191,31 +3191,6 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
       isServerAutoSyncing = false;
     }
   }, 1500);
-}
-
-// Check database updated_at on scheduled interval as a reliable background fallback
-async function checkDatabaseSyncSchedule() {
-  try {
-    const { data: node, error } = await supabaseAdmin
-      .from('rtdb_nodes')
-      .select('updated_at')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!error && node && node.updated_at) {
-      const cloudUpdated = String(node.updated_at);
-      if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
-        console.log(`[Auto-Fetch Schedule] Newer database version detected in Supabase (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
-        lastKnownDatabaseUpdatedAt = cloudUpdated;
-        triggerServerAutoFetchFromDatabase('schedule-periodic-check');
-      } else if (!lastKnownDatabaseUpdatedAt) {
-        lastKnownDatabaseUpdatedAt = cloudUpdated;
-      }
-    }
-  } catch (e: any) {
-    // Non-blocking log
-  }
 }
 
 // Supabase background sync scheduler - Upgraded to Realtime WebSockets

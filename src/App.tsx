@@ -277,7 +277,7 @@ export default function App() {
   const [cloudDatabaseUpdatedAt, setCloudDatabaseUpdatedAt] = useState<string | number | null>(null);
   const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
   const [dbUpdateMessage, setDbUpdateMessage] = useState<string | null>(null);
-  const [realtimeConnected, setRealtimeConnected] = useState<boolean>(true);
+  const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
   const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
   const [orHistoryRefreshKey, setOrHistoryRefreshKey] = useState<number>(0);
 
@@ -571,7 +571,7 @@ export default function App() {
     const timer = setInterval(() => {
       setNextFetchCountdown((prev) => {
         if (prev <= 1) {
-          fetchData({ silent: true, force: true });
+          fetchData({ silent: true });
           return rateSeconds;
         }
         return prev - 1;
