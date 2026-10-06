@@ -105,11 +105,79 @@ def fortinet_reconnect():
                 log(f"Fortinet error: {e}")
         failure_countdown(5, "Fortinet Authentication")
 
+# --- NAME NORMALIZATION & MANUAL DISCHARGE RESOLUTION ---
+
+def normalize_arabic_name(name):
+    if not name:
+        return ""
+    n = str(name).strip().lower()
+    # Remove titles & honorifics
+    n = re.sub(r'^(د/|د\.|دكتور/|دكتور|استاذ/|أستاذ/|السيد/|السيد|السيدة/|السيدة|م/|مهندس/|baby\s+of|baby|طفل|طفلة|ابن|ابنة|مولود|مولودة|twin\s*\d*)\s+', '', n, flags=re.IGNORECASE)
+    # Remove diacritics
+    n = re.sub(r'[\u064B-\u065F\u0670]', '', n)
+    # Normalize alef variations
+    n = re.sub(r'[أإآٱ]', 'ا', n)
+    # Normalize taa marbuta
+    n = re.sub(r'ة', 'ه', n)
+    # Normalize yaa
+    n = re.sub(r'ى', 'ي', n)
+    # Normalize compound names
+    n = re.sub(r'\bعبد\s+', 'عبد', n)
+    n = re.sub(r'\bابو\s+', 'ابو', n)
+    n = re.sub(r'\bام\s+', 'ام', n)
+    # Normalize alif-lam prefix for common names (e.g. السيد -> سيد)
+    n = re.sub(r'\bال([^\s]{3,})', r'\1', n)
+    # Remove special characters
+    n = re.sub(r'[^a-z0-9\u0600-\u06FF\s]', ' ', n)
+    return re.sub(r'\s+', ' ', n).strip()
+
+def is_name_match(name1, name2):
+    if not name1 or not name2:
+        return False
+    n1 = normalize_arabic_name(name1)
+    n2 = normalize_arabic_name(name2)
+    if not n1 or not n2:
+        return False
+    if n1 == n2:
+        return True
+    w1 = [w for w in n1.split() if len(w) > 1]
+    w2 = [w for w in n2.split() if len(w) > 1]
+    if not w1 or not w2:
+        return False
+    s1, s2 = set(w1), set(w2)
+    common = s1 & s2
+    # Match if >= 2 words match and covers the full shorter name
+    if len(common) >= 2 and (common == s1 or common == s2):
+        return True
+    # Match if 3 or more words match
+    if len(common) >= 3:
+        return True
+    return False
+
+def clean_mrn_str(mrn):
+    if mrn is None:
+        return ""
+    s = str(mrn).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s.lstrip("0")
+
+def is_patient_manually_discharged(name, mrn, manual_names, manual_mrns):
+    c_mrn = clean_mrn_str(mrn)
+    if c_mrn and c_mrn in manual_mrns:
+        return True
+    if name and manual_names:
+        for m_name in manual_names:
+            if is_name_match(name, m_name):
+                return True
+    return False
+
 # --- LEGACY STATE (Kept alive to prevent frontend breaking during transition) ---
 def fetch_existing_supabase_state(cairo_date_str=None):
     if not cairo_date_str:
         cairo_date_str = get_cairo_now().strftime("%Y-%m-%d")
-    get_url = f"{SUPABASE_REST_URL}?or=(path.like.state/*,path.like.settings/*)&select=path,data,updated_at"
+    # Egress optimization: fetch only relevant state nodes rather than all state/* nodes
+    get_url = f"{SUPABASE_REST_URL}?path=in.(state/metadata,state/discharged,state/dialysis,state/transfers,state/occupancy)&select=path,data,updated_at"
     state_map = {}
     time_map = {}
     try:
@@ -120,9 +188,34 @@ def fetch_existing_supabase_state(cairo_date_str=None):
                 if p:
                     state_map[p] = record.get("data")
                     time_map[p] = record.get("updated_at")
-    except:
-        pass
+    except Exception as e:
+        log(f"Notice: Failed to fetch existing state from Supabase: {e}")
     
+    # Extract metadata & manual discharges
+    meta = state_map.get("state/metadata") or {}
+    raw_manual_names = meta.get("manuallyDischargedNames") or []
+    if not isinstance(raw_manual_names, list):
+        raw_manual_names = []
+
+    disc_node = state_map.get("state/discharged") or {}
+    disc_patients = disc_node.get("patients") if isinstance(disc_node, dict) else (disc_node if isinstance(disc_node, list) else [])
+    if not isinstance(disc_patients, list):
+        disc_patients = []
+
+    manual_names_set = set(str(n).strip() for n in raw_manual_names if n)
+    manual_mrns_set = set()
+
+    for dp in disc_patients:
+        if isinstance(dp, dict):
+            p_name = dp.get("name") or dp.get("colD")
+            p_mrn = clean_mrn_str(dp.get("mrn") or dp.get("colC") or dp.get("PatientBarcode") or "")
+            is_manual = (dp.get("dischargeType") == "manual") or (p_name and any(is_name_match(p_name, mn) for mn in raw_manual_names))
+            if is_manual:
+                if p_name:
+                    manual_names_set.add(str(p_name).strip())
+                if p_mrn:
+                    manual_mrns_set.add(p_mrn)
+
     # Minimal fallback mappings
     dataset = state_map.get("state/dataset") or {}
     occ = state_map.get("state/occupancy") or {}
@@ -142,11 +235,14 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     return {
         "previous": occ.get("previous") or dataset.get("current"),
         "occupancy_current": occ.get("current") or [],
-        "discharged": (state_map.get("state/discharged") or {}).get("patients", []),
+        "discharged": disc_patients,
         "entries": (state_map.get("state/entries") or {}).get("items", []),
         "transfers": existing_trans,
         "orList": (state_map.get("state/or_list") or {}).get("items", []),
-        "dialysis": existing_dial
+        "dialysis": existing_dial,
+        "manually_discharged_names": list(manual_names_set),
+        "manually_discharged_mrns": list(manual_mrns_set),
+        "existing_metadata": meta
     }
 
 # --- FETCH & SYNC ---
@@ -231,7 +327,21 @@ def fetch_powerbi_and_sync():
             new_occupancy_rows = [{k: clean_val(v) for k, v in row.items()} for row in raw_records]
 
             # ---------------------------------------------------------
-            # 1. NEW RELATIONAL SYNC (The New Formula)
+            # 1. PRE-FETCH STATE & ACTIVE MANUAL DISCHARGES GUARD
+            # ---------------------------------------------------------
+            cairo_now = get_cairo_now()
+            cairo_date_str = cairo_now.strftime("%Y-%m-%d")
+            cairo_time_str = cairo_now.strftime("%m/%d/%y %H:%M")
+            is_1159_pm = (cairo_now.hour == 23 and cairo_now.minute == 59)
+
+            existing = fetch_existing_supabase_state(cairo_date_str)
+            manual_names = existing.get("manually_discharged_names", [])
+            manual_mrns = set(existing.get("manually_discharged_mrns", []))
+            if manual_names or manual_mrns:
+                log(f"[Sync Guard] Active manual discharges recognized: {len(manual_names)} names, {len(manual_mrns)} MRNs.")
+
+            # ---------------------------------------------------------
+            # 2. NEW RELATIONAL SYNC (The New Formula)
             # ---------------------------------------------------------
             log(f"Syncing {len(new_occupancy_rows)} records to New Relational Schema...")
             rpc_headers = SUPABASE_HEADERS.copy()
@@ -241,6 +351,15 @@ def fetch_powerbi_and_sync():
             for row in new_occupancy_rows:
                 # Skip the header row itself during data extraction
                 if str(get_val(row, ["Bed#", "BedName_EN"])) == "Bed#":
+                    continue
+                
+                p_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "Unknown Patient")
+                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                clean_mrn = raw_mrn.lstrip("0") if raw_mrn else ""
+
+                # GUARD: Do not re-admit manually discharged patients
+                if is_patient_manually_discharged(p_name, clean_mrn, manual_names, manual_mrns):
+                    log(f"[Relational Sync Guard] Skipping manually discharged patient from admissions: {p_name} (MRN: {clean_mrn})")
                     continue
                     
                 ad_val = clean_date(get_val(row, [
@@ -264,12 +383,9 @@ def fetch_powerbi_and_sync():
                         if len(m32) >= 7:
                             mob_val = m32
 
-                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
-                clean_mrn = raw_mrn.lstrip("0") if raw_mrn else ""
-
                 rpc_payload.append({
                     "MRN": clean_mrn or raw_mrn or f"UNKNOWN-{uuid.uuid4().hex[:8]}",
-                    "Patient": str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "Unknown Patient"),
+                    "Patient": p_name,
                     "Bed#": str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])),
                     "Floor Name": str(get_val(row, ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7", "Unnamed: 4", "Unnamed: 5"])),
                     "TreatingPhysicianName": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])),
@@ -286,7 +402,8 @@ def fetch_powerbi_and_sync():
                     "ExpectedDischarge": str(get_val(row, ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])),
                     "Medication Names": str(get_val(row, ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"])),
                     "IntialAssessment": str(get_val(row, ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"])),
-                    "VTE Summary": str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"]))
+                    "VTE Summary": str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"])),
+                    "Source": "powerbi"
                 })
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
@@ -337,13 +454,6 @@ def fetch_powerbi_and_sync():
             except Exception as pt_err:
                 log(f"Notice: Direct patient upsert: {pt_err}")
 
-            cairo_now = get_cairo_now()
-            cairo_date_str = cairo_now.strftime("%Y-%m-%d")
-            cairo_time_str = cairo_now.strftime("%m/%d/%y %H:%M")
-            is_1159_pm = (cairo_now.hour == 23 and cairo_now.minute == 59)
-
-            existing = fetch_existing_supabase_state(cairo_date_str)
-            
             legacy_occupancy_rows = []
             
             # Fake header row ensures Node.js startIdx parsing works reliably
@@ -384,6 +494,15 @@ def fetch_powerbi_and_sync():
             for row in raw_records:
                 bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
                 if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1", ""] or "no filters" in bed_val.lower():
+                    continue
+
+                patient_val = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                mrn_val = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                clean_m = mrn_val.lstrip("0") if mrn_val else ""
+
+                # GUARD: Do not include manually discharged patients in active occupancy
+                if is_patient_manually_discharged(patient_val, clean_m, manual_names, manual_mrns):
+                    log(f"[Legacy Occupancy Guard] Skipping manually discharged patient from occupied beds: {patient_val} (MRN: {clean_m})")
                     continue
                     
                 # Dynamically construct all columns to support every legacy sheet (Debts, LOS, Medical Plans, etc)
@@ -512,6 +631,10 @@ def fetch_powerbi_and_sync():
 
                 patient_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
                 if not patient_name or patient_name.lower() in ["patient", "المريض", "name", "unknown"]:
+                    continue
+
+                raw_debt_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                if is_patient_manually_discharged(patient_name, raw_debt_mrn, manual_names, manual_mrns):
                     continue
                 
                 fin_status = str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip()
@@ -879,9 +1002,11 @@ def fetch_powerbi_and_sync():
                 {
                     "path": "state/metadata",
                     "data": {
+                        **(existing.get("existing_metadata") or {}),
                         "uploadedAt": now_iso,
                         "lastDatabaseUpdatedAt": now_iso,
                         "lastActiveDate": cairo_date_str,
+                        "manuallyDischargedNames": existing.get("manually_discharged_names", []),
                         "counts": {
                             "occupiedBeds": max(0, len(legacy_occupancy_rows) - 1),
                             "debts": len(cash_debts),

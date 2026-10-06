@@ -19,6 +19,7 @@ DECLARE
   v_specialty VARCHAR(100);
   v_diagnosis TEXT;
   v_notes TEXT;
+  v_source VARCHAR(50);
   v_total_invoice NUMERIC(12,2);
   v_remaining_debt NUMERIC(12,2);
 BEGIN
@@ -100,13 +101,15 @@ BEGIN
       v_remaining_debt := 0.00;
     END;
 
+    v_source := COALESCE(NULLIF(TRIM(rec->>'Source'), ''), 'powerbi');
+
     -- 5. Upsert Admission
     SELECT id INTO a_id FROM admissions 
     WHERE patient_id = p_id AND status = 'Admitted' LIMIT 1;
     
     IF a_id IS NULL THEN
-      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date, notes, status)
-      VALUES (p_id, r_id, s_id, v_contractor, v_financial, v_total_invoice, v_remaining_debt, COALESCE(v_admission_date, NOW()), v_notes, 'Admitted')
+      INSERT INTO admissions (patient_id, room_id, physician_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date, notes, status, source)
+      VALUES (p_id, r_id, s_id, v_contractor, v_financial, v_total_invoice, v_remaining_debt, COALESCE(v_admission_date, NOW()), v_notes, 'Admitted', v_source)
       RETURNING id INTO a_id;
     ELSE
       UPDATE admissions 
@@ -115,6 +118,11 @@ BEGIN
         physician_id = COALESCE(s_id, physician_id),
         contractor_name = COALESCE(v_contractor, contractor_name),
         financial_status = COALESCE(v_financial, financial_status),
+        source = CASE 
+          WHEN rec->>'Source' IS NOT NULL AND TRIM(rec->>'Source') != '' 
+          THEN TRIM(rec->>'Source') 
+          ELSE admissions.source 
+        END,
         total_invoice = CASE 
           WHEN rec->>'Total Invoice' IS NOT NULL AND TRIM(rec->>'Total Invoice') NOT IN ('', 'None', 'nan', 'null') 
           THEN v_total_invoice 
@@ -133,11 +141,14 @@ BEGIN
     active_admission_ids := array_append(active_admission_ids, a_id);
   END LOOP;
 
-  -- 6. Auto-Discharge: Any active admission not in this sync is marked Discharged
+  -- 6. Auto-Discharge: Only active PowerBI-sourced admissions not in this sync are marked Discharged.
+  -- CRITICAL: Manual uploads (source = 'manual') are NEVER automatically discharged by PowerBI sync!
   IF array_length(active_admission_ids, 1) > 0 THEN
     UPDATE admissions 
     SET status = 'Discharged', discharge_date = NOW(), updated_at = NOW()
-    WHERE status = 'Admitted' AND id != ALL(active_admission_ids);
+    WHERE status = 'Admitted' 
+      AND (source IS NULL OR source = 'powerbi')
+      AND id != ALL(active_admission_ids);
   END IF;
 END;
 $$;

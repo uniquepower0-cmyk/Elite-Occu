@@ -70,9 +70,12 @@ CREATE TABLE IF NOT EXISTS public.admissions (
     status admission_status DEFAULT 'Admitted',
     payment payment_type,
     notes TEXT,
+    source VARCHAR(50) DEFAULT 'powerbi',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'powerbi';
+CREATE INDEX IF NOT EXISTS idx_admissions_source ON public.admissions(source);
 
 -- 6. Transfers Table (Sequential patient room movements)
 CREATE TABLE IF NOT EXISTS public.transfers (

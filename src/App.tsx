@@ -936,7 +936,14 @@ export default function App() {
 
     try {
       const url = force ? `/api/occupancy/data?force=true&t=${Date.now()}` : '/api/occupancy/data';
-      const res = await fetch(url);
+      const headers: Record<string, string> = {};
+      if (lastDbTimestampRef.current && !force && isDataLoaded) {
+        headers['If-None-Match'] = `"${lastDbTimestampRef.current}"`;
+      }
+      const res = await fetch(url, { headers });
+      if (res.status === 304) {
+        return; // Data has not changed in cloud database, skip re-parsing and re-rendering
+      }
       if (!res.ok) {
         if (retries > 0) {
           await new Promise(r => setTimeout(r, delay));

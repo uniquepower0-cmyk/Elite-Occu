@@ -1609,14 +1609,37 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     }
   }
 
+  // Dynamically build column index resolver to handle exports with dynamic/reordered column positions
+  const { findCol } = buildColumnIndexResolver(rows);
+
+  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1);
+  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
+  const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
+  const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
+  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
+  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11);
+  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
+  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
+  const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33);
+  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], 34);
+  const colUpdateDateIdx = findCol(["prograssnotes creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32);
+  const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 18);
+  const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
+  const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
+  const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
+
   // 1. Extract Entries (Today's admissions)
   const entryPatients = rows.slice(startIdx).map(row => ({
-    room: cleanRoomStr(String(row[1] || "").trim()),
-    name: String(row[3] || "").trim(),
-    physician: String(row[22] || "").trim(),
-    contractor: String(row[12] || "").trim(),
-    date: cleanAdmissionDateStr(row[0]),
-    mrn: String(row[2] || "").trim(),
+    room: cleanRoomStr(String(row[colRoomIdx] || "").trim()),
+    name: String(row[colNameIdx] || "").trim(),
+    physician: String(row[colPhysIdx] || "").trim(),
+    contractor: String(row[colContractorIdx] || "").trim(),
+    date: cleanAdmissionDateStr(row[colAdmIdx]),
+    mrn: String(row[colMrnIdx] || "").trim(),
   })).filter(p => {
     if (!p.room || !p.name) return false;
     const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
@@ -1655,26 +1678,6 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       }
     });
   }
-
-  // Build dynamic column index resolver to handle exports with dynamic column positions
-  const { findCol } = buildColumnIndexResolver(rows);
-
-  const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
-  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
-  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
-  const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33);
-  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], 34);
-  const colUpdateDateIdx = findCol(["prograssnotes creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32);
-  const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 18);
-  const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
-  const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
-  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
-  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
-  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
-  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11);
-  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
-  const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
-  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
 
   const isExcludedDebtCase = (p: {
     room: string;
@@ -1799,9 +1802,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       colA: admDate,
       date: admDate,
       admissionDate: admDate,
-      room: cleanRoomStr(String(row[1] || "").trim()),
-      mrn: String(row[2] || "").trim(),
-      colD: String(row[3] || "").trim(),
+      room: cleanRoomStr(String(row[colRoomIdx] || "").trim()),
+      mrn: String(row[colMrnIdx] || "").trim(),
+      colD: String(row[colNameIdx] || "").trim(),
       colF: financialVal,
       financialStatus: financialVal,
       colM: contractorVal,
@@ -2005,6 +2008,8 @@ let lastKnownDatabaseUpdatedAt: string | null = null;
 let lastServerFetchTimestamp: number = Date.now();
 let isServerAutoSyncing = false;
 let activeLoadDataPromise: Promise<void> | null = null;
+let inMemoryNodeTimestamps: Record<string, string> = {};
+let inMemoryStateMap: Record<string, any> = {};
 
 async function loadData(force = false): Promise<void> {
   // Egress optimization: If hospitalData is in memory and was fetched within the last 2500ms,
@@ -2105,19 +2110,46 @@ async function executeLoadData(force = false) {
       });
     };
 
-    // Query granular state nodes with explicit columns
-    const { data: stateNodes, error: sbErr } = await supabaseAdmin
+    // Query granular state nodes using a 2-stage egress-optimized fetch:
+    // Stage 1: Only query path and updated_at (tiny metadata payload)
+    const { data: metaNodes, error: sbMetaErr } = await supabaseAdmin
       .from('rtdb_nodes')
-      .select('path, data, updated_at')
+      .select('path, updated_at')
       .like('path', 'state/%');
 
-    const stateMap: Record<string, any> = {};
+    if (sbMetaErr) {
+      console.error('Supabase granular state metadata query error:', sbMetaErr);
+    }
+
+    const pathsToFetch: string[] = [];
     let latestNodeUpdated: string | null = null;
-    if (stateNodes && Array.isArray(stateNodes)) {
-      for (const node of stateNodes) {
-        stateMap[node.path] = node.data;
+
+    if (metaNodes && Array.isArray(metaNodes)) {
+      for (const node of metaNodes) {
         if (node.updated_at && (!latestNodeUpdated || node.updated_at > latestNodeUpdated)) {
           latestNodeUpdated = node.updated_at;
+        }
+        const lastKnownTs = inMemoryNodeTimestamps[node.path];
+        if (force || !lastKnownTs || lastKnownTs !== node.updated_at || inMemoryStateMap[node.path] === undefined) {
+          pathsToFetch.push(node.path);
+        }
+      }
+    }
+
+    // Stage 2: Only fetch the heavy 'data' payload for paths that actually changed
+    if (pathsToFetch.length > 0) {
+      console.log(`Supabase: Fetching payload for ${pathsToFetch.length} changed state node(s): ${pathsToFetch.join(', ')}`);
+      const { data: changedNodes, error: sbDataErr } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .select('path, data, updated_at')
+        .in('path', pathsToFetch);
+
+      if (sbDataErr) {
+        console.error('Supabase granular state data payload error:', sbDataErr);
+      } else if (changedNodes && Array.isArray(changedNodes)) {
+        for (const node of changedNodes) {
+          inMemoryStateMap[node.path] = node.data;
+          inMemoryNodeTimestamps[node.path] = node.updated_at;
         }
       }
     }
@@ -2127,6 +2159,7 @@ async function executeLoadData(force = false) {
     }
     lastServerFetchTimestamp = Date.now();
 
+    const stateMap = inMemoryStateMap;
     const hasGranularData = stateMap['state/occupancy'] || stateMap['state/metadata'] || stateMap['state/discharged'];
 
     if (hasGranularData) {
@@ -3153,6 +3186,13 @@ async function saveData() {
         console.error('Supabase granular nodes upsert error:', sbErr);
       } else {
         console.log(`Hospital Supabase cloud database synchronization completed (${granularNodes.length} individual rows written).`);
+        // Update local in-memory caches to avoid redundant self-refetching
+        for (const gn of granularNodes) {
+          inMemoryNodeTimestamps[gn.path] = gn.updated_at;
+          inMemoryStateMap[gn.path] = gn.data;
+        }
+        lastKnownDatabaseUpdatedAt = nowIso;
+        lastServerFetchTimestamp = Date.now();
       }
 
       // 3. Automatically create/update the database snapshot for the active date on every change
@@ -3813,7 +3853,8 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
         Diagnosis: diagnosis || null,
         Mobile: mobile || null,
         LOS: los || "0",
-        EliteALOS: alos || "0"
+        EliteALOS: alos || "0",
+        Source: "manual"
       });
     });
 
@@ -4012,7 +4053,8 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
               total_invoice: totalVal,
               remaining_debt: remainingVal,
               admission_date: d.colA ? (cleanAdmissionDateStr(d.colA) || new Date().toISOString()) : new Date().toISOString(),
-              status: 'Admitted'
+              status: 'Admitted',
+              source: 'manual'
             });
             insertedCount++;
           }
@@ -6837,6 +6879,13 @@ app.get('/api/occupancy/data', async (req, res) => {
     } catch (err) {
       console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
     }
+  }
+
+  const currentEtag = `"${lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : 'empty')}"`;
+  res.setHeader('ETag', currentEtag);
+
+  if (!force && !isDataMissing && req.headers['if-none-match'] === currentEtag) {
+    return res.status(304).end();
   }
 
   const filterHelper = (list: any[]) => {
