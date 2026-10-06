@@ -60,8 +60,8 @@ export function AuditLogsView({
             <p className="text-xs text-slate-400 mt-1">Activities will be tracked here dynamically</p>
           </div>
         ) : (
-          <div className="overflow-y-auto max-h-[500px] border border-slate-100 rounded-xl custom-scrollbar">
-            <table className="w-full text-left text-xs border-collapse">
+          <div className="overflow-auto max-h-[500px] border border-slate-100 rounded-xl custom-scrollbar">
+            <table className="w-full text-left text-xs border-collapse min-w-[560px]">
               <thead className="sticky top-0 bg-white/95 backdrop-blur z-10 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                 <tr className="text-brand-primary/70 uppercase tracking-wider font-extrabold text-[10px]">
                   <th className="py-3 pl-4">User (Display Name)</th>

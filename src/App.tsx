@@ -4177,8 +4177,8 @@ export default function App() {
                               <p className="text-[10px] text-slate-400 mt-1">All OR-x bed occupancy records are currently clear.</p>
                             </div>
                           ) : (
-                            <div className="overflow-x-auto rounded-xl border border-slate-150">
-                              <table className="w-full text-left text-sm border-collapse">
+                            <div className="overflow-x-auto rounded-xl border border-slate-150 custom-scrollbar">
+                              <table className="w-full text-left text-sm border-collapse min-w-[760px]">
                                 <thead className="bg-[#f8fafc]">
                                   <tr className="text-slate-700 uppercase text-[10px] font-black tracking-wider border-b border-slate-150">
                                     <th className="px-5 py-3">#</th>
@@ -4232,8 +4232,8 @@ export default function App() {
                           </div>
 
                           {overList.length > 0 ? (
-                            <div className="overflow-x-auto rounded-xl border border-slate-150">
-                              <table className="w-full text-left text-sm border-collapse">
+                            <div className="overflow-x-auto rounded-xl border border-slate-150 custom-scrollbar">
+                              <table className="w-full text-left text-sm border-collapse min-w-[820px]">
                                 <thead className="bg-[#fffbeb]">
                                   <tr className="text-slate-700 uppercase text-[10px] font-black tracking-wider border-b border-amber-100">
                                     <th className="px-5 py-3">#</th>
@@ -4325,8 +4325,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-auto">
-                  <table className="w-full text-left text-sm border-collapse">
+                <div className="flex-1 overflow-x-auto custom-scrollbar">
+                  <table className="w-full text-left text-sm border-collapse min-w-[720px]">
                     <thead className="sticky top-0 bg-white/70 backdrop-blur-xl z-10 shadow-sm">
                       <tr className="text-teal-950 uppercase text-[10px] font-black tracking-widest border-b border-teal-500/10">
                         <th className="px-6 py-4">#</th>

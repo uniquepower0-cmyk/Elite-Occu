@@ -486,8 +486,8 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                     No matching OR records found in this snapshot.
                   </div>
                 ) : (
-                  <div className="overflow-x-auto border border-teal-500/10 rounded-xl max-h-[420px] overflow-y-auto">
-                    <table className="w-full text-left text-xs border-collapse">
+                  <div className="overflow-x-auto custom-scrollbar border border-teal-500/10 rounded-xl max-h-[420px] overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse min-w-[760px]">
                       <thead className="sticky top-0 bg-[#0b3c34] text-white font-extrabold text-[11px] tracking-wide uppercase">
                         <tr>
                           <th className="py-2.5 px-3">#</th>

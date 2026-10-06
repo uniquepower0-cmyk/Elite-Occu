@@ -380,10 +380,10 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
       {/* Main Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm border-collapse" dir="ltr">
-            <thead>
-              <tr className="bg-brand-primary text-white text-xs font-bold select-none">
+        <div className="overflow-x-auto custom-scrollbar">
+          <table className="w-full text-left text-sm border-collapse min-w-[860px]" dir="ltr">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-brand-primary text-white text-xs font-bold select-none shadow-sm">
                 <th className="py-3 px-4 text-center w-12 border-b border-teal-800">#</th>
                 <th className="py-3 px-4 border-b border-teal-800">Patient Name</th>
                 <th className="py-3 px-4 border-b border-teal-800 text-center">Transfer Journey</th>
