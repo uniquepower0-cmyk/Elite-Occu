@@ -3000,7 +3000,8 @@ async function saveData() {
       (cumulativeDischarged && cumulativeDischarged.length > 0) ||
       (cumulativeEntries && cumulativeEntries.length > 0) ||
       (cumulativeDialysis && cumulativeDialysis.length > 0) ||
-      (cumulativeTransfers && cumulativeTransfers.length > 0)
+      (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+      (cumulativeORList && cumulativeORList.length > 0)
     ) {
       lastActiveDate = cairo.dateStr;
     }
@@ -3317,7 +3318,8 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
     try {
       console.log(`[Auto-Fetch Schedule] Triggering server reload from database (${reason})...`);
       isServerAutoSyncing = true;
-      await loadData(true);
+      // Use smart timestamp diffing so only nodes with modified updated_at are fetched
+      await loadData(false);
       console.log(`[Auto-Fetch Schedule] Server in-memory state successfully synchronized from database.`);
     } catch (err) {
       console.error(`[Auto-Fetch Schedule] Failed to reload state from database:`, err);
@@ -3342,8 +3344,12 @@ function setupServerDatabaseAutoSync() {
         filter: 'path=eq.state/metadata'
       }, (payload) => {
         const path = (payload.new as any)?.path;
-        console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'}`);
+        const newUpdatedAt = (payload.new as any)?.updated_at || (payload.new as any)?.created_at;
+        console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'} (ts: ${newUpdatedAt})`);
         // Avoid duplicate triggers if this server instance initiated the write
+        if (newUpdatedAt && lastKnownDatabaseUpdatedAt && String(newUpdatedAt) === String(lastKnownDatabaseUpdatedAt)) {
+          return;
+        }
         if (!isServerAutoSyncing) {
           triggerServerAutoFetchFromDatabase('realtime-push');
         }
@@ -4177,14 +4183,36 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     // Push to relational database
     await syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
     uploadedAt = Date.now();
+    if (!lastActiveDate) lastActiveDate = dateStr;
     setSaveChangeType('upload');
     
-    // Only update the specific OR list nodes to avoid Vercel timeouts
     const nowIso = new Date().toISOString();
+    lastKnownDatabaseUpdatedAt = nowIso;
+    lastServerFetchTimestamp = Date.now();
+    inMemoryNodeTimestamps['state/or_list'] = nowIso;
+    inMemoryNodeTimestamps['state/metadata'] = nowIso;
+    inMemoryStateMap['state/or_list'] = { items: parsedData };
+
+    // Update local disk cache for fast immediate reboot recovery
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        parsed.orList = parsedData;
+        parsed.uploadedAt = uploadedAt;
+        parsed.lastActiveDate = lastActiveDate;
+        parsed.lastDatabaseUpdatedAt = nowIso;
+        fs.writeFileSync(DATA_FILE, JSON.stringify(parsed));
+      }
+    } catch (diskErr) {
+      console.warn('Failed to update disk cache for OR list:', diskErr);
+    }
+
+    // Update the specific OR list nodes in Supabase
     await Promise.all([
       takeORSnapshotHelper(dateStr),
       supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/or_list', data: { items: parsedData }, updated_at: nowIso }),
-      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/metadata', data: { lastDatabaseUpdatedAt: Date.now(), lastActiveDate, uploadedAt, cairoTimeStatus: getCairoDateTime().fullStr }, updated_at: nowIso })
+      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/metadata', data: { lastDatabaseUpdatedAt: nowIso, lastActiveDate, uploadedAt, cairoTimeStatus: getCairoDateTime().fullStr }, updated_at: nowIso })
     ]);
     
     return res.status(200).json({
@@ -7721,31 +7749,57 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     };
   }
 
-  // Fallback to live if snapshot for that date was not found
-  const autoList = (cumulativeDischarged || []).filter(p => 
-    p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
-  );
-  const manualList = (cumulativeDischarged || []).filter(p => 
-    p.dischargeType === 'manual' || isManuallyDischarged(p.name)
-  );
+  // If requested date is today's Cairo date and live data exists
+  const cairoToday = getCairoDateTime().dateStr;
+  if (cleanDate === cairoToday) {
+    const autoList = (cumulativeDischarged || []).filter(p => 
+      p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
+    );
+    const manualList = (cumulativeDischarged || []).filter(p => 
+      p.dischargeType === 'manual' || isManuallyDischarged(p.name)
+    );
+    return {
+      hospitalData,
+      previousHospitalData,
+      cumulativeDischarged,
+      automaticallyDischarged: autoList,
+      manuallyDischarged: manualList,
+      manuallyDischargedNames,
+      cumulativeEntries,
+      cumulativeDialysis,
+      cumulativeDebts,
+      cumulativeInsuredDebts,
+      cumulativeMedicalPlans,
+      cumulativeCompanionStatus,
+      cumulativeLOS,
+      cumulativeTransfers,
+      vipCasesText,
+      dateLabel: cleanDate,
+      isHistorical: false,
+      found: !!(hospitalData && hospitalData.length > 0)
+    };
+  }
+
+  // Never fall back to current live hospitalData for historical or missing dates!
   return {
-    hospitalData,
-    previousHospitalData,
-    cumulativeDischarged,
-    automaticallyDischarged: autoList,
-    manuallyDischarged: manualList,
-    manuallyDischargedNames,
-    cumulativeEntries,
-    cumulativeDialysis,
-    cumulativeDebts,
-    cumulativeInsuredDebts,
-    cumulativeMedicalPlans,
-    cumulativeCompanionStatus,
-    cumulativeLOS,
-    cumulativeTransfers,
-    vipCasesText,
+    hospitalData: null,
+    previousHospitalData: null,
+    cumulativeDischarged: [],
+    automaticallyDischarged: [],
+    manuallyDischarged: [],
+    manuallyDischargedNames: [],
+    cumulativeEntries: [],
+    cumulativeDialysis: [],
+    cumulativeDebts: [],
+    cumulativeInsuredDebts: [],
+    cumulativeMedicalPlans: [],
+    cumulativeCompanionStatus: [],
+    cumulativeLOS: [],
+    cumulativeTransfers: [],
+    vipCasesText: "",
     dateLabel: cleanDate,
-    isHistorical: false
+    isHistorical: true,
+    found: false
   };
 }
 

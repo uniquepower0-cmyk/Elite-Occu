@@ -757,7 +757,7 @@ export async function deleteORSnapshot(dateStr: string): Promise<boolean> {
       } catch (e) {}
     }
 
-    entries = entries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate);
+    entries = entries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate && e.date !== dateStr);
     try {
       await fsPromises.writeFile(indexPath, JSON.stringify(entries));
     } catch (e) {}
@@ -769,7 +769,7 @@ export async function deleteORSnapshot(dateStr: string): Promise<boolean> {
       .maybeSingle();
 
     let cloudEntries: DateIndexEntry[] = (node && Array.isArray(node.data)) ? node.data : [];
-    cloudEntries = cloudEntries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate);
+    cloudEntries = cloudEntries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate && e.date !== dateStr);
 
     await historySupabase.from('rtdb_nodes').upsert({
       path: `history/or_index`,
