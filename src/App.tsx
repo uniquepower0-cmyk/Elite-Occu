@@ -29,6 +29,7 @@ import {
   Copy,
   Check,
   UserPlus,
+  Menu,
   X,
   Activity,
   Hotel,
@@ -210,6 +211,7 @@ export default function App() {
   const [todaysEntries, setTodaysEntries] = useState(0);
   const [vipCount, setVipCount] = useState(0);
   const [currentView, setCurrentView] = useState<View>('dashboard');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -2461,95 +2463,27 @@ export default function App() {
     );
   }
 
-  return (
-    <div 
-      className="w-full min-h-screen flex flex-col font-sans text-slate-900 overflow-hidden relative bg-slate-100"
-      style={{
-        backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-      }}
-    >
-      {/* Top Navigation Bar */}
-      <header className="h-20 bg-white/40 backdrop-blur-md border-b border-white/20 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm relative">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 bg-[#0b3c34] rounded-xl flex items-center justify-center text-white shadow-sm">
-            <Building2 className="w-6 h-6 text-teal-100" />
-          </div>
-          <h1 className="text-xl font-extrabold tracking-tight uppercase text-[#0b3c34] font-sans">Mohanad's Elite Unified Dashboard</h1>
-        </div>
+    const renderSidebarNavContent = (onItemSelect?: () => void) => {
+      const handleNav = (view: View, extra?: () => void) => {
+        setCurrentView(view);
+        if (extra) extra();
+        if (onItemSelect) onItemSelect();
+      };
 
-        {/* Central Floating Logo Badge */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-2 flex flex-col items-center justify-center z-30">
-          <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden">
-            {logoLoadFailed ? (
-              <div className="flex flex-col items-center justify-center text-center">
-                <svg viewBox="0 0 100 100" className="w-8 h-8 text-[#0b3c34] opacity-90">
-                  <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                </svg>
-                <span className="text-[8px] uppercase font-black tracking-widest text-[#0b3c34] font-mono leading-none mt-0.5">ELITE</span>
-              </div>
-            ) : (
-              <img 
-                src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
-                alt="Elite Logo" 
-                className="w-full h-full object-contain transition-transform hover:scale-105 duration-300"
-                referrerPolicy="no-referrer"
-                onError={() => {
-                  if (!useAlternativeLogo) {
-                    console.log("[Logo Cachebuster] Base logo failed to load, trying alternative logo.");
-                    setUseAlternativeLogo(true);
-                  } else {
-                    console.log("[Logo Cachebuster] Alternative logo failed to load, falling back to SVG glyph.");
-                    setLogoLoadFailed(true);
-                  }
-                }}
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col items-end text-right">
-            <span className="text-xs font-bold text-[#0b3c34] uppercase tracking-wider">MOHANAD M.D.</span>
-            <span className="text-[10px] font-mono font-semibold text-slate-500 mt-0.5">
-              {(() => {
-                const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
-                return `${now.getDate()}-${now.getMonth() + 1}-${now.getFullYear()}`;
-              })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 pl-4 border-l border-slate-200/40">
-            <button 
-               onClick={handleLogout}
-               className="p-2 text-slate-400 hover:text-red-600 transition-colors hover:bg-white/30 rounded-lg"
-               title="Logout"
-            >
-               <LogOut className="w-5 h-5" />
-            </button>
-            <div className="w-10 h-10 rounded-full bg-slate-200/60 border-2 border-white text-slate-700 overflow-hidden flex items-center justify-center font-extrabold text-sm shadow-inner">
-               M
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar Controls */}
-        <aside className="w-64 bg-white/10 backdrop-blur-md border-r border-white/20 p-6 flex flex-col gap-6 shrink-0 overflow-y-auto z-10 shadow-sm">
+      return (
+        <div className="flex flex-col gap-6 h-full">
           <div>
             <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Main View</h3>
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'dashboard'} 
-                onClick={() => setCurrentView('dashboard')}
+                onClick={() => handleNav('dashboard')}
                 icon={<LayoutDashboard />}
                 label="Dashboard"
               />
               <NavItem 
                 active={currentView === 'patients'} 
-                onClick={() => setCurrentView('patients')}
+                onClick={() => handleNav('patients')}
                 icon={<Users />}
                 label="Patient Registry"
               />
@@ -2561,22 +2495,19 @@ export default function App() {
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'medical-director'} 
-                onClick={() => setCurrentView('medical-director')}
+                onClick={() => handleNav('medical-director')}
                 icon={<ShieldCheck />}
                 label="Medical Director & Inpatient manager"
               />
               <NavItem 
                 active={currentView === 'duty-manager'} 
-                onClick={() => setCurrentView('duty-manager')}
+                onClick={() => handleNav('duty-manager')}
                 icon={<Clock />}
                 label="Duty Manager"
               />
               <NavItem 
                 active={currentView === 'mohanad-sheets'} 
-                onClick={() => {
-                  setCurrentView('mohanad-sheets');
-                  setMohanadSubTab('downloads');
-                }}
+                onClick={() => handleNav('mohanad-sheets', () => setMohanadSubTab('downloads'))}
                 icon={<FileSpreadsheet />}
                 label="Mohanad's Sheets"
                 highlighted={user?.email?.toLowerCase() === 'mohanad.md07@gmail.com'}
@@ -2589,14 +2520,14 @@ export default function App() {
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'occupancy-history'} 
-                onClick={() => setCurrentView('occupancy-history')}
+                onClick={() => handleNav('occupancy-history')}
                 icon={<Calendar />}
                 label="Occupancy History"
                 badge="11:59 PM"
               />
               <NavItem 
                 active={currentView === 'or-history'} 
-                onClick={() => setCurrentView('or-history')}
+                onClick={() => handleNav('or-history')}
                 icon={<Activity />}
                 label="OR Dashboard History"
                 badge="OR"
@@ -2610,7 +2541,7 @@ export default function App() {
               <nav className="space-y-1.5">
                 <NavItem 
                   active={currentView === 'audit-logs'} 
-                  onClick={() => setCurrentView('audit-logs')}
+                  onClick={() => handleNav('audit-logs')}
                   icon={<Clock />}
                   label="User Login Audit Logs"
                   highlighted={true}
@@ -2623,32 +2554,41 @@ export default function App() {
              <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Data Sync</h3>
              <div className="space-y-2">
                 <button 
-                  onClick={handleRefresh}
+                  onClick={() => {
+                    handleRefresh();
+                    if (onItemSelect) onItemSelect();
+                  }}
                   disabled={loading}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 bg-white/40 border border-white/20 rounded-xl text-xs font-bold text-slate-700 transition-all ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/60 hover:border-white/35 shadow-sm'}`}
+                  className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-white/40 border border-white/20 rounded-xl text-xs font-bold text-slate-700 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/60 hover:border-white/35 shadow-sm active:scale-95'}`}
                 >
                   <RefreshCw className={`w-4 h-4 text-teal-600 ${loading ? 'animate-spin' : ''}`} />
                   Sync with Server
                 </button>
-                <label className={`w-full flex items-center gap-3 px-3.5 py-2.5 bg-[#0b3c34] hover:bg-[#0e4e43] border border-transparent rounded-xl text-xs font-bold text-white transition-all ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
+                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-[#0b3c34] hover:bg-[#0e4e43] border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
                   {loading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Database className="w-4 h-4 text-emerald-400" />}
                   Upload Recent Unified Sheet
                   <input 
                     type="file" 
                     className="hidden" 
                     accept=".xlsx, .xls, .csv" 
-                    onChange={handleFileUpload} 
+                    onChange={(e) => {
+                      handleFileUpload(e);
+                      if (onItemSelect) onItemSelect();
+                    }} 
                     disabled={loading}
                   />
                 </label>
-                <label className={`w-full flex items-center gap-3 px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 border border-transparent rounded-xl text-xs font-bold text-white transition-all ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
+                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-indigo-500 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
                   {loading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Upload className="w-4 h-4 text-indigo-300" />}
                   OR List Upload {hasORList && <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded-md font-mono">{orListCount}</span>}
                   <input 
                     type="file" 
                     className="hidden" 
                     accept=".xlsx, .xls, .csv" 
-                    onChange={handleORListUpload} 
+                    onChange={(e) => {
+                      handleORListUpload(e);
+                      if (onItemSelect) onItemSelect();
+                    }} 
                     disabled={loading}
                   />
                 </label>
@@ -2672,46 +2612,182 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-auto">
+          <div className="mt-auto pt-4">
             <div className="bg-[#0b3c34]/15 border border-teal-400/40 text-[#0b3c34] p-4 rounded-xl shadow-[0_4px_20px_rgba(20,184,166,0.1)]">
               <p className="text-[10px] font-bold opacity-75 uppercase tracking-wider mb-1">Upcoming Trigger</p>
               <p className="text-base font-extrabold">14:00 (Daily Exit)</p>
             </div>
           </div>
-        </aside>
+        </div>
+      );
+    };
 
-        {/* Main Dashboard Content */}
-        <main className="flex-1 p-8 overflow-y-auto bg-white/5 backdrop-blur-sm flex flex-col relative z-0">
-          <header className="flex justify-between items-center mb-8 shrink-0">
-            <div>
-              <h2 className="text-4xl font-extrabold text-[#0b3c34] tracking-tight capitalize font-sans">{currentView}</h2>
-              <p className="text-xs font-bold text-slate-600 mt-1 uppercase tracking-wide">Live operational overview of your infrastructure</p>
+    return (
+      <div 
+        className="w-full min-h-screen flex flex-col font-sans text-slate-900 overflow-hidden relative bg-slate-100"
+        style={{
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        }}
+      >
+        {/* Top Navigation Bar */}
+        <header className="h-20 bg-white/40 backdrop-blur-md border-b border-white/20 flex items-center justify-between px-4 sm:px-6 shrink-0 z-20 shadow-sm relative">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <button 
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[#0b3c34] hover:bg-white/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              aria-label="Open navigation menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div className="w-10 h-10 sm:w-11 sm:h-11 bg-[#0b3c34] rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
+              <Building2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-100" />
             </div>
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={handleReset}
-                disabled={loading}
-                className={`flex items-center gap-2 px-4 py-2.5 border rounded-xl text-xs font-bold transition-all shadow-sm group disabled:opacity-50 disabled:cursor-not-allowed ${
-                  showResetConfirm 
-                    ? 'bg-red-600 border-red-700 text-white animate-pulse' 
-                    : 'bg-white/70 backdrop-blur border-slate-200/50 hover:border-slate-300 text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <Trash2 className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`} />
-                {loading ? 'Resetting...' : showResetConfirm ? 'CONFIRM RESET' : 'Reset Data'}
-              </button>
-              <div className="relative">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#0b3c34]" />
-                <input 
-                  type="text" 
-                  placeholder="Patient / Room search..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-11 pr-5 py-2.5 bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 w-72 text-sm shadow-sm font-medium transition-all text-[#0b3c34] placeholder-slate-400"
+            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-[#0b3c34] font-sans truncate">
+              Mohanad's Elite Unified Dashboard
+            </h1>
+          </div>
+
+          {/* Central Floating Logo Badge */}
+          <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 top-2 flex-col items-center justify-center z-30 pointer-events-none md:pointer-events-auto">
+            <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden">
+              {logoLoadFailed ? (
+                <div className="flex flex-col items-center justify-center text-center">
+                  <svg viewBox="0 0 100 100" className="w-8 h-8 text-[#0b3c34] opacity-90">
+                    <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="text-[8px] uppercase font-black tracking-widest text-[#0b3c34] font-mono leading-none mt-0.5">ELITE</span>
+                </div>
+              ) : (
+                <img 
+                  src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
+                  alt="Elite Logo" 
+                  className="w-full h-full object-contain transition-transform hover:scale-105 duration-300"
+                  referrerPolicy="no-referrer"
+                  onError={() => {
+                    if (!useAlternativeLogo) {
+                      console.log("[Logo Cachebuster] Base logo failed to load, trying alternative logo.");
+                      setUseAlternativeLogo(true);
+                    } else {
+                      console.log("[Logo Cachebuster] Alternative logo failed to load, falling back to SVG glyph.");
+                      setLogoLoadFailed(true);
+                    }
+                  }}
                 />
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <div className="hidden sm:flex flex-col items-end text-right">
+              <span className="text-xs font-bold text-[#0b3c34] uppercase tracking-wider">MOHANAD M.D.</span>
+              <span className="text-[10px] font-mono font-semibold text-slate-500 mt-0.5">
+                {(() => {
+                  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+                  return `${now.getDate()}-${now.getMonth() + 1}-${now.getFullYear()}`;
+                })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 sm:gap-2 sm:pl-4 sm:border-l sm:border-slate-200/40">
+              <button 
+                 onClick={handleLogout}
+                 className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors hover:bg-white/30 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                 title="Logout"
+                 aria-label="Sign out"
+              >
+                 <LogOut className="w-5 h-5" />
+              </button>
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-200/60 border-2 border-white text-slate-700 overflow-hidden flex items-center justify-center font-extrabold text-xs sm:text-sm shadow-inner shrink-0">
+                 M
               </div>
             </div>
-          </header>
+          </div>
+        </header>
+
+        {/* Mobile Navigation Drawer */}
+        <AnimatePresence>
+          {isMobileMenuOpen && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 lg:hidden"
+                aria-hidden="true"
+              />
+              <motion.div
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-slate-50/95 backdrop-blur-xl border-r border-slate-200/80 p-6 flex flex-col gap-6 z-50 overflow-y-auto shadow-2xl lg:hidden"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Navigation Menu"
+              >
+                <div className="flex items-center justify-between pb-3 border-b border-slate-200/60">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 bg-[#0b3c34] rounded-lg flex items-center justify-center text-white shadow-sm">
+                      <Building2 className="w-5 h-5 text-teal-100" />
+                    </div>
+                    <span className="font-extrabold text-sm text-[#0b3c34] uppercase tracking-wide">Elite Occupancy</span>
+                  </div>
+                  <button
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-200/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                    aria-label="Close navigation menu"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                {renderSidebarNavContent(() => setIsMobileMenuOpen(false))}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
+        <div className="flex-1 flex overflow-hidden">
+          {/* Desktop Sidebar */}
+          <aside className="hidden lg:flex w-64 bg-white/10 backdrop-blur-md border-r border-white/20 p-6 flex-col gap-6 shrink-0 overflow-y-auto z-10 shadow-sm">
+            {renderSidebarNavContent()}
+          </aside>
+
+          {/* Main Dashboard Content */}
+          <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto bg-white/5 backdrop-blur-sm flex flex-col relative z-0">
+            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 sm:mb-8 shrink-0">
+              <div>
+                <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-[#0b3c34] tracking-tight capitalize font-sans">{currentView}</h2>
+                <p className="text-xs font-bold text-slate-600 mt-1 uppercase tracking-wide">Live operational overview of your infrastructure</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                <button 
+                  onClick={handleReset}
+                  disabled={loading}
+                  className={`flex items-center gap-2 px-4 py-2.5 min-h-[44px] border rounded-xl text-xs font-bold transition-all shadow-sm group disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
+                    showResetConfirm 
+                      ? 'bg-red-600 border-red-700 text-white animate-pulse' 
+                      : 'bg-white/70 backdrop-blur border-slate-200/50 hover:border-slate-300 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <Trash2 className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`} />
+                  {loading ? 'Resetting...' : showResetConfirm ? 'CONFIRM RESET' : 'Reset Data'}
+                </button>
+                <div className="relative flex-1 sm:flex-none">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#0b3c34]" />
+                  <input 
+                    type="text" 
+                    placeholder="Patient / Room search..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    aria-label="Patient and room search"
+                    className="w-full sm:w-72 pl-11 pr-5 py-2.5 min-h-[44px] bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm shadow-sm font-medium transition-all text-[#0b3c34] placeholder-slate-400"
+                  />
+                </div>
+              </div>
+            </header>
 
           <AnimatePresence mode="wait">
             {currentView === 'dashboard' && (
@@ -3108,14 +3184,16 @@ export default function App() {
                             placeholder="Search new admissions by patient name, room, physician or contractor..."
                             value={entrySearchQuery}
                             onChange={(e) => setEntrySearchQuery(e.target.value)}
-                            className="w-full pl-9 pr-10 py-2 bg-white/50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-[#0b3c34] transition-all"
+                            aria-label="Search new admissions by patient name, room, physician or contractor"
+                            className="w-full pl-9 pr-10 py-2.5 min-h-[40px] bg-white/50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-[#0b3c34] transition-all"
                           />
                           {entrySearchQuery && (
                             <button
                               onClick={() => setEntrySearchQuery('')}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 hover:bg-slate-200 text-slate-400 hover:text-slate-600 rounded-md transition-colors"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center hover:bg-slate-200 text-slate-400 hover:text-slate-600 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                              aria-label="Clear admissions search"
                             >
-                              <X className="w-3 h-3" />
+                              <X className="w-3.5 h-3.5" />
                             </button>
                           )}
                         </div>
@@ -4883,12 +4961,12 @@ function NavItem({ active, onClick, icon, label, highlighted, badge }: {
   return (
     <button 
       onClick={onClick}
-      className={`flex items-center justify-between w-full px-3 py-2 rounded-lg transition-all text-sm font-medium relative ${
+      className={`flex items-center justify-between w-full px-3.5 py-2.5 min-h-[44px] rounded-xl transition-all text-sm font-medium relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
         active 
           ? 'bg-[#0b3c34] text-white shadow-md shadow-teal-900/10' 
           : highlighted
             ? 'bg-amber-500/15 text-amber-700 hover:text-amber-900 hover:bg-amber-500/20 border-2 border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.25)] animate-pulse'
-            : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
       }`}
     >
       <div className="flex items-center gap-3 min-w-0">
@@ -4919,7 +4997,7 @@ function ActionButton({ icon, label, onClick, loading }: { icon: React.ReactElem
     <button 
       onClick={onClick}
       disabled={loading}
-      className="w-full text-left px-3 py-2.5 text-xs bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-2 font-bold uppercase tracking-wide"
+      className="w-full text-left px-3.5 py-2.5 min-h-[44px] text-xs bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-2.5 font-bold uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {React.cloneElement(icon, { className: `w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}` } as any)}
       {label}

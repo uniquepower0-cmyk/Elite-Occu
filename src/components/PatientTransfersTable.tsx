@@ -478,28 +478,31 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                               setStepContractor(item.contractor || '');
                             }}
                             title="Add next transfer destination for this patient"
+                            aria-label={`Add next transfer destination for ${item.name}`}
                             type="button"
-                            className="p-1.5 bg-teal-50 hover:bg-teal-100 text-[#0b3c34] rounded-lg transition-all cursor-pointer"
+                            className="w-9 h-9 flex items-center justify-center bg-teal-50 hover:bg-teal-100 text-[#0b3c34] rounded-lg transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
                           >
-                            <Plus size={14} />
+                            <Plus size={16} />
                           </button>
                           
                           <button
                             onClick={() => setHistoryPatient(item)}
                             title="View chronological transfer timeline"
+                            aria-label={`View chronological transfer timeline for ${item.name}`}
                             type="button"
-                            className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg transition-all cursor-pointer"
+                            className="w-9 h-9 flex items-center justify-center bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
                           >
-                            <History size={14} />
+                            <History size={16} />
                           </button>
 
                           <button
                             onClick={() => handleDeleteTransfer(item.id, item.name)}
                             title="Delete transfer record"
+                            aria-label={`Delete transfer record for ${item.name}`}
                             type="button"
-                            className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-all cursor-pointer"
+                            className="w-9 h-9 flex items-center justify-center bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-600"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={16} />
                           </button>
                         </div>
                       </td>
