@@ -360,6 +360,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by patient, room, physician, or contractor..."
+            aria-label="Search transfers by patient, room, physician, or contractor"
             className="w-full pl-10 pr-10 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
           />
           {searchQuery && (

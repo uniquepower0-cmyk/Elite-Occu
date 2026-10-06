@@ -2439,6 +2439,7 @@ export default function App() {
             <input 
               type="file" 
               accept=".xlsx,.xls,.csv" 
+              aria-label="Upload unified occupancy spreadsheet (.xlsx, .xls, .csv)"
               className="hidden" 
               onChange={handleFileUpload}
               disabled={loading}
@@ -2578,6 +2579,7 @@ export default function App() {
                     type="file" 
                     className="hidden" 
                     accept=".xlsx, .xls, .csv" 
+                    aria-label="Upload recent unified occupancy spreadsheet (.xlsx, .xls, .csv)"
                     onChange={(e) => {
                       handleFileUpload(e);
                       if (onItemSelect) onItemSelect();
@@ -2592,6 +2594,7 @@ export default function App() {
                     type="file" 
                     className="hidden" 
                     accept=".xlsx, .xls, .csv" 
+                    aria-label="Upload operating room schedule spreadsheet (.xlsx, .xls, .csv)"
                     onChange={(e) => {
                       handleORListUpload(e);
                       if (onItemSelect) onItemSelect();
@@ -3957,11 +3960,13 @@ export default function App() {
                                       placeholder="Search patients, surgeons, OR..."
                                       value={orSearchQuery}
                                       onChange={(e) => setOrSearchQuery(e.target.value)}
+                                      aria-label="Search operating room patients, surgeons, or room numbers"
                                       className="pl-9 pr-8 py-1.5 w-full sm:w-60 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-xs font-semibold rounded-xl text-slate-800 placeholder-slate-400 outline-hidden transition shadow-3xs"
                                     />
                                     {orSearchQuery && (
                                       <button
                                         onClick={() => setOrSearchQuery('')}
+                                        aria-label="Clear operating room search"
                                         className="absolute right-2.5 top-1.5 w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-600 text-xs font-bold"
                                       >
                                         ✕

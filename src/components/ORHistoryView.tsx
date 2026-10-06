@@ -475,6 +475,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                       value={searchFilter}
                       onChange={(e) => setSearchFilter(e.target.value)}
                       placeholder="Filter surgeon, patient, procedure, room..."
+                      aria-label="Filter operating room archives by patient, surgeon, or procedure"
                       className="w-full text-xs pl-9 pr-3 py-2 border border-teal-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white/70 font-medium"
                     />
                   </div>
