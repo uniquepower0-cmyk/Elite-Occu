@@ -692,7 +692,8 @@ export default function App() {
         const resetRes = await res.json();
         console.log('Reset successful on server:', resetRes);
         setOrHistoryRefreshKey(k => k + 1);
-        await fetchData();
+        setOccupancyHistoryRefreshKey(k => k + 1);
+        await fetchData({ force: true });
         setCurrentView('dashboard');
         alert(resetRes.message || 'Today\'s occupancy state, OR schedule, intra-day metrics, and database snapshots have been completely removed from the database.');
       } else {

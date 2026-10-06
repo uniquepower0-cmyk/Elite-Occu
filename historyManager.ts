@@ -623,7 +623,8 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
  * Delete an Occupancy snapshot from disk, Supabase cloud database, and date index
  */
 export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean> {
-  const cleanDate = dateStr.trim();
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
   console.log(`[OccupancyHistory] Deleting occupancy snapshot for date: ${cleanDate}`);
 
   // 1. Delete from local disk
@@ -644,6 +645,13 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
       .delete()
       .like('path', `history/occupancy/${cleanDate}%`);
 
+    if (dateStr.includes('/')) {
+      await historySupabase
+        .from('rtdb_nodes')
+        .delete()
+        .like('path', `history/occupancy/${dateStr}%`);
+    }
+
     if (sbErr) {
       console.error(`[OccupancyHistory] Error deleting history nodes from Supabase for ${cleanDate}:`, sbErr);
     } else {
@@ -653,24 +661,42 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
     console.error(`[OccupancyHistory] Exception deleting snapshot from Supabase:`, err);
   }
 
-  // 3. Remove date from occupancy index
+  // 3. Remove date from cloud occupancy index (Supabase rtdb_nodes) & local disk
   try {
-    const indexPath = path.join(process.cwd(), 'history', `occupancy_index.json`);
+    const indexPath = path.join(WRITABLE_BASE, 'history', `occupancy_index.json`);
     let entries: DateIndexEntry[] = [];
     if (fs.existsSync(indexPath)) {
       try {
         const raw = await fsPromises.readFile(indexPath, 'utf-8');
         entries = JSON.parse(raw) || [];
       } catch (e) {}
+    } else if (fs.existsSync(path.join(process.cwd(), 'history', `occupancy_index.json`))) {
+      try {
+        const raw = await fsPromises.readFile(path.join(process.cwd(), 'history', `occupancy_index.json`), 'utf-8');
+        entries = JSON.parse(raw) || [];
+      } catch (e) {}
     }
-    entries = entries.filter(e => e.date !== cleanDate);
-    await fsPromises.writeFile(indexPath, JSON.stringify(entries));
+    entries = entries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate && e.date !== dateStr);
+    try {
+      await fsPromises.writeFile(indexPath, JSON.stringify(entries));
+    } catch (e) {}
+
+    // Query live Supabase index directly and prune
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', `history/occupancy_index`)
+      .maybeSingle();
+
+    let cloudEntries: DateIndexEntry[] = (node && Array.isArray(node.data)) ? node.data : [];
+    cloudEntries = cloudEntries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate && e.date !== dateStr);
 
     await historySupabase.from('rtdb_nodes').upsert({
       path: `history/occupancy_index`,
-      data: entries,
+      data: cloudEntries,
       updated_at: new Date().toISOString()
     });
+    console.log(`[OccupancyHistory] Successfully pruned ${cleanDate} from Supabase history/occupancy_index.`);
   } catch (e) {
     console.error(`[OccupancyHistory] Error updating occupancy_index on delete:`, e);
   }

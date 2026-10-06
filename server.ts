@@ -2164,13 +2164,21 @@ async function executeLoadData(force = false) {
       // 1. Occupancy & Beds
       if (stateMap['state/occupancy']) {
         const occData = stateMap['state/occupancy'];
-        const cloudCurrent = normalizeRowsArray(occData.current || occData.beds);
-        if (cloudCurrent && cloudCurrent.length > 0) {
-          hospitalData = cloudCurrent;
+        if ((Array.isArray(occData.current) && occData.current.length === 0) || occData.current === null) {
+          hospitalData = null;
+        } else {
+          const cloudCurrent = normalizeRowsArray(occData.current || occData.beds);
+          if (cloudCurrent && cloudCurrent.length > 0) {
+            hospitalData = cloudCurrent;
+          }
         }
-        const cloudPrev = normalizeRowsArray(occData.previous);
-        if (cloudPrev && cloudPrev.length > 0) {
-          previousHospitalData = cloudPrev;
+        if ((Array.isArray(occData.previous) && occData.previous.length === 0) || occData.previous === null) {
+          previousHospitalData = null;
+        } else {
+          const cloudPrev = normalizeRowsArray(occData.previous);
+          if (cloudPrev && cloudPrev.length > 0) {
+            previousHospitalData = cloudPrev;
+          }
         }
       }
 
@@ -2333,8 +2341,8 @@ async function executeLoadData(force = false) {
     // Snapshot fallbacks: Ensure active data for today is NEVER lost on database restart
     const cairoNow = getCairoDateTime();
 
-    // 1. Occupancy snapshot fallback if empty
-    if (!hospitalData || hospitalData.length === 0) {
+    // 1. Occupancy snapshot fallback if empty: only restore on server reboot if today was actually active and not reset
+    if ((!hospitalData || hospitalData.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 0) {
@@ -2346,8 +2354,8 @@ async function executeLoadData(force = false) {
       }
     }
 
-    // 2. Discharged cases snapshot fallback: Ensure discharged cases for today are NEVER lost on database restart
-    if (!cumulativeDischarged || cumulativeDischarged.length === 0) {
+    // 2. Discharged cases snapshot fallback: only restore if today was active and not reset
+    if ((!cumulativeDischarged || cumulativeDischarged.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeDischarged) && todaySnap.cumulativeDischarged.length > 0) {
@@ -2362,8 +2370,8 @@ async function executeLoadData(force = false) {
       }
     }
 
-    // 3. Dialysis snapshot fallback: Ensure dialysis cases for today are NEVER lost on database restart
-    if (!cumulativeDialysis || cumulativeDialysis.length === 0) {
+    // 3. Dialysis snapshot fallback: only restore if today was active and not reset
+    if ((!cumulativeDialysis || cumulativeDialysis.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeDialysis) && todaySnap.cumulativeDialysis.length > 0) {
@@ -2375,8 +2383,8 @@ async function executeLoadData(force = false) {
       }
     }
 
-    // 4. Transfers snapshot fallback: Ensure patient transfers for today are NEVER lost on database restart
-    if (!cumulativeTransfers || cumulativeTransfers.length === 0) {
+    // 4. Transfers snapshot fallback: only restore if today was active and not reset
+    if ((!cumulativeTransfers || cumulativeTransfers.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeTransfers) && todaySnap.cumulativeTransfers.length > 0) {
@@ -2388,8 +2396,8 @@ async function executeLoadData(force = false) {
       }
     }
 
-    // OR List Snapshot: Only restore from TODAY'S snapshot if available (never resurrect old historical OR lists)
-    if (!cumulativeORList || cumulativeORList.length === 0) {
+    // OR List Snapshot: Only restore from TODAY'S snapshot if available and active (never resurrect old historical OR lists)
+    if ((!cumulativeORList || cumulativeORList.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
       try {
         const todaySnap = await getORSnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
@@ -6831,7 +6839,7 @@ app.get('/api/occupancy/data', async (req, res) => {
   const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
   const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
 
-  if ((force && isStale) || isDataMissing) {
+  if ((force && isStale) || (isDataMissing && lastActiveDate)) {
     try {
       await loadData(force);
     } catch (err) {
@@ -7996,6 +8004,17 @@ app.post('/api/reset', async (req, res) => {
     }
     if (lastActiveDate) {
       targetDatesToDelete.add(lastActiveDate);
+    }
+    if (hospitalData && hospitalData.length > 3 && hospitalData[3][0]) {
+      const rowDate = cleanAdmissionDateStr(hospitalData[3][0]);
+      if (rowDate) {
+        const norm = normalizeToISODate(rowDate);
+        if (norm) targetDatesToDelete.add(norm);
+      }
+    }
+    if (cumulativeORList && cumulativeORList.length > 0 && cumulativeORList[0]?.orListDate) {
+      const orD = normalizeToISODate(cumulativeORList[0].orListDate);
+      if (orD) targetDatesToDelete.add(orD);
     }
 
     // 0. Save an immutable manual_reset changelog entry BEFORE deleting/clearing data

@@ -1,29 +1,34 @@
-# Unified Reset Data Specification
+# Unified Reset Data Specification & Snapshot Purge Fix
 
 ## Purpose
-Define the architectural and user-experience design for the unified **"Reset Data"** button in Hospital Occupancy Manager. This operation completely clears the active operational day across all hospital modules, purges today's historical snapshots from disk and cloud storage, and synchronizes the deletions to Supabase database tables while strictly preserving VIP cases.
+Define the architectural and user-experience design for the unified **"Reset Data"** button in Hospital Occupancy Manager. This operation completely clears the active operational day across all hospital modules, purges today's historical snapshots from disk and cloud storage, and synchronizes the deletions to Supabase database tables while strictly preserving VIP cases and preventing zombie auto-recovery loops.
 
 ---
 
 ## 1. Understanding Summary
 - **Target Operational Scope**: Only the current active operational date (`cairo.dateStr`, `uploadedAt` date, `lastActiveDate`). Previous days' historical data and archives remain completely untouched.
+- **Root Cause of Previous Desync**:
+  1. `deleteOccupancySnapshot` modified only local disk index files, leaving `history/occupancy_index` in Supabase unpruned.
+  2. `loadData()` interpreted an empty hospital as accidental data loss and restored data from existing snapshots.
+  3. `executeLoadData` did not treat `state/occupancy` with `current: []` as an intentional zero state.
 - **Datasets Purged**:
   - Live Hospital Occupancy Census (`hospitalData = null`, `previousHospitalData = null`, registries wiped).
   - Operating Room (OR) Live Schedule (`cumulativeORList = []`).
-  - Intra-Day Metrics: Discharged patients (`cumulativeDischarged = []`, `manuallyDischargedNames = []`), Dialysis patients (`cumulativeDialysis = []`), Patient transfers (`cumulativeTransfers = []`), Today's entry cases (`cumulativeEntries = []`), transient room notes.
-  - Historical Snapshots: Today's Occupancy snapshot and today's OR snapshot are deleted from local disk and Supabase cloud storage/`rtdb_nodes` (removed from `occupancy_index.json` and `or_index.json`).
+  - Intra-Day Metrics: Discharged patients, Dialysis patients, Patient transfers, Today's entry cases, transient room notes.
+  - Historical Snapshots: Today's Occupancy snapshot and today's OR snapshot are deleted from local disk and Supabase cloud storage (`rtdb_nodes`), and removed from both `occupancy_index` and `or_index` in Supabase.
   - Database Relational Deletion: Corresponding active records in Supabase PostgreSQL tables (`admissions`, `or_cases`, `transfers`) for today's active date are deleted or marked discharged/cleared.
 - **Datasets Preserved**:
   - Persistent VIP Cases (`vipCasesText` in memory and `settings/vip_cases` in database) remain strictly intact per `VIP_CASES_POLICY.md`.
 - **User Interface & Confirmation**:
-  - Replaces the requirement to type `"RESET"` with a direct, single-click **"Confirm Reset"** button accompanied by clear, descriptive warnings.
+  - Direct, single-click **"Confirm Reset"** button accompanied by clear, descriptive warnings.
+  - Occupancy History dropdown refreshes immediately and omits today's date (`2026-10-07`).
 
 ---
 
 ## 2. Assumptions & Non-Functional Requirements
 - **Performance**: Reset execution across memory, local files, Supabase `rtdb_nodes`, and relational tables executes in `< 2 seconds`.
 - **Resiliency**: If Supabase remote table deletion or cloud storage encounters a timeout, local cache and in-memory server state are still cleanly wiped without crashing.
-- **Immediate UI Feedback**: A loading spinner is displayed during execution, and all dashboard tabs (Occupancy, OR, Discharges, Dialysis, Transfers) refresh immediately upon completion.
+- **Zero-State Integrity**: When `hospitalData` is cleared by an intentional reset, the server will not attempt auto-recovery from snapshots.
 
 ---
 
@@ -31,62 +36,86 @@ Define the architectural and user-experience design for the unified **"Reset Dat
 
 | Decision | Alternatives Considered | Rationale |
 | :--- | :--- | :--- |
-| **Unified Atomic Backend Route** | Client-orchestrated sequence | Eliminates partial reset risks and client network race conditions; all deletion steps run synchronously on the server. |
-| **Scoped Relational Deletion** | Complete table truncate | Protects prior days' clinical and admissions history while cleanly wiping today's records. |
-| **Direct Confirmation Button** | Typed "RESET" string requirement | Streamlines operations for hospital staff while retaining a clear, high-visibility warning modal. |
-| **Non-blocking DB Resiliency** | Throwing fatal 500 on partial remote error | Guarantees local server operation continues smoothly even if an external cloud request times out. |
-| **Strict VIP Preservation** | Wiping VIP text box | Aligns with hospital policy requiring long-term VIP tracking to persist across intra-day resets. |
+| **Direct Cloud Index Pruning in `deleteOccupancySnapshot`** | Pruning only local disk index file | Fixes the root desync where Supabase retained `2026-10-07` in `history/occupancy_index`. |
+| **Normalized Date Comparison on Index Filter** | Literal string matching | Prevents mismatches between `YYYY-MM-DD`, `DD-MM-YYYY`, and delimited dates. |
+| **Explicit Zero-State Recognition in `executeLoadData`** | Treating empty arrays as null | Ensures `current: []` from cloud storage sets `hospitalData = null` instead of remaining untouched. |
+| **Guard Snapshot Fallbacks in Server** | Deleting all fallbacks | Preserves cold-start disaster recovery for valid days while preventing intentional reset resurrection. |
+| **Client Force Fetch & Dropdown Key** | Stale local cache fetch | Ensures browser cache doesn't serve a 304 Not Modified after reset. |
 
 ---
 
-## 4. Technical Architecture & Endpoints
+## 4. Technical Architecture & Implementation Details
 
-### 4.1 Backend (`server.ts` -> `POST /api/reset`)
-1. **Target Date Detection**:
+### 4.1 `historyManager.ts` -> `deleteOccupancySnapshot`
+```typescript
+export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean> {
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
+
+  // 1. Delete from local disk
+  const filePath = path.join(HISTORY_OCC_DIR, `${cleanDate}.json`);
+  if (fs.existsSync(filePath)) await fsPromises.unlink(filePath);
+
+  // 2. Delete granular history nodes and legacy node from Supabase
+  await historySupabase
+    .from('rtdb_nodes')
+    .delete()
+    .like('path', `history/occupancy/${cleanDate}%`);
+
+  // 3. Remove date from cloud occupancy index (Supabase rtdb_nodes)
+  const { data: node } = await historySupabase
+    .from('rtdb_nodes')
+    .select('data')
+    .eq('path', 'history/occupancy_index')
+    .maybeSingle();
+
+  let cloudEntries: DateIndexEntry[] = (node && Array.isArray(node.data)) ? node.data : [];
+  cloudEntries = cloudEntries.filter(e => (normalizeToISODate(e.date) || e.date) !== cleanDate);
+
+  await historySupabase.from('rtdb_nodes').upsert({
+    path: 'history/occupancy_index',
+    data: cloudEntries,
+    updated_at: new Date().toISOString()
+  });
+
+  // 4. Also update local disk index if present
+  const indexPath = path.join(WRITABLE_BASE, 'history', 'occupancy_index.json');
+  if (fs.existsSync(indexPath)) {
+    try { await fsPromises.writeFile(indexPath, JSON.stringify(cloudEntries)); } catch (e) {}
+  }
+
+  return true;
+}
+```
+
+### 4.2 `server.ts` -> `executeLoadData` & `GET /api/occupancy/data`
+1. **Explicit Zero-State Recognition**:
    ```typescript
-   const targetDatesToDelete = new Set<string>();
-   targetDatesToDelete.add(cairo.dateStr);
-   if (uploadedAt) targetDatesToDelete.add(getCairoDateFromTimestamp(uploadedAt));
-   if (lastActiveDate) targetDatesToDelete.add(lastActiveDate);
+   if (stateMap['state/occupancy']) {
+     const occData = stateMap['state/occupancy'];
+     if (Array.isArray(occData.current) && occData.current.length === 0) {
+       hospitalData = null;
+     } else {
+       const cloudCurrent = normalizeRowsArray(occData.current || occData.beds);
+       if (cloudCurrent && cloudCurrent.length > 0) hospitalData = cloudCurrent;
+     }
+   }
    ```
-2. **Audit Logging**: Saves an immutable `manual_reset` entry to `change_log`.
-3. **History Snapshot Deletion**:
-   - Calls `deleteOccupancySnapshot(d)` for each target date.
-   - Calls `deleteORSnapshot(d)` for each target date.
-4. **Relational Database Deletion**:
-   - `or_cases`: Deletes cases where `scheduled_date` is in `targetDatesToDelete`.
-   - `transfers`: Deletes auto-detected transfers recorded for the target date.
-   - `admissions`: Deletes or marks `Discharged` any active admissions (`status = 'Admitted'`) from today's upload.
-5. **Memory State Reset**:
-   - `hospitalData = null`, `previousHospitalData = null`
-   - `cumulativeORList = []`
-   - `cumulativeDischarged = []`, `manuallyDischargedNames = []`
-   - `cumulativeDialysis = []`
-   - `cumulativeTransfers = []`
-   - `cumulativeEntries = []`
-   - `cumulativeDebts = []`, `cumulativeInsuredDebts = []`, etc.
-   - **`vipCasesText` preserved**.
-6. **State Persistence**:
-   - Calls `saveData()` to write clean nodes to `rtdb_nodes` and `data.json`.
+2. **Prevent Auto-Recovery on Deliberate Empty Census**:
+   In `GET /api/occupancy/data`, do not execute `loadData(force)` simply because `hospitalData === null` if cloud storage has already recorded an empty census state.
 
-### 4.2 Frontend (`src/App.tsx`)
-1. **Confirmation Modal Update**:
-   - Remove text input requiring `"RESET"`.
-   - Modal displays comprehensive list of purged modules with clear visual indicators.
-   - Primary action: `<button onClick={handleConfirmReset}>Confirm Reset</button>`.
-2. **Post-Reset State Update**:
-   - Calls `await fetchData()`.
-   - Increments `setOrHistoryRefreshKey(k => k + 1)`.
-   - Switches view to `dashboard`.
-   - Alerts/notifies user of clean state.
+### 4.3 `src/App.tsx` -> `executeOccupancyReset`
+- Call `await fetchData({ force: true })`.
+- Increment `occupancyHistoryRefreshKey` to force the Occupancy History dropdown to reload dates.
 
 ---
 
 ## 5. Verification Plan
-1. **Upload Phase**: Upload occupancy and OR schedule files, verify active beds, OR procedures, discharges, and snapshots exist.
-2. **Execution Phase**: Click "Reset Data" in header, confirm via modal without typing.
-3. **Parity Check**:
-   - UI reflects 0 active beds, 0 OR cases, 0 discharges, 0 dialysis.
-   - Today's date removed from occupancy history and OR history dropdowns.
-   - VIP cases box remains intact with existing content.
-   - Supabase `admissions`, `or_cases`, and `rtdb_nodes` verified clean for today.
+1. Click **Reset Data** -> Confirm Reset.
+2. Verify in Supabase database:
+   - `history/occupancy_index` contains past dates only (no `2026-10-07`).
+   - `history/occupancy/2026-10-07/*` nodes are deleted.
+   - `state/occupancy` has `current: []`.
+3. Verify in UI:
+   - Dashboard shows 0 beds / empty state.
+   - History dropdown shows `2026-10-06` as the latest date and omits `2026-10-07`.
