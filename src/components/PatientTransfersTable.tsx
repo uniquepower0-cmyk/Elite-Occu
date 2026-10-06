@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ArrowRightLeft, 
   Search, 
@@ -66,6 +66,29 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
     });
   }, [transfers, searchQuery]);
 
+  // Accessible toast notification state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 4500);
+  };
+
+  // Keyboard navigation & Escape dismiss for modals
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isAddModalOpen) setIsAddModalOpen(false);
+        if (stepModalPatient) setStepModalPatient(null);
+        if (historyPatient) setHistoryPatient(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAddModalOpen, stepModalPatient, historyPatient]);
+
   // Statistics
   const stats = useMemo(() => {
     const totalPatients = transfers.length;
@@ -87,7 +110,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
   const handleCreateTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!patientName.trim() || !fromRoom.trim() || !toRoom.trim()) {
-      alert('Please enter patient name, previous room, and new destination room.');
+      showToast('Please enter patient name, previous room, and new destination room.', 'error');
       return;
     }
 
@@ -121,8 +144,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
       setContractor('');
       setNotes('');
       await onRefresh();
+      showToast('Patient transfer recorded successfully.', 'success');
     } catch (err: any) {
-      alert('Error saving transfer: ' + err.message);
+      showToast('Error saving transfer: ' + err.message, 'error');
     } finally {
       setLoadingAction(false);
     }
@@ -132,7 +156,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
   const handleAddNextStep = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stepModalPatient || !nextToRoom.trim()) {
-      alert('Please enter the new destination room.');
+      showToast('Please enter the new destination room.', 'error');
       return;
     }
 
@@ -162,8 +186,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
       setStepPhysician('');
       setStepContractor('');
       await onRefresh();
+      showToast('Next transfer step added successfully.', 'success');
     } catch (err: any) {
-      alert('Error adding transfer step: ' + err.message);
+      showToast('Error adding transfer step: ' + err.message, 'error');
     } finally {
       setLoadingAction(false);
     }
@@ -184,8 +209,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
         throw new Error('Failed to delete transfer record');
       }
       await onRefresh();
+      showToast(`Transfer record for ${name} deleted.`, 'info');
     } catch (err: any) {
-      alert('Error deleting record: ' + err.message);
+      showToast('Error deleting record: ' + err.message, 'error');
     } finally {
       setLoadingAction(false);
     }
@@ -202,8 +228,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
         throw new Error('Failed to sanitize transfers');
       }
       await onRefresh();
+      showToast('Sanitized duplicate transfer records successfully.', 'success');
     } catch (err: any) {
-      alert('Error cleaning duplicates: ' + err.message);
+      showToast('Error cleaning duplicates: ' + err.message, 'error');
     } finally {
       setLoadingAction(false);
     }
@@ -221,9 +248,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
         throw new Error(data.error || 'Failed to detect transfers');
       }
       await onRefresh();
-      alert(data.message || `Transfers reconciled. Total cases: ${data.transfersCount || 0}`);
+      showToast(data.message || `Transfers reconciled. Total cases: ${data.transfersCount || 0}`, 'success');
     } catch (err: any) {
-      alert('Error detecting transfers: ' + err.message);
+      showToast('Error detecting transfers: ' + err.message, 'error');
     } finally {
       setLoadingAction(false);
     }
@@ -517,16 +544,24 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
       {/* Modal: Add New Patient Transfer */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" dir="ltr">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" 
+          dir="ltr"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-transfer-modal-title"
+          onClick={(e) => { if (e.target === e.currentTarget) setIsAddModalOpen(false); }}
+        >
           <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden text-left">
             <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ArrowRightLeft size={18} className="text-teal-300" />
-                <h3 className="font-bold text-base">Record New Patient Transfer</h3>
+                <h3 id="add-transfer-modal-title" className="font-bold text-base">Record New Patient Transfer</h3>
               </div>
               <button
                 onClick={() => setIsAddModalOpen(false)}
-                className="text-teal-200 hover:text-white cursor-pointer"
+                className="text-teal-200 hover:text-white cursor-pointer p-1.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
+                aria-label="Close dialog"
               >
                 <X size={18} />
               </button>
@@ -652,16 +687,24 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
       {/* Modal: Add Next Step to Patient */}
       {stepModalPatient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" dir="ltr">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" 
+          dir="ltr"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="step-transfer-modal-title"
+          onClick={(e) => { if (e.target === e.currentTarget) setStepModalPatient(null); }}
+        >
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden text-left">
             <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Plus size={18} className="text-teal-300" />
-                <h3 className="font-bold text-base">Add Next Transfer Destination</h3>
+                <h3 id="step-transfer-modal-title" className="font-bold text-base">Add Next Transfer Destination</h3>
               </div>
               <button
                 onClick={() => setStepModalPatient(null)}
-                className="text-teal-200 hover:text-white cursor-pointer"
+                className="text-teal-200 hover:text-white cursor-pointer p-1.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
+                aria-label="Close dialog"
               >
                 <X size={18} />
               </button>
@@ -725,16 +768,24 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
       {/* Modal: Timeline History */}
       {historyPatient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" dir="ltr">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" 
+          dir="ltr"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="history-transfer-modal-title"
+          onClick={(e) => { if (e.target === e.currentTarget) setHistoryPatient(null); }}
+        >
           <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden text-left">
             <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <History size={18} className="text-teal-300" />
-                <h3 className="font-bold text-base">Detailed Patient Transfer Journey</h3>
+                <h3 id="history-transfer-modal-title" className="font-bold text-base">Detailed Patient Transfer Journey</h3>
               </div>
               <button
                 onClick={() => setHistoryPatient(null)}
-                className="text-teal-200 hover:text-white cursor-pointer"
+                className="text-teal-200 hover:text-white cursor-pointer p-1.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
+                aria-label="Close dialog"
               >
                 <X size={18} />
               </button>
@@ -785,13 +836,37 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                 <button
                   type="button"
                   onClick={() => setHistoryPatient(null)}
-                  className="px-5 py-2 text-sm font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer"
+                  className="px-5 py-2 text-sm font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
                 >
                   Close
                 </button>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Floating Accessible Toast */}
+      {toast && (
+        <div 
+          role="status" 
+          aria-live="polite" 
+          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl border flex items-center gap-3 text-sm font-semibold transition-all ${
+            toast.type === 'error' 
+              ? 'bg-rose-50 border-rose-300 text-rose-900 shadow-rose-900/10' 
+              : toast.type === 'success'
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-950 shadow-emerald-950/10'
+                : 'bg-slate-900 border-slate-800 text-white shadow-slate-900/20'
+          }`}
+        >
+          <span>{toast.message}</span>
+          <button 
+            onClick={() => setToast(null)} 
+            aria-label="Dismiss notification"
+            className="p-1 hover:opacity-75 rounded transition-opacity"
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
     </div>

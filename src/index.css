@@ -22,6 +22,25 @@ body {
   font-family: var(--font-sans);
 }
 
+:focus-visible {
+  outline: 2px solid #0b3c34;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ping {
+    animation: none !important;
+  }
+  .animate-spin,
+  .animate-pulse {
+    animation-duration: 3s !important;
+  }
+  *, *::before, *::after {
+    transition-duration: 0.05s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 .group-separator {
   background-color: #DDEBF7;
   color: #1e1b4b; /* indigo-950/900 */
