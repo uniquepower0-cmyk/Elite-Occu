@@ -2701,35 +2701,6 @@ export default function App() {
             </h1>
           </div>
 
-          {/* Central Floating Logo Badge */}
-          <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 top-2 flex-col items-center justify-center z-30 pointer-events-none md:pointer-events-auto">
-            <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden">
-              {logoLoadFailed ? (
-                <div className="flex flex-col items-center justify-center text-center">
-                  <svg viewBox="0 0 100 100" className="w-8 h-8 text-brand-primary opacity-90">
-                    <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                  </svg>
-                  <span className="text-[8px] uppercase font-black tracking-widest text-brand-primary font-mono leading-none mt-0.5">ELITE</span>
-                </div>
-              ) : (
-                <img 
-                  src={useAlternativeLogo ? `/elite_logo.png` : `/elite_logo_transparent.png`} 
-                  alt="Elite Logo" 
-                  className="w-full h-full object-contain transition-transform hover:scale-105 duration-300"
-                  referrerPolicy="no-referrer"
-                  onError={() => {
-                    if (!useAlternativeLogo) {
-                      console.log("[Logo Cachebuster] Base logo failed to load, trying alternative logo.");
-                      setUseAlternativeLogo(true);
-                    } else {
-                      console.log("[Logo Cachebuster] Alternative logo failed to load, falling back to SVG glyph.");
-                      setLogoLoadFailed(true);
-                    }
-                  }}
-                />
-              )}
-            </div>
-          </div>
 
           <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <div className="hidden sm:flex flex-col items-end text-right">
