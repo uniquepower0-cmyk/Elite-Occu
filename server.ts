@@ -8018,14 +8018,44 @@ app.post('/api/reset', async (req, res) => {
       console.error('[Manual Reset] Failed to save manual_reset changelog entry:', clErr);
     }
 
-    // 1. Delete today's / active date's occupancy snapshot completely from database and disk
+    // 1. Delete today's / active date's occupancy and OR snapshots completely from database and disk
     for (const d of targetDatesToDelete) {
       await deleteOccupancySnapshot(d);
+      await deleteORSnapshot(d);
     }
 
-    // 2. Reset occupancy data and discharged cases
+    // 2. Correspondingly delete/clean today's records in Supabase relational database tables
+    try {
+      for (const d of targetDatesToDelete) {
+        // Delete OR cases scheduled for this date
+        const { error: orErr } = await supabaseAdmin
+          .from('or_cases')
+          .delete()
+          .eq('scheduled_date', d);
+        if (orErr) console.warn(`[Reset] Relational OR cases deletion notice for ${d}:`, orErr.message);
+
+        // Delete transfers recorded for this date
+        const { error: trErr } = await supabaseAdmin
+          .from('transfers')
+          .delete()
+          .gte('transfer_date', `${d}T00:00:00Z`);
+        if (trErr) console.warn(`[Reset] Relational transfers deletion notice for ${d}:`, trErr.message);
+      }
+
+      // Mark any active admissions as Discharged
+      const { error: admErr } = await supabaseAdmin
+        .from('admissions')
+        .update({ status: 'Discharged', discharge_date: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('status', 'Admitted');
+      if (admErr) console.warn('[Reset] Relational admissions update notice:', admErr.message);
+    } catch (relErr: any) {
+      console.warn('[Reset] Relational DB sync error (non-fatal):', relErr?.message || relErr);
+    }
+
+    // 3. Reset occupancy data, OR schedule, and intra-day metrics (discharges, dialysis, transfers)
     hospitalData = null;
     previousHospitalData = null;
+    cumulativeORList = [];
     cumulativeEntries = [];
     cumulativeDialysis = [];
     cumulativeDebts = [];
@@ -8046,7 +8076,7 @@ app.post('/api/reset', async (req, res) => {
     await saveData();
     res.json({
       success: true,
-      message: `Today's occupancy state and snapshot for ${cairo.dateStr} have been completely removed from the database.`,
+      message: `Today's occupancy state, OR schedule, intra-day metrics, and database snapshots for ${cairo.dateStr} have been completely removed from the database.`,
       archivedDate: cairo.dateStr
     });
   } catch (err: any) {

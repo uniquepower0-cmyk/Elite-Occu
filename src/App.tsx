@@ -671,9 +671,6 @@ export default function App() {
   };
 
   const handleConfirmReset = async () => {
-    if (resetChallengeText.trim().toUpperCase() !== 'RESET') {
-      return;
-    }
     setIsResetModalOpen(false);
     if (resetModalType === 'occupancy') {
       await executeOccupancyReset();
@@ -684,7 +681,7 @@ export default function App() {
 
   const executeOccupancyReset = async () => {
     setLoading(true);
-    console.log('Resetting occupancy data and removing today\'s state from database...');
+    console.log('Resetting occupancy data, OR schedule, intra-day metrics, and removing today\'s state & snapshots from database...');
     try {
       const res = await fetch('/api/reset', { 
         method: 'POST',
@@ -694,9 +691,10 @@ export default function App() {
       if (res.ok) {
         const resetRes = await res.json();
         console.log('Reset successful on server:', resetRes);
+        setOrHistoryRefreshKey(k => k + 1);
         await fetchData();
         setCurrentView('dashboard');
-        alert(resetRes.message || 'Today\'s occupancy state has been completely removed from the database.');
+        alert(resetRes.message || 'Today\'s occupancy state, OR schedule, intra-day metrics, and database snapshots have been completely removed from the database.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('Reset failed on server:', errorData.error);
@@ -4911,7 +4909,7 @@ export default function App() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 12 }}
               transition={{ type: 'spring', damping: 25, stiffness: 350 }}
-              className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-red-200 p-6 z-50 overflow-hidden"
+              className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-red-200 p-6 z-50 overflow-hidden"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="reset-modal-title"
@@ -4923,62 +4921,73 @@ export default function App() {
                 </div>
                 <div>
                   <h3 id="reset-modal-title" className="text-lg font-extrabold text-slate-900">
-                    {resetModalType === 'occupancy' ? 'Reset Occupancy Census' : 'Reset OR Schedule'}
+                    {resetModalType === 'occupancy' ? "Reset Today's Hospital Data" : 'Reset OR Schedule'}
                   </h3>
                   <p className="text-xs text-red-600 font-semibold uppercase tracking-wide">
-                    Destructive Administrative Action
+                    Destructive Operational Action
                   </p>
                 </div>
               </div>
 
               <div id="reset-modal-description" className="space-y-3 text-sm text-slate-600 mb-6">
-                <p>
-                  {resetModalType === 'occupancy'
-                    ? "This will permanently purge today's hospital census data and active patient allocations from the live database."
-                    : "This will permanently reset today's Operating Room schedule records and reconciliation cache."}
-                </p>
-                <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-xs text-red-800 font-medium">
-                  To prevent accidental loss during live clinical rounds, type <strong className="font-bold text-red-900 font-mono tracking-wider">RESET</strong> below to confirm.
-                </div>
-                <div>
-                  <label htmlFor="reset-challenge-input" className="block text-xs font-bold text-slate-700 mb-1">
-                    Type confirmation phrase:
-                  </label>
-                  <input
-                    id="reset-challenge-input"
-                    type="text"
-                    value={resetChallengeText}
-                    onChange={(e) => setResetChallengeText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && resetChallengeText.trim().toUpperCase() === 'RESET') {
-                        handleConfirmReset();
-                      }
-                      if (e.key === 'Escape') {
-                        setIsResetModalOpen(false);
-                      }
-                    }}
-                    placeholder="Type RESET to confirm"
-                    autoFocus
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500 focus:bg-white text-slate-900 placeholder:text-slate-400 placeholder:font-sans"
-                  />
-                </div>
+                {resetModalType === 'occupancy' ? (
+                  <>
+                    <p className="font-semibold text-slate-800">
+                      Are you sure you want to reset today's hospital data? This will permanently delete:
+                    </p>
+                    <ul className="space-y-1.5 text-xs text-slate-700 bg-red-50/70 p-3.5 rounded-xl border border-red-100">
+                      <li className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+                        <span><strong>Live Occupancy:</strong> Hospital bed census & active patient allocations.</span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+                        <span><strong>Operating Room:</strong> Today's scheduled OR list & procedures.</span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+                        <span><strong>Intra-Day Metrics:</strong> Discharged cases, dialysis, and patient transfers.</span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+                        <span><strong>Database & Snapshots:</strong> Today's history snapshots from cloud database and disk.</span>
+                      </li>
+                    </ul>
+                    <div className="p-3 bg-emerald-50 border border-emerald-200/80 rounded-xl text-xs text-emerald-800 font-medium flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span><strong>VIP Cases Preserved:</strong> Persistent VIP records will remain safe and untouched.</span>
+                    </div>
+                  </>
+                ) : (
+                  <p>
+                    This will permanently reset today's Operating Room schedule records, clear reconciliation caches, and purge today's OR history snapshot from the database.
+                  </p>
+                )}
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setIsResetModalOpen(false)}
+                  disabled={loading}
                   className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-100 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 min-h-[44px]"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
-                  disabled={resetChallengeText.trim().toUpperCase() !== 'RESET' || loading}
+                  disabled={loading}
                   onClick={handleConfirmReset}
-                  className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 min-h-[44px]"
+                  className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 min-h-[44px] flex items-center gap-2"
                 >
-                  {loading ? 'Processing...' : 'Confirm Destruction'}
+                  {loading ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                      <span>Resetting Data...</span>
+                    </>
+                  ) : (
+                    <span>Confirm Reset</span>
+                  )}
                 </button>
               </div>
             </motion.div>
