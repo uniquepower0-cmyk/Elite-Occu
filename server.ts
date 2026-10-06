@@ -1176,9 +1176,7 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
   if (referenceDate) {
     const refComp = parseDateComponents(referenceDate);
     if (refComp) {
-      if (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d) {
-        return true;
-      }
+      return (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d);
     }
   }
 
@@ -3523,45 +3521,8 @@ async function handleUnifiedUpload(req: any, res: any) {
     const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
 
     if (isDifferentDay) {
-      console.log(`[Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Archiving previous day data before resetting...`);
-
-      // Archive previous day before clearing — T2 fix
-      try {
-        // Final changelog entry for the previous day
-        if (
-          (hospitalData && hospitalData.length > 0) ||
-          (cumulativeDischarged && cumulativeDischarged.length > 0) ||
-          (cumulativeTransfers && cumulativeTransfers.length > 0) ||
-          (cumulativeDialysis && cumulativeDialysis.length > 0)
-        ) {
-          await saveChangeLogEntry({
-            date: activePrevDate,
-            changeType: 'daily_final',
-            summary: buildChangeLogSummary(),
-            cumulativeEntries: cumulativeEntries || [],
-            cumulativeDischarged: cumulativeDischarged || [],
-            cumulativeDialysis: cumulativeDialysis || [],
-            cumulativeTransfers: cumulativeTransfers || [],
-            vipCasesText: vipCasesText || '',
-          });
-          await takeOccupancySnapshotHelper(activePrevDate);
-        }
-        if (cumulativeORList && cumulativeORList.length > 0) {
-          await takeORSnapshotHelper(activePrevDate);
-        }
-      } catch (archiveErr) {
-        console.error('[Upload] Failed to archive previous day before day-rollover reset:', archiveErr);
-      }
-
-      cumulativeDischarged = [];
-      cumulativeEntries = [];
-      cumulativeDialysis = [];
-      cumulativeTransfers = [];
-      manuallyDischargedNames = [];
-      patientRoomRegistry = {};
-      lastEgyptianAutoResetDate = activePrevDate;
-      lastActiveDate = '';
-      lastTransfersDate = '';
+      console.log(`[Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Running daily rollover for previous day...`);
+      await performDailyRollover(activePrevDate);
       previousHospitalData = rows;
     } else if (baselineData && !isNewSheetLikelyEmpty) {
       const oldActivePatients = extractRawPatientsFromRows(baselineData);
@@ -6554,16 +6515,8 @@ async function updateHospitalState(rows: any[][]) {
   const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
 
   if (isDifferentDay) {
-    // New operational day upload: reset daily cumulative datasets
-    cumulativeDischarged = [];
-    cumulativeEntries = [];
-    cumulativeDialysis = [];
-    cumulativeTransfers = [];
-    manuallyDischargedNames = [];
-    patientRoomRegistry = {};
-    lastEgyptianAutoResetDate = activePrevDate;
-    lastActiveDate = '';
-    lastTransfersDate = '';
+    console.log(`[Sync Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Running daily rollover for previous day...`);
+    await performDailyRollover(activePrevDate);
     previousHospitalData = rows;
   } else if (baselineData && !isNewSheetLikelyEmpty) {
     const oldActivePatients = extractRawPatientsFromRows(baselineData);
@@ -6867,6 +6820,13 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 }
 
 app.get('/api/occupancy/data', async (req, res) => {
+  // 1. Proactive day-rollover check (vital for sleeping containers and serverless environments)
+  try {
+    await checkEgyptianDailyReset();
+  } catch (resetErr) {
+    console.error('Error during proactive daily reset check in GET /api/occupancy/data:', resetErr);
+  }
+
   const force = req.query.force === 'true' || req.query.reload === 'true';
   const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
   const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
@@ -6900,8 +6860,9 @@ app.get('/api/occupancy/data', async (req, res) => {
   const enrichedOrList = getEnrichedOrListForStats(cumulativeORList, occRows);
   const activePatients = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
 
-  // Calculate operational dataset reference date (e.g. latest admission date present in sheet)
-  const operationalDateStr = getDatasetOperationalDateStr(activePatients);
+  // Today's Cairo calendar date is the single authoritative source of truth for daily event matching
+  const cairo = getCairoDateTime();
+  const cairoTodayStr = cairo.dateStr;
 
   const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
     const isManual = discPt.dischargeType === 'manual' || isManuallyDischarged(discPt.name);
@@ -6920,9 +6881,8 @@ app.get('/api/occupancy/data', async (req, res) => {
     const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
     if (isExcluded) return false;
 
-    // Manual discharges are explicit daily exclusions and must NEVER be dropped by operational admission date!
-    // For auto-discharges, retain if they match either operational date OR today's date
-    if (!isManual && discPt.dischargeDate && !isToday(discPt.dischargeDate, operationalDateStr) && !isToday(discPt.dischargeDate)) {
+    // For auto-discharges, retain only if they match today's Cairo calendar date
+    if (!isManual && discPt.dischargeDate && !isToday(discPt.dischargeDate, cairoTodayStr) && !isToday(discPt.dischargeDate)) {
       return false;
     }
 
@@ -6936,20 +6896,21 @@ app.get('/api/occupancy/data', async (req, res) => {
     }
   });
 
+  // Entry cases count strictly patients admitted on the new calendar day (today in Cairo)
   const activeEntries = (activePatients || []).filter(p => 
-    isToday(p.date, operationalDateStr) || 
-    isToday(p.rawDate, operationalDateStr) || 
-    isToday((p.date || "").split(" ")[0], operationalDateStr) || 
-    isToday((p.rawDate || "").split(" ")[0], operationalDateStr)
+    isToday(p.date, cairoTodayStr) || 
+    isToday(p.rawDate, cairoTodayStr) || 
+    isToday((p.date || "").split(" ")[0], cairoTodayStr) || 
+    isToday((p.rawDate || "").split(" ")[0], cairoTodayStr)
   );
   const allEntriesSource = [...(cumulativeEntries || []), ...activeEntries];
   const uniqueTodayEntries: any[] = [];
   allEntriesSource.forEach(p => {
     if (
-      isToday(p.date, operationalDateStr) || 
-      isToday(p.rawDate, operationalDateStr) || 
-      isToday((p.date || "").split(" ")[0], operationalDateStr) || 
-      isToday((p.rawDate || "").split(" ")[0], operationalDateStr)
+      isToday(p.date, cairoTodayStr) || 
+      isToday(p.rawDate, cairoTodayStr) || 
+      isToday((p.date || "").split(" ")[0], cairoTodayStr) || 
+      isToday((p.rawDate || "").split(" ")[0], cairoTodayStr)
     ) {
       if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
         uniqueTodayEntries.push(p);
@@ -6974,6 +6935,7 @@ app.get('/api/occupancy/data', async (req, res) => {
       manualDischargesCount: manualDischargedRows.length,
       entryRows: filterHelper(uniqueTodayEntries),
       dialysisRows: cumulativeDialysis,
+      dialysisCount: (cumulativeDialysis || []).length,
       debtRows: cumulativeDebts,
       insuredDebtRows: cumulativeInsuredDebts,
       medicalPlans: cumulativeMedicalPlans,
@@ -7006,6 +6968,7 @@ app.get('/api/occupancy/data', async (req, res) => {
     manualDischargesCount: manualDischargedRows.length,
     entryRows: filterHelper(uniqueTodayEntries),
     dialysisRows: cumulativeDialysis,
+    dialysisCount: (cumulativeDialysis || []).length,
     debtRows: cumulativeDebts,
     insuredDebtRows: cumulativeInsuredDebts,
     medicalPlans: cumulativeMedicalPlans,
@@ -7590,7 +7553,8 @@ async function takeOccupancySnapshotHelper(customDate?: string) {
     (!hospitalData || hospitalData.length === 0) &&
     (!cumulativeTransfers || cumulativeTransfers.length === 0) &&
     (!cumulativeDischarged || cumulativeDischarged.length === 0) &&
-    (!cumulativeEntries || cumulativeEntries.length === 0)
+    (!cumulativeEntries || cumulativeEntries.length === 0) &&
+    (!cumulativeDialysis || cumulativeDialysis.length === 0)
   ) return null;
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
   const occBodyRows = occRows.length > 3 ? occRows.slice(3) : occRows;
@@ -7847,148 +7811,179 @@ async function resolveORDataset(reqDate?: string | null) {
 
 let isDailyResetting = false;
 
-// Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
-async function checkEgyptianDailyReset() {
-  if (isDailyResetting) return;
+// Consolidated Daily Rollover Engine at 11:59 PM (Cairo Time)
+async function performDailyRollover(closingDate: string): Promise<boolean> {
+  if (isDailyResetting) return false;
   isDailyResetting = true;
   try {
     const cairo = getCairoDateTime();
-    // 1. Scheduled check at 11:59 PM (23:59) Cairo time
-    if (cairo.hours === 23 && cairo.minutes === 59) {
-      if (lastEgyptianAutoResetDate !== cairo.dateStr) {
-        lastEgyptianAutoResetDate = cairo.dateStr;
-        console.log(`[Scheduled Reset] 11:59 PM Egyptian time reached for date ${cairo.dateStr}. Archiving history reference and resetting occupancy, patient transfers, dialysis & discharged cases...`);
-        
-        // 0. Save an immutable FINAL change-log entry BEFORE clearing any data
-        try {
-          await saveChangeLogEntry({
-            date: cairo.dateStr,
-            changeType: 'daily_final',
-            summary: buildChangeLogSummary(),
-            cumulativeEntries: cumulativeEntries || [],
-            cumulativeDischarged: cumulativeDischarged || [],
-            cumulativeDialysis: cumulativeDialysis || [],
-            cumulativeTransfers: cumulativeTransfers || [],
-            vipCasesText: vipCasesText || '',
-          });
-          console.log(`[Scheduled Reset] daily_final change-log entry saved for ${cairo.dateStr}.`);
-        } catch (clErr) {
-          console.error('[Scheduled Reset] Failed to save daily_final changelog entry:', clErr);
-        }
+    const targetDate = closingDate || cairo.dateStr;
 
-        // 1. Snapshot occupancy, discharged cases, dialysis, and transfers if data exists
-        if ((hospitalData && hospitalData.length > 0) || (cumulativeTransfers && cumulativeTransfers.length > 0) || (cumulativeDischarged && cumulativeDischarged.length > 0) || (cumulativeDialysis && cumulativeDialysis.length > 0)) {
-          await takeOccupancySnapshotHelper(cairo.dateStr);
-        }
-
-        // 2. Snapshot OR list if data exists (archived as daily reference, but cumulativeORList is NOT reset!)
-        if (cumulativeORList && cumulativeORList.length > 0) {
-          await takeORSnapshotHelper(cairo.dateStr);
-        }
-
-        // 3. Reset daily datasets (occupancy data, entries, dialysis, debts, transfers, discharged cases)
-        hospitalData = null;
-        previousHospitalData = null;
-        cumulativeEntries = [];
-        cumulativeDialysis = [];
-        cumulativeDebts = [];
-        cumulativeInsuredDebts = [];
-        cumulativeMedicalPlans = [];
-        cumulativeCompanionStatus = [];
-        cumulativeLOS = [];
-        cumulativeTransfers = [];
-        cumulativeDischarged = [];
-        manuallyDischargedNames = [];
-        patientRoomRegistry = {};
-        uploadedAt = null;
-        pendingDischargePatientsText = "";
-        lastActiveDate = "";
-        lastTransfersDate = "";
-
-        // CRITICAL PERSISTENCE RULES:
-        // - vipCasesText is PERSISTENT day by day!
-        // - cumulativeORList is PERSISTENT and NOT reset until the user clicks "Reset OR Data" button!
-        // - OCCUPANCY, PATIENT TRANSFERS, DIALYSIS, AND DISCHARGED CASES ARE RESET DAILY AT 11:59 PM CAIRO TIME!
-
-        await saveData();
-        console.log(`[Scheduled Reset] 11:59 PM Egyptian auto-reset completed for date ${cairo.dateStr}. Daily datasets reset, snapshots saved. VIP cases and OR data remain intact.`);
-      }
+    // Concurrency & idempotency check
+    if (lastEgyptianAutoResetDate === targetDate) {
+      console.log(`[Daily Rollover] Date ${targetDate} has already been snapshotted and reset.`);
+      return false;
     }
 
-    // 2. Day-Rollover check: If the container was asleep or idle at 23:59 and a new day has arrived
-    let needsDayRolloverSave = false;
+    console.log(`[Daily Rollover] Starting 11:59 PM rollover for date: ${targetDate}. Current Cairo date is: ${cairo.dateStr}`);
 
-    // Check if active data belongs to a previous calendar day.
-    // If data was updated/recorded today (activeDate === cairo.dateStr), it belongs to TODAY and is preserved until 23:59!
-    const activeDate = lastActiveDate || (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : "");
+    // 0. Save an immutable FINAL change-log entry BEFORE clearing any daily data
+    try {
+      await saveChangeLogEntry({
+        date: targetDate,
+        changeType: 'daily_final',
+        summary: buildChangeLogSummary(),
+        cumulativeEntries: cumulativeEntries || [],
+        cumulativeDischarged: cumulativeDischarged || [],
+        cumulativeDialysis: cumulativeDialysis || [],
+        cumulativeTransfers: cumulativeTransfers || [],
+        vipCasesText: vipCasesText || '',
+      });
+      console.log(`[Daily Rollover] daily_final change-log entry saved for ${targetDate}.`);
+    } catch (clErr) {
+      console.error('[Daily Rollover] Failed to save daily_final changelog entry:', clErr);
+    }
+
+    // 1. Snapshot occupancy, discharged cases, dialysis, entries, and transfers into history
     if (
-      activeDate &&
-      activeDate < cairo.dateStr &&
-      lastEgyptianAutoResetDate !== activeDate &&
-      ((hospitalData && hospitalData.length > 0) || (cumulativeDischarged && cumulativeDischarged.length > 0) || (cumulativeDialysis && cumulativeDialysis.length > 0) || (cumulativeTransfers && cumulativeTransfers.length > 0))
+      (hospitalData && hospitalData.length > 0) ||
+      (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+      (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+      (cumulativeDialysis && cumulativeDialysis.length > 0) ||
+      (cumulativeEntries && cumulativeEntries.length > 0)
     ) {
-      console.log(`[Day-Rollover Reset] Detected data from previous day (${activeDate}). Current date is ${cairo.dateStr}. Archiving reference snapshot for ${activeDate} and resetting daily datasets...`);
-      
-      // 0. Save an immutable FINAL change-log entry for the previous day BEFORE clearing any data
       try {
-        await saveChangeLogEntry({
-          date: activeDate,
-          changeType: 'daily_final',
-          summary: buildChangeLogSummary(),
-          cumulativeEntries: cumulativeEntries || [],
-          cumulativeDischarged: cumulativeDischarged || [],
-          cumulativeDialysis: cumulativeDialysis || [],
-          cumulativeTransfers: cumulativeTransfers || [],
-          vipCasesText: vipCasesText || '',
-        });
-        console.log(`[Day-Rollover Reset] daily_final change-log entry saved for previous day ${activeDate}.`);
-      } catch (clErr) {
-        console.error('[Day-Rollover Reset] Failed to save daily_final changelog entry:', clErr);
+        await takeOccupancySnapshotHelper(targetDate);
+        console.log(`[Daily Rollover] Occupancy history snapshot saved for date ${targetDate}.`);
+      } catch (snapErr) {
+        console.error(`[Daily Rollover] Failed to save occupancy snapshot for date ${targetDate}:`, snapErr);
       }
+    }
 
-      // Take snapshot for that previous day
-      await takeOccupancySnapshotHelper(activeDate);
-      
-      // If OR list exists, also snapshot it for that previous day as historical record without clearing it
-      if (cumulativeORList && cumulativeORList.length > 0) {
-        await takeORSnapshotHelper(activeDate);
+    // 2. Snapshot OR list into history
+    if (cumulativeORList && cumulativeORList.length > 0) {
+      try {
+        await takeORSnapshotHelper(targetDate);
+        console.log(`[Daily Rollover] OR history snapshot saved for date ${targetDate}.`);
+      } catch (orErr) {
+        console.error(`[Daily Rollover] Failed to save OR snapshot for date ${targetDate}:`, orErr);
       }
+    }
 
-      // Reset daily datasets for the new day
-      hospitalData = null;
+    // 3. Reset daily datasets (discharges, dialysis, transfers, OR list, entries, and transient text)
+    cumulativeDischarged = [];
+    manuallyDischargedNames = [];
+    cumulativeDialysis = [];
+    cumulativeTransfers = [];
+    cumulativeORList = [];
+    cumulativeEntries = [];
+    pendingDischargePatientsText = "";
+    earlyDischargeRoomsText = "";
+
+    // 4. PRESERVE ACTIVE OCCUPANCY & VIP CASES:
+    // Admitted inpatients remain in their beds. Update previousHospitalData to current hospitalData
+    // as the starting baseline for the new day, and align patientRoomRegistry to active bed occupants.
+    if (hospitalData && Array.isArray(hospitalData) && hospitalData.length > 0) {
+      previousHospitalData = JSON.parse(JSON.stringify(hospitalData));
+      const rawOccupancy = extractRawPatientsFromRows(hospitalData);
+      const newRegistry: Record<string, any> = {};
+      rawOccupancy.forEach(p => {
+        if (p.name && p.room) {
+          const regKey = p.mrn ? `mrn:${p.mrn}` : p.name.trim();
+          newRegistry[regKey] = {
+            name: p.name.trim(),
+            mrn: p.mrn || "",
+            lastRoom: cleanRoomStr(p.room),
+            physician: p.physician || "",
+            contractor: p.contractor || "",
+            date: p.date || p.rawDate || ""
+          };
+        }
+      });
+      patientRoomRegistry = newRegistry;
+    } else {
       previousHospitalData = null;
-      cumulativeEntries = [];
-      cumulativeDialysis = [];
-      cumulativeDebts = [];
-      cumulativeInsuredDebts = [];
-      cumulativeMedicalPlans = [];
-      cumulativeCompanionStatus = [];
-      cumulativeLOS = [];
-      cumulativeTransfers = [];
-      cumulativeDischarged = [];
-      manuallyDischargedNames = [];
       patientRoomRegistry = {};
-      uploadedAt = null;
-      pendingDischargePatientsText = "";
-      lastEgyptianAutoResetDate = activeDate;
-      lastActiveDate = "";
-      lastTransfersDate = "";
-      needsDayRolloverSave = true;
     }
 
-    if (needsDayRolloverSave) {
-      await saveData();
-      console.log(`[Day-Rollover Reset] Daily reset completed for new day ${cairo.dateStr}. Discharged cases, dialysis, occupancy, and transfers reset for new day. VIP cases and OR data preserved.`);
-    }
+    // 5. Update state timestamps
+    lastEgyptianAutoResetDate = targetDate;
+    lastActiveDate = cairo.dateStr;
+    lastTransfersDate = cairo.dateStr;
+    uploadedAt = Date.now();
+
+    // 6. Persist clean state to disk and Supabase cloud database
+    await saveData();
+    console.log(`[Daily Rollover] 11:59 PM rollover completed successfully for date ${targetDate}. Inpatients retained in beds, daily datasets zeroed for new day ${cairo.dateStr}.`);
+    return true;
   } catch (err) {
-    console.error('[Scheduled Reset] Error executing checkEgyptianDailyReset:', err);
+    console.error('[Daily Rollover] Error executing performDailyRollover:', err);
+    return false;
   } finally {
     isDailyResetting = false;
   }
 }
 
+// Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
+async function checkEgyptianDailyReset() {
+  if (isDailyResetting) return;
+  try {
+    const cairo = getCairoDateTime();
+    // 1. Scheduled check at 11:59 PM (23:59) Cairo time
+    if (cairo.hours === 23 && cairo.minutes === 59) {
+      if (lastEgyptianAutoResetDate !== cairo.dateStr) {
+        console.log(`[Scheduled Reset] 11:59 PM Egyptian time reached for date ${cairo.dateStr}. Executing daily rollover...`);
+        await performDailyRollover(cairo.dateStr);
+        return;
+      }
+    }
+
+    // 2. Day-Rollover check: If the container was asleep or idle at 23:59 and a new day has arrived
+    const activeDate = lastActiveDate || (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : "");
+    if (
+      activeDate &&
+      activeDate < cairo.dateStr &&
+      lastEgyptianAutoResetDate !== activeDate &&
+      (
+        (hospitalData && hospitalData.length > 0) ||
+        (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+        (cumulativeDialysis && cumulativeDialysis.length > 0) ||
+        (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+        (cumulativeORList && cumulativeORList.length > 0) ||
+        (cumulativeEntries && cumulativeEntries.length > 0)
+      )
+    ) {
+      console.log(`[Day-Rollover Reset] Detected unclosed data from previous day (${activeDate}). Current date is ${cairo.dateStr}. Archiving reference snapshot for ${activeDate} and rolling over...`);
+      await performDailyRollover(activeDate);
+    }
+  } catch (err) {
+    console.error('[Scheduled Reset] Error executing checkEgyptianDailyReset:', err);
+  }
+}
+
 // Check every 20 seconds
 setInterval(checkEgyptianDailyReset, 20000);
+
+// Webhook endpoint for external schedulers (Vercel Cron, GitHub Actions, cloud crons)
+app.all('/api/cron/daily-reset', async (req, res) => {
+  const cairo = getCairoDateTime();
+  console.log(`[Cron Webhook] /api/cron/daily-reset invoked at ${cairo.fullStr}`);
+  try {
+    const requestedDate = (req.query.date as string) || req.body?.date;
+    const targetDate = requestedDate || (cairo.hours === 23 && cairo.minutes >= 55 ? cairo.dateStr : (lastActiveDate || cairo.dateStr));
+    const success = await performDailyRollover(targetDate);
+    res.json({
+      success: true,
+      executed: success,
+      targetDate,
+      cairoTime: cairo.fullStr,
+      lastEgyptianAutoResetDate
+    });
+  } catch (cronErr: any) {
+    console.error('[Cron Webhook] Error executing daily reset webhook:', cronErr);
+    res.status(500).json({ error: cronErr?.message || 'Failed to execute daily reset' });
+  }
+});
 
 app.post('/api/reset', async (req, res) => {
   console.log('Reset request received: removing today\'s occupancy state and snapshot from database');
