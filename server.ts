@@ -25,6 +25,7 @@ import {
   deleteORSnapshot,
   getAvailableDates,
   normalizeToISODate,
+  formatDateToDDMMYYYY,
   saveChangeLogEntry,
   getChangeLogForDate,
   getChangeLogDates,
@@ -415,12 +416,11 @@ function isDialysisCase(p: {
 
 function formatDateToUserFormat(dateObj: Date): string {
   const y = dateObj.getFullYear();
-  const m = dateObj.getMonth() + 1;
-  const d = dateObj.getDate();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
   const h = dateObj.getHours();
   const min = String(dateObj.getMinutes()).padStart(2, '0');
-  const yy = String(y).slice(-2);
-  return `${m}/${d}/${yy} ${h}:${min}`;
+  return `${d}-${m}-${y} ${h}:${min}`;
 }
 
 function cleanAdmissionDateStr(val: any): string {
@@ -503,19 +503,9 @@ function cleanAdmissionDateStr(val: any): string {
         month = n1 - 1;
         day = n2;
       } else {
-        // Both <= 12: Check against current Cairo month
-        const cMonth = new Date().getMonth();
-        if (n1 - 1 === cMonth) {
-          month = n1 - 1;
-          day = n2;
-        } else if (n2 - 1 === cMonth) {
-          day = n1;
-          month = n2 - 1;
-        } else {
-          // Default to M/D/Y (standard hospital HIS export format)
-          month = n1 - 1;
-          day = n2;
-        }
+        // Standard format is DD-MM-YYYY (day first, month second)
+        day = n1;
+        month = n2 - 1;
       }
 
       const dateObj = new Date(y, month, day, h, min, sec);
@@ -11868,7 +11858,8 @@ async function buildRefinedORSheetTab(
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  const headerTitleText = listDate ? `لستة العمليات ليوم ${listDate} (${tabName})` : `لستة العمليات الجراحية (${tabName})`;
+  const displayDate = formatDateToDDMMYYYY(listDate);
+  const headerTitleText = displayDate ? `لستة العمليات ليوم ${displayDate} (${tabName})` : `لستة العمليات الجراحية (${tabName})`;
   await applyRefinedHeader(workbook, sheet, headerTitleText, 12);
 
   const headerLabels = [
@@ -12106,7 +12097,8 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
   });
 
   const listDate = data[0]?.orListDate || "";
-  const headerTitleText = listDate ? `لستة العمليات ليوم ${listDate}` : `ليستة العمليات الجراحية`;
+  const displayDate = formatDateToDDMMYYYY(listDate);
+  const headerTitleText = displayDate ? `لستة العمليات ليوم ${displayDate}` : `ليستة العمليات الجراحية`;
 
   // Merge top title cell across 8 columns
   sheet.mergeCells('A1:H1');
@@ -12297,7 +12289,8 @@ async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[]
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  const titleText = listDate ? `صورة بيانية لإشغال غرف العمليات ليوم ${listDate}` : `مخطط بياني لإشغال غرف العمليات`;
+  const displayDate = formatDateToDDMMYYYY(listDate);
+  const titleText = displayDate ? `صورة بيانية لإشغال غرف العمليات ليوم ${displayDate}` : `مخطط بياني لإشغال غرف العمليات`;
   await applyRefinedHeader(workbook, sheet, titleText, numSlots + 1);
 
   // Spacer Row (Row 2)

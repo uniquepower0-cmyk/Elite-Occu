@@ -103,12 +103,11 @@ export function isProcedureOrTemporaryRoom(room: string): boolean {
 
 export function formatDateToUserFormat(dateObj: Date): string {
   const y = dateObj.getFullYear();
-  const m = dateObj.getMonth() + 1;
-  const d = dateObj.getDate();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
   const h = dateObj.getHours();
   const min = String(dateObj.getMinutes()).padStart(2, '0');
-  const yy = String(y).slice(-2);
-  return `${m}/${d}/${yy} ${h}:${min}`;
+  return `${d}-${m}-${y} ${h}:${min}`;
 }
 
 export function cleanAdmissionDateStr(val: any): string {
@@ -189,17 +188,9 @@ export function cleanAdmissionDateStr(val: any): string {
         month = n1 - 1;
         day = n2;
       } else {
-        const cMonth = new Date().getMonth();
-        if (n1 - 1 === cMonth) {
-          month = n1 - 1;
-          day = n2;
-        } else if (n2 - 1 === cMonth) {
-          day = n1;
-          month = n2 - 1;
-        } else {
-          month = n1 - 1;
-          day = n2;
-        }
+        // Standard format is DD-MM-YYYY (day first, month second)
+        day = n1;
+        month = n2 - 1;
       }
 
       const dateObj = new Date(y, month, day, h, min, sec);

@@ -299,14 +299,15 @@ export function normalizeToISODate(rawDate: any): string | null {
     return `${yr}-${mo}-${dy}`;
   }
 
-  // 2. Check DD/MM/YYYY or MM/DD/YYYY
+  // 2. Check DD/MM/YYYY or DD-MM-YYYY (primary format: day first, month second)
   const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (dmyMatch) {
     const n1 = parseInt(dmyMatch[1], 10);
     const n2 = parseInt(dmyMatch[2], 10);
     const yr = dmyMatch[3];
-    // In Egypt/Arab formats, DD/MM/YYYY is standard, or if n1 > 12 it's definitely DD/MM/YYYY
-    const [month, day] = n1 > 12 ? [n2, n1] : [n1, n2];
+    // Dates must be DD-MM-YYYY, not MM-DD-YYYY.
+    // If n2 > 12 and n1 <= 12, then n2 was day and n1 was month (fallback for MM-DD-YYYY).
+    const [day, month] = (n2 > 12 && n1 <= 12) ? [n2, n1] : [n1, n2];
     return `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
@@ -324,6 +325,21 @@ export function normalizeToISODate(rawDate: any): string | null {
   } catch (e) {}
 
   return null;
+}
+
+/**
+ * Formats any date string (ISO YYYY-MM-DD or other) to standard DD-MM-YYYY
+ */
+export function formatDateToDDMMYYYY(dateStr: any): string {
+  if (!dateStr) return '';
+  const s = String(dateStr).trim();
+  if (!s) return '';
+  const iso = normalizeToISODate(s);
+  if (iso) {
+    const [yr, mo, dy] = iso.split('-');
+    return `${dy}-${mo}-${yr}`;
+  }
+  return s;
 }
 
 const fsPromises = fs.promises;

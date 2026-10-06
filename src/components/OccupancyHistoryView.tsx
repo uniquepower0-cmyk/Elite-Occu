@@ -19,6 +19,7 @@ import {
   Filter,
   AlertTriangle
 } from 'lucide-react';
+import { formatDateDDMMYYYY } from './ORHistoryView';
 
 interface OccupancyHistoryViewProps {
   onNotify?: (msg: string) => void;
@@ -324,7 +325,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 ) : (
                   dates.map((d) => (
                     <option key={d} value={d}>
-                      {d} {d === cairoStatus?.cairoDate ? '(Today)' : ''}
+                      {formatDateDDMMYYYY(d)} {d === cairoStatus?.cairoDate || formatDateDDMMYYYY(d) === formatDateDDMMYYYY(cairoStatus?.cairoDate) ? '(Today)' : ''}
                     </option>
                   ))
                 )}
@@ -347,7 +348,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 id="download-historical-refined-combined-btn"
                 onClick={() => handleDownload(
                   `/api/reports/combined?refined=true&date=${encodeURIComponent(selectedDate)}`,
-                  `Combined_Hospital_Refined_Report_${selectedDate}.xlsx`,
+                  `Combined_Hospital_Refined_Report_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Refined Combined Sheet'
                 )}
                 disabled={!!downloading || loadingDetail}
@@ -357,7 +358,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 <FileSpreadsheet size={18} />
                 {downloading === 'Refined Combined Sheet' 
                   ? 'Generating Mohanad Combined Sheet...' 
-                  : `Download Combined Sheet (Mohanad's Sheets) [${selectedDate}]`}
+                  : `Download Combined Sheet (Mohanad's Sheets) [${formatDateDDMMYYYY(selectedDate)}]`}
               </button>
             </div>
           )}
@@ -367,13 +368,13 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
         {selectedDate && (
           <div className="pt-4 border-t border-teal-500/10">
             <h4 className="text-xs font-extrabold text-[#0b3c34] uppercase tracking-wider mb-3">
-              Individual Historical Sheets for {selectedDate}:
+              Individual Historical Sheets for {formatDateDDMMYYYY(selectedDate)}:
             </h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
               <button
                 onClick={() => handleDownload(
                   `/api/reports/combined?date=${encodeURIComponent(selectedDate)}`,
-                  `Combined_Hospital_Report_${selectedDate}.xlsx`,
+                  `Combined_Hospital_Report_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Standard Combined'
                 )}
                 disabled={!!downloading}
@@ -387,7 +388,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
               <button
                 onClick={() => handleDownload(
                   `/api/reports/occupancy_formatted?date=${encodeURIComponent(selectedDate)}`,
-                  `Formatted_Occupancy_${selectedDate}.xlsx`,
+                  `Formatted_Occupancy_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Formatted Occupancy'
                 )}
                 disabled={!!downloading}
@@ -401,7 +402,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
               <button
                 onClick={() => handleDownload(
                   `/api/reports/preview_occupancy_formatted?date=${encodeURIComponent(selectedDate)}`,
-                  `Colored_Structured_Grid_Occupancy_${selectedDate}.xlsx`,
+                  `Colored_Structured_Grid_Occupancy_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Grid Occupancy'
                 )}
                 disabled={!!downloading}
@@ -415,7 +416,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
               <button
                 onClick={() => handleDownload(
                   `/api/reports/medical_director_combined?date=${encodeURIComponent(selectedDate)}`,
-                  `Medical_Director_Combined_Report_${selectedDate}.xlsx`,
+                  `Medical_Director_Combined_Report_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Medical Director Combined'
                 )}
                 disabled={!!downloading}
@@ -436,13 +437,13 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
           {loadingDetail ? (
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-12 text-center text-slate-500 text-sm font-bold flex flex-col items-center justify-center gap-3">
               <RefreshCw size={24} className="animate-spin text-teal-600" />
-              Loading occupancy snapshot data for {selectedDate}...
+              Loading occupancy snapshot data for {formatDateDDMMYYYY(selectedDate)}...
             </div>
           ) : detailError ? (
             <div role="alert" className="bg-rose-50/90 border border-rose-200 rounded-2xl p-8 text-center text-rose-800 shadow-sm flex flex-col items-center gap-3">
               <AlertTriangle className="w-8 h-8 text-rose-600" />
               <div>
-                <h4 className="text-sm font-bold text-slate-900">Failed to load snapshot for {selectedDate}</h4>
+                <h4 className="text-sm font-bold text-slate-900">Failed to load snapshot for {formatDateDDMMYYYY(selectedDate)}</h4>
                 <p className="text-xs text-rose-700 mt-1">{detailError}</p>
               </div>
               <button
@@ -728,7 +729,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
             </>
           ) : (
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-8 text-center text-slate-500 text-xs font-bold">
-              No detailed occupancy record found for {selectedDate}.
+              No detailed occupancy record found for {formatDateDDMMYYYY(selectedDate)}.
             </div>
           )}
         </div>

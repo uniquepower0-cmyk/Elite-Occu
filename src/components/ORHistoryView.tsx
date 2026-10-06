@@ -21,6 +21,37 @@ interface ORHistoryViewProps {
   refreshTrigger?: number;
 }
 
+/**
+ * Format any date string to standard DD-MM-YYYY (day first, month second, year third)
+ */
+export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return '';
+  const s = String(dateStr).trim();
+  if (!s) return '';
+
+  // 1. Check YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (ymdMatch) {
+    const yr = ymdMatch[1];
+    const mo = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
+    const dy = String(parseInt(ymdMatch[3], 10)).padStart(2, '0');
+    return `${dy}-${mo}-${yr}`;
+  }
+
+  // 2. Check DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
+  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    const n1 = parseInt(dmyMatch[1], 10);
+    const n2 = parseInt(dmyMatch[2], 10);
+    const yr = dmyMatch[3];
+    // Dates must be DD-MM-YYYY, not MM-DD-YYYY
+    const [dy, mo] = (n2 > 12 && n1 <= 12) ? [n2, n1] : [n1, n2];
+    return `${String(dy).padStart(2, '0')}-${String(mo).padStart(2, '0')}-${yr}`;
+  }
+
+  return s;
+};
+
 export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -133,7 +164,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
 
   const handleDeleteSnapshot = async () => {
     if (!selectedDate) return;
-    if (!window.confirm(`Are you sure you want to permanently delete the OR snapshot for date ${selectedDate}?`)) return;
+    if (!window.confirm(`Are you sure you want to permanently delete the OR snapshot for date ${formatDateDDMMYYYY(selectedDate)}?`)) return;
     setDeletingSnapshot(true);
     try {
       const res = await fetch(`/api/history/or/snapshot?date=${encodeURIComponent(selectedDate)}`, {
@@ -141,7 +172,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
       });
       const data = await res.json();
       if (res.ok) {
-        if (onNotify) onNotify(`OR reference snapshot for ${selectedDate} deleted successfully.`);
+        if (onNotify) onNotify(`OR reference snapshot for ${formatDateDDMMYYYY(selectedDate)} deleted successfully.`);
         setSelectedDate('');
         setDetailData(null);
         await fetchDates();
@@ -164,7 +195,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
       });
       const data = await res.json();
       if (res.ok) {
-        if (onNotify) onNotify(`OR snapshot successfully archived for ${data.snapshot?.date || 'today'}`);
+        if (onNotify) onNotify(`OR snapshot successfully archived for ${formatDateDDMMYYYY(data.snapshot?.date) || 'today'}`);
         await fetchDates();
         if (data.snapshot?.date) {
           setSelectedDate(data.snapshot.date);
@@ -317,7 +348,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                 ) : (
                   dates.map((d) => (
                     <option key={d} value={d}>
-                      {d} {d === cairoStatus?.cairoDate ? '(Today)' : ''}
+                      {formatDateDDMMYYYY(d)} {d === cairoStatus?.cairoDate || formatDateDDMMYYYY(d) === formatDateDDMMYYYY(cairoStatus?.cairoDate) ? '(Today)' : ''}
                     </option>
                   ))
                 )}
@@ -332,7 +363,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                 onClick={handleDeleteSnapshot}
                 disabled={deletingSnapshot || loadingDetail}
                 className="px-3 py-2.5 rounded-xl border border-rose-500/20 text-rose-700 hover:bg-rose-50 hover:border-rose-400 active:scale-95 transition-all flex items-center gap-1.5 text-xs font-bold disabled:opacity-50 shadow-sm"
-                title={`Delete reference snapshot for ${selectedDate}`}
+                title={`Delete reference snapshot for ${formatDateDDMMYYYY(selectedDate)}`}
               >
                 <Trash2 size={14} className="text-rose-600 shrink-0" />
                 <span>{deletingSnapshot ? 'Deleting...' : 'Delete'}</span>
@@ -354,7 +385,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                 id="download-historical-or-combined-btn"
                 onClick={() => handleDownload(
                   `/api/reports/or_combined?date=${encodeURIComponent(selectedDate)}`,
-                  `Combined_OR_Refined_Report_${selectedDate}.xlsx`,
+                  `Combined_OR_Refined_Report_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Combined OR Sheet'
                 )}
                 disabled={!!downloading || loadingDetail}
@@ -364,7 +395,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                 <FileSpreadsheet size={18} />
                 {downloading === 'Combined OR Sheet' 
                   ? 'Generating Combined OR Workbook...' 
-                  : `Download Combined OR Sheet (Refined Series) [${selectedDate}]`}
+                  : `Download Combined OR Sheet (Refined Series) [${formatDateDDMMYYYY(selectedDate)}]`}
               </button>
             </div>
           )}
@@ -374,13 +405,13 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
         {selectedDate && (
           <div className="pt-4 border-t border-teal-500/10">
             <h4 className="text-xs font-extrabold text-[#0b3c34] uppercase tracking-wider mb-3">
-              Individual OR Reports for {selectedDate}:
+              Individual OR Reports for {formatDateDDMMYYYY(selectedDate)}:
             </h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
               <button
                 onClick={() => handleDownload(
                   `/api/reports/or_list_refined?date=${encodeURIComponent(selectedDate)}`,
-                  `Operating_Room_Schedule_Refined_${selectedDate}.xlsx`,
+                  `Operating_Room_Schedule_Refined_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'OR Schedule'
                 )}
                 disabled={!!downloading}
@@ -394,7 +425,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
               <button
                 onClick={() => handleDownload(
                   `/api/reports/or_timeline_refined?date=${encodeURIComponent(selectedDate)}`,
-                  `Operating_Room_Timeline_Graphics_${selectedDate}.xlsx`,
+                  `Operating_Room_Timeline_Graphics_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'OR Timeline'
                 )}
                 disabled={!!downloading}
@@ -408,7 +439,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
               <button
                 onClick={() => handleDownload(
                   `/api/reports/or_reconciliation_refined?date=${encodeURIComponent(selectedDate)}`,
-                  `Operating_Room_Reconciliation_Report_${selectedDate}.xlsx`,
+                  `Operating_Room_Reconciliation_Report_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'OR Reconciliation'
                 )}
                 disabled={!!downloading}
@@ -422,7 +453,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
               <button
                 onClick={() => handleDownload(
                   `/api/reports/or_over_list_refined?date=${encodeURIComponent(selectedDate)}`,
-                  `Over_Listed_OR_Cases_${selectedDate}.xlsx`,
+                  `Over_Listed_OR_Cases_${formatDateDDMMYYYY(selectedDate)}.xlsx`,
                   'Over List'
                 )}
                 disabled={!!downloading}
@@ -443,13 +474,13 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
           {loadingDetail ? (
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-12 text-center text-slate-500 text-sm font-bold flex flex-col items-center justify-center gap-3">
               <RefreshCw size={24} className="animate-spin text-teal-600" />
-              Loading OR snapshot data for {selectedDate}...
+              Loading OR snapshot data for {formatDateDDMMYYYY(selectedDate)}...
             </div>
           ) : detailError ? (
             <div role="alert" className="bg-rose-50/90 border border-rose-200 rounded-2xl p-8 text-center text-rose-800 shadow-sm flex flex-col items-center gap-3">
               <AlertTriangle className="w-8 h-8 text-rose-600" />
               <div>
-                <h4 className="text-sm font-bold text-slate-900">Failed to load OR snapshot for {selectedDate}</h4>
+                <h4 className="text-sm font-bold text-slate-900">Failed to load OR snapshot for {formatDateDDMMYYYY(selectedDate)}</h4>
                 <p className="text-xs text-rose-700 mt-1">{detailError}</p>
               </div>
               <button
@@ -555,7 +586,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
             </>
           ) : (
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-8 text-center text-slate-500 text-xs font-bold">
-              No detailed OR record found for {selectedDate}.
+              No detailed OR record found for {formatDateDDMMYYYY(selectedDate)}.
             </div>
           )}
         </div>
