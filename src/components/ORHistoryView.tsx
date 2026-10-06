@@ -503,7 +503,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                       <tbody className="divide-y divide-[#0b3c34]/5 bg-white/50 font-medium text-slate-700">
                         {filteredCases.map((c: any, idx: number) => (
                           <tr key={idx} className="hover:bg-teal-50/60 transition-colors">
-                            <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                            <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                             <td className="py-2 px-3 font-bold text-teal-900 font-mono">{c.orRoom || '-'}</td>
                             <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{c.mrn || '-'}</td>
                             <td className="py-2 px-3 font-bold text-[#0b3c34]">{c.patientName || '-'}</td>

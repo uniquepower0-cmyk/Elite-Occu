@@ -99,7 +99,7 @@ export function StatCard({
           <div className="absolute inset-0 rounded-full bg-emerald-400/20 blur-sm"></div>
           {React.cloneElement(icon, { className: 'w-5 h-5 relative z-10 text-brand-primary' } as any)}
         </div>
-        <div className="text-[10px] font-mono text-slate-400 font-bold">{new Date().getHours()}:00 HR</div>
+        <div className="text-[10px] font-mono text-slate-500 font-bold">{new Date().getHours()}:00 HR</div>
       </div>
       
       <div className="flex flex-col items-center justify-center flex-1">

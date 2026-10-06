@@ -366,7 +366,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           {searchQuery && (
             <button
               onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700"
             >
               <X size={14} />
             </button>
@@ -401,7 +401,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   <td colSpan={9} className="py-12 text-center text-slate-500">
                     <ArrowRightLeft className="mx-auto text-slate-300 mb-2" size={36} />
                     <p className="font-semibold text-base">No matching transfer records found</p>
-                    <p className="text-xs text-slate-400 mt-1">
+                    <p className="text-xs text-slate-500 mt-1">
                       {searchQuery 
                         ? 'Try searching with different terms or clear the filter.' 
                         : 'Transfers will be recorded automatically when occupancy sheets update, or you can record them manually.'}
@@ -421,7 +421,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                       key={item.id || idx}
                       className="hover:bg-teal-50/40 transition-colors group"
                     >
-                      <td className="py-3 px-4 text-center text-xs font-mono text-slate-400">
+                      <td className="py-3 px-4 text-center text-xs font-mono text-slate-500">
                         {idx + 1}
                       </td>
                       
@@ -460,7 +460,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                                   {room}
                                 </span>
                                 {!isLast && (
-                                  <ArrowRight size={13} className="text-slate-400 shrink-0" />
+                                  <ArrowRight size={13} className="text-slate-500 shrink-0" />
                                 )}
                               </React.Fragment>
                             );
@@ -482,7 +482,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
                       <td className="py-3 px-4 text-center text-xs text-slate-600">
                         <div className="inline-flex items-center gap-1">
-                          <Calendar size={12} className="text-slate-400" />
+                          <Calendar size={12} className="text-slate-500" />
                           <span>{item.lastTransferDate || '-'}</span>
                         </div>
                       </td>
@@ -810,7 +810,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-800">
                             <span className="text-slate-500">From {step.fromRoom} ➔ To <span className="text-emerald-700">{step.toRoom}</span></span>
-                            <span className="text-slate-400 font-mono">{step.date}</span>
+                            <span className="text-slate-500 font-mono">{step.date}</span>
                           </div>
                           {step.physician && (
                             <div className="text-[11px] text-slate-500 mt-1">

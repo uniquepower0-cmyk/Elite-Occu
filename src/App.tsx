@@ -3208,7 +3208,7 @@ export default function App() {
                           {entrySearchQuery && (
                             <button
                               onClick={() => setEntrySearchQuery('')}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center hover:bg-slate-200 text-slate-400 hover:text-slate-600 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center hover:bg-slate-200 text-slate-500 hover:text-slate-700 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
                               aria-label="Clear admissions search"
                             >
                               <X className="w-3.5 h-3.5" />
@@ -3259,15 +3259,15 @@ export default function App() {
                                     </div>
                                   <div className="text-[10px] text-slate-500 font-extrabold flex flex-wrap gap-x-4 gap-y-1">
                                     <span className="flex items-center gap-1">
-                                      <span className="text-slate-400">Dr:</span> {entry.physician || 'N/A'}
+                                      <span className="text-slate-500">Dr:</span> {entry.physician || 'N/A'}
                                     </span>
                                     <span className="flex items-center gap-1">
-                                      <span className="text-slate-400">Class:</span> {entry.contractor || 'N/A'}
+                                      <span className="text-slate-500">Class:</span> {entry.contractor || 'N/A'}
                                     </span>
                                   </div>
                                 </div>
                                 <div className="text-right shrink-0 flex items-center sm:flex-col gap-1 sm:gap-0">
-                                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">Admitted On</span>
+                                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block">Admitted On</span>
                                   <span className="text-[11px] font-mono font-bold text-teal-800 bg-teal-500/10 px-2 py-0.5 rounded-md">{entry.date || 'Today'}</span>
                                 </div>
                               </div>
@@ -3292,7 +3292,7 @@ export default function App() {
                       <div className="p-4 bg-white/30 rounded-xl border border-white/20 mb-2">
                         <div className="flex justify-between items-end mb-2">
                           <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Inpatient Occupancy Rate (Excl. Closed Units)</p>
+                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Inpatient Occupancy Rate (Excl. Closed Units)</p>
                             <p className="text-xl font-bold text-slate-800">{inpatientOccupancyRate}%</p>
                           </div>
                           <p className="text-[11px] font-bold text-slate-500">{inpatientOccupied} / {inpatientTotalSlots} Inpatient Beds</p>
@@ -3975,7 +3975,7 @@ export default function App() {
                                       <button
                                         onClick={() => setOrSearchQuery('')}
                                         aria-label="Clear operating room search"
-                                        className="absolute right-2.5 top-1.5 w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-600 text-xs font-bold"
+                                        className="absolute right-2.5 top-1.5 w-5 h-5 flex items-center justify-center text-slate-500 hover:text-slate-700 text-xs font-bold"
                                       >
                                         ✕
                                       </button>
@@ -4113,7 +4113,7 @@ export default function App() {
                           <div className="bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/40 shadow-xs flex flex-col h-fit">
                             <div className="border-b border-indigo-600/10 pb-4 mb-4">
                               <h3 className="font-extrabold text-brand-primary tracking-tight">OR Room Statistics</h3>
-                              <p className="text-[11px] text-slate-400 font-bold uppercase mt-1">Patient Volume & Density</p>
+                              <p className="text-[11px] text-slate-500 font-bold uppercase mt-1">Patient Volume & Density</p>
                             </div>
                             <div className="space-y-4">
                               {(() => {
@@ -4193,7 +4193,7 @@ export default function App() {
                                 <tbody className="divide-y divide-slate-100 text-slate-700 bg-white">
                                   {orOccupancyPatients.map((pt, index) => (
                                     <tr key={index} className="hover:bg-indigo-50/20 transition-colors">
-                                      <td className="px-5 py-3 text-slate-400 font-mono text-[11px]">{index + 1}</td>
+                                      <td className="px-5 py-3 text-slate-500 font-mono text-[11px]">{index + 1}</td>
                                       <td className="px-5 py-3 font-mono text-indigo-700 font-extrabold text-[12px]">{pt.room}</td>
                                       <td className="px-5 py-3 font-extrabold text-slate-800">{pt.name}</td>
                                       <td className="px-5 py-3 font-mono text-slate-500 font-bold text-[11px]">{pt.mrn || 'N/A'}</td>
@@ -4249,7 +4249,7 @@ export default function App() {
                                 <tbody className="divide-y divide-slate-100 text-slate-700 bg-white">
                                   {overList.map((pt, index) => (
                                     <tr key={index} className="hover:bg-amber-50/30 transition-colors">
-                                      <td className="px-5 py-3 text-slate-400 font-mono text-[11px]">{index + 1}</td>
+                                      <td className="px-5 py-3 text-slate-500 font-mono text-[11px]">{index + 1}</td>
                                       <td className="px-5 py-3 font-mono text-slate-600 font-bold text-[11px]">{pt.patientRoom || 'N/A'}</td>
                                       <td className="px-5 py-3 font-mono text-orange-600 font-bold text-[11px]">{pt.room}</td>
                                       <td className="px-5 py-3 font-bold text-slate-800">{pt.patientName || pt.name}</td>
@@ -4353,7 +4353,7 @@ export default function App() {
                                 </tr>
                               )}
                               <tr className="hover:bg-white/40 transition-colors duration-200">
-                                <td className="px-6 py-3 text-slate-400 font-mono text-[11px]">{serial++}</td>
+                                <td className="px-6 py-3 text-slate-500 font-mono text-[11px]">{serial++}</td>
                                 <td className="px-6 py-3 font-mono text-teal-700 font-extrabold text-[11px]">{p.room}</td>
                                 <td className="px-6 py-3">
                                   <div className="font-bold text-slate-800">{p.name || '---'}</div>

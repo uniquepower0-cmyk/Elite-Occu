@@ -576,7 +576,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                         <tbody className="divide-y divide-[#0b3c34]/5 bg-white/50 font-medium text-slate-700">
                           {filteredPatients.map((pt: any, idx: number) => (
                             <tr key={idx} className="hover:bg-teal-50/60 transition-colors">
-                              <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                              <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                               <td className="py-2 px-3 font-bold text-teal-900 font-mono">{pt.room}</td>
                               <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{pt.mrn || '-'}</td>
                               <td className="py-2 px-3 font-bold text-[#0b3c34]">{pt.name}</td>
@@ -617,7 +617,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                           {filteredDischarges.map((pt: any, idx: number) => {
                             return (
                               <tr key={idx} className="hover:bg-rose-50/50 transition-colors">
-                                <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                                <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                                 <td className="py-2 px-3 font-bold text-teal-900 font-mono">{pt.room || '-'}</td>
                                 <td className="py-2 px-3 font-bold text-[#0b3c34]">
                                   <div className="flex items-center gap-2">
@@ -668,7 +668,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                             const steps = Array.isArray(t.steps) && t.steps.length > 0 ? t.steps : [];
                             return (
                               <tr key={idx} className="hover:bg-amber-50/50 transition-colors">
-                                <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                                <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                                 <td className="py-2 px-3 font-bold text-[#0b3c34]">{t.name}</td>
                                 <td className="py-2 px-3 font-mono font-bold text-slate-600">{t.originalRoom || '-'}</td>
                                 <td className="py-2 px-3 font-mono font-black text-amber-700">{t.currentRoom || '-'}</td>
