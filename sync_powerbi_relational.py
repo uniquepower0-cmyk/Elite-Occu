@@ -484,7 +484,6 @@ def fetch_powerbi_and_sync():
                     "doctor case", "doctor_case", "doctorcase", "doctor-case",
                     "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
                     "cash doctor", "كاش طبيب", "كاش دكتور", "doctor case surgery",
-                    "نقابة اطباء", "نقابة الأطباء", "نقابه اطباء",
                     "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
                     "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
                     "خصم دكتور", "خصم طبيب"
@@ -531,19 +530,16 @@ def fetch_powerbi_and_sync():
                 if is_doctor_case_or_physician_payment(fin_status, contractor, pay_by, notes_val, patient_name, physician_val):
                     continue
 
-                cash_keywords = ["cash", "كاش", "نقدي", "نقدى", "افراد", "أفراد", "شخصي", "شخصى", "self", "private", "personal", "individual", "بدون جهة", "بدون جهه", "عميل"]
-                non_cash_keywords = [
-                    "insured", "تأمين", "تامين", "شركات", "شركة", "شركه", "company", "co.",
-                    "نقابة", "نقابه", "syndicate", "نادي", "نادى", "club",
-                    "هيئة", "هيئه", "authority", "بنك", "bank", "مؤسسة", "مؤسسه",
-                    "عقد", "contract", "تعاقد", "اجل", "آجل"
-                ]
+                has_cash_indicator = lambda txt: any(kw in str(txt or "").lower() for kw in ["cash", "كاش", "نقدي", "نقدى"])
 
-                is_non_cash = any(kw in f_low for kw in ["insured", "تأمين", "تامين", "تعاقد"]) or any(kw in m_low for kw in non_cash_keywords)
-                is_financial_cash = (any(kw in f_low for kw in cash_keywords) or f_low in ["", "elite"]) and not any(kw in f_low for kw in ["insured", "تأمين", "تامين"])
-                is_contractor_cash = any(kw in m_low for kw in cash_keywords) or m_low in ["", "elite"]
-
-                is_cash = is_financial_cash and is_contractor_cash and not is_non_cash
+                # Per user instruction: Consider ANY patient with the word "Cash" / "كاش" included
+                # (like "نقابة اطباء Cash", "نقابة مهندسين Cash", "خصم نادي سبورتنج كاش", "Cash") as cash patients
+                if has_cash_indicator(m_low) or has_cash_indicator(f_low):
+                    is_cash = True
+                elif m_low in ["", "elite", "بدون جهة", "بدون جهه", "عميل", "افراد", "أفراد", "self", "private", "personal"]:
+                    is_cash = not any(kw in f_low for kw in ["insured", "تأمين", "تامين", "تعاقد"])
+                else:
+                    is_cash = False
                 
                 t_val = clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"]))
                 r_val = clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"]))

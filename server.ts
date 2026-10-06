@@ -1748,7 +1748,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       "doctor case", "doctor_case", "doctorcase", "doctor-case",
       "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
       "cash doctor", "كاش طبيب", "كاش دكتور",
-      "doctor case surgery", "نقابة اطباء", "نقابة الأطباء", "نقابه اطباء",
+      "doctor case surgery",
       "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
       "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
       "خصم دكتور", "خصم طبيب"
@@ -1821,11 +1821,10 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     };
   });
 
-  const cashKeywords = [
-    "cash", "كاش", "نقدي", "نقدى", "افراد", "أفراد", 
-    "شخصي", "شخصى", "self", "private", "personal", "individual", 
-    "بدون جهة", "بدون جهه", "عميل"
-  ];
+  const hasCashIndicator = (text: string) => {
+    const t = (text || "").toLowerCase();
+    return t.includes("cash") || t.includes("كاش") || t.includes("نقدي") || t.includes("نقدى");
+  };
 
   const nonCashKeywords = [
     "insured", "تأمين", "تامين", "شركات", "شركة", "شركه", "company", "co.",
@@ -1834,31 +1833,30 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     "عقد", "contract", "تعاقد", "اجل", "آجل"
   ];
 
+  const isCashPatient = (contractor: string, financialStatus: string) => {
+    const c = (contractor || "").toLowerCase().trim();
+    const f = (financialStatus || "").toLowerCase().trim();
+
+    // Per user instruction: Consider ANY patient with the word "Cash" / "كاش" included
+    // (like "نقابة اطباء Cash", "نقابة مهندسين Cash", "خصم نادي سبورتنج كاش", "Cash") as cash patients
+    if (hasCashIndicator(c) || hasCashIndicator(f)) {
+      return true;
+    }
+
+    // Default cash if contractor is empty/elite/individuals/self and financial status is not corporate/insured
+    if (c === "" || c === "elite" || c === "بدون جهة" || c === "بدون جهه" || c === "عميل" || c === "افراد" || c === "أفراد" || c === "self" || c === "private" || c === "personal") {
+      const isExplicitInsured = f.includes("insured") || f.includes("تأمين") || f.includes("تامين") || f.includes("تعاقد");
+      return !isExplicitInsured;
+    }
+
+    return false;
+  };
+
   cumulativeDebts = rawDebts.filter(p => {
-    const fLower = (p.colF || "").toLowerCase().trim();
-    const mLower = (p.colM || "").toLowerCase().trim();
+    const isCash = isCashPatient(p.colM, p.colF);
+    if (!isCash) return false;
 
-    // 1. Exclude any non-cash patient (Insured or company/syndicate/club/authority contractor)
-    if (fLower.includes("insured") || fLower.includes("تأمين") || fLower.includes("تامين") || fLower.includes("تعاقد")) {
-      return false;
-    }
-    if (nonCashKeywords.some(kw => mLower.includes(kw))) {
-      return false;
-    }
-
-    // 2. Financial status MUST be explicitly cash
-    const isFinancialCash = cashKeywords.some(kw => fLower.includes(kw)) || fLower === "" || fLower === "elite";
-    if (!isFinancialCash) {
-      return false;
-    }
-
-    // 3. Contractor must be cash, individual, or empty
-    const isContractorCash = cashKeywords.some(kw => mLower.includes(kw)) || mLower === "" || mLower === "elite";
-    if (!isContractorCash) {
-      return false;
-    }
-
-    // 4. Must not be excluded debt case (doctor cases, payment by physician, etc.)
+    // Must not be excluded debt case (doctor cases, payment by physician, OR/procedure room, home care, etc.)
     const isExcluded = isExcludedDebtCase({
       room: p.room,
       patientName: p.colD,
@@ -1869,18 +1867,14 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       notes: p.notes
     });
 
-    return !isExcluded && p.colD.length > 0;
+    return !isExcluded && p.colD.length > 0 && (p.valAB > 0 || p.valZ > 0);
   });
 
   cumulativeInsuredDebts = rawDebts.filter(p => {
-    const fLower = (p.colF || "").toLowerCase().trim();
-    const mLower = (p.colM || "").toLowerCase().trim();
+    const isCash = isCashPatient(p.colM, p.colF);
+    if (isCash) return false;
 
-    const isExplicitInsured = fLower.includes("insured") || fLower.includes("تأمين") || fLower.includes("تامين") || fLower.includes("تعاقد");
-    const hasContractorOrg = nonCashKeywords.some(kw => mLower.includes(kw));
-    const isInsured = isExplicitInsured || hasContractorOrg;
-
-    return isInsured && !isExcludedDebtCase({
+    const isExcluded = isExcludedDebtCase({
       room: p.room,
       patientName: p.colD,
       financialStatus: p.colF,
@@ -1888,7 +1882,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       paymentBy: p.colL,
       physician: p.physician,
       notes: p.notes
-    }) && (p.valAB > 0 || p.valZ > 0) && p.colD.length > 0;
+    });
+
+    return !isExcluded && p.colD.length > 0 && (p.valAB > 0 || p.valZ > 0);
   });
 
   // 5. Extract Medical Plans
