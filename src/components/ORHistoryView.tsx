@@ -44,8 +44,27 @@ export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string =
     const n1 = parseInt(dmyMatch[1], 10);
     const n2 = parseInt(dmyMatch[2], 10);
     const yr = dmyMatch[3];
-    // Dates must be DD-MM-YYYY, not MM-DD-YYYY
-    const [dy, mo] = (n2 > 12 && n1 <= 12) ? [n2, n1] : [n1, n2];
+    let dy = n1;
+    let mo = n2;
+    if (n2 > 12 && n1 <= 12) {
+      dy = n2;
+      mo = n1;
+    } else if (n1 > 12 && n2 <= 12) {
+      dy = n1;
+      mo = n2;
+    } else {
+      // Both <= 12: Check if n1 corresponds to current month (e.g. 10 for October, 06 for day 6)
+      const now = new Date();
+      const curMo = now.getMonth() + 1;
+      const curDy = now.getDate();
+      if (n1 === curMo && n2 === curDy) {
+        dy = curDy;
+        mo = curMo;
+      } else {
+        dy = n1;
+        mo = n2;
+      }
+    }
     return `${String(dy).padStart(2, '0')}-${String(mo).padStart(2, '0')}-${yr}`;
   }
 
@@ -191,7 +210,8 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
     try {
       const res = await fetch('/api/history/or/snapshot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: cairoStatus?.cairoDate || undefined })
       });
       const data = await res.json();
       if (res.ok) {

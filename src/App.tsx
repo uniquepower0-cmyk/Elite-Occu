@@ -2688,8 +2688,13 @@ export default function App() {
             >
               <Menu className="w-6 h-6" />
             </button>
-            <div className="w-10 h-10 sm:w-11 sm:h-11 bg-brand-primary rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
-              <Building2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-100" />
+            <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden shrink-0">
+              <img 
+                alt="Elite Logo" 
+                className="w-full h-full object-contain transition-transform hover:scale-105 duration-300" 
+                referrerPolicy="no-referrer" 
+                src="/elite_logo.png" 
+              />
             </div>
             <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-brand-primary font-sans truncate">
               Mohanad's Elite Unified Dashboard

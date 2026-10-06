@@ -141,11 +141,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
     try {
       const res = await fetch('/api/history/occupancy/snapshot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: cairoStatus?.cairoDate || undefined })
       });
       const data = await res.json();
       if (res.ok) {
-        if (onNotify) onNotify(`Snapshot successfully archived for ${data.snapshot?.date || 'today'}`);
+        if (onNotify) onNotify(`Snapshot successfully archived for ${formatDateDDMMYYYY(data.snapshot?.date) || 'today'}`);
         await fetchDates();
         if (data.snapshot?.date) {
           setSelectedDate(data.snapshot.date);

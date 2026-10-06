@@ -305,9 +305,37 @@ export function normalizeToISODate(rawDate: any): string | null {
     const n1 = parseInt(dmyMatch[1], 10);
     const n2 = parseInt(dmyMatch[2], 10);
     const yr = dmyMatch[3];
-    // Dates must be DD-MM-YYYY, not MM-DD-YYYY.
-    // If n2 > 12 and n1 <= 12, then n2 was day and n1 was month (fallback for MM-DD-YYYY).
-    const [day, month] = (n2 > 12 && n1 <= 12) ? [n2, n1] : [n1, n2];
+
+    let day = n1;
+    let month = n2;
+
+    if (n2 > 12 && n1 <= 12) {
+      // e.g. 10/25/2026 -> month=10, day=25
+      day = n2;
+      month = n1;
+    } else if (n1 > 12 && n2 <= 12) {
+      // e.g. 25/10/2026 -> day=25, month=10
+      day = n1;
+      month = n2;
+    } else {
+      // Both n1 and n2 <= 12: Disambiguate using Cairo context
+      const cairo = getCairoDateTime();
+      const [cairoYr, cairoMo, cairoDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
+      if (parseInt(yr, 10) === cairoYr && n1 === cairoMo && n2 === cairoDy) {
+        // e.g. 10/06/2026 on Oct 6th: n1 is month 10, n2 is day 6
+        month = cairoMo;
+        day = cairoDy;
+      } else if (parseInt(yr, 10) === cairoYr && n1 === cairoDy && n2 === cairoMo) {
+        // e.g. 06/10/2026 on Oct 6th: n1 is day 6, n2 is month 10
+        month = cairoMo;
+        day = cairoDy;
+      } else {
+        // Standard DD-MM-YYYY
+        day = n1;
+        month = n2;
+      }
+    }
+
     return `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
@@ -916,6 +944,31 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
         }
       }
     }
+    // 4. Inversion fallback: if cleanDate is e.g. 2026-10-06, also check if it was inadvertently saved under inverted month/day (2026-06-10)
+    if (cleanDate.includes('-')) {
+      const [yr, mo, dy] = cleanDate.split('-');
+      const invertedIso = `${yr}-${dy}-${mo}`;
+      if (invertedIso !== cleanDate) {
+        // Query directly to avoid infinite recursion
+        const { data: invertedNode } = await historySupabase
+          .from('rtdb_nodes')
+          .select('data')
+          .like('path', `history/or/${invertedIso}/%`);
+
+        if (invertedNode && invertedNode.length > 0) {
+          const invSnap = await getORSnapshot(invertedIso);
+          if (invSnap && Math.abs(Date.now() - invSnap.timestamp) < 7 * 86400 * 1000) {
+            const corrected: ORSnapshot = {
+              ...invSnap,
+              date: cleanDate,
+              cairoTime: invSnap.cairoTime.replace(invertedIso, cleanDate)
+            };
+            saveORSnapshot(corrected).catch(() => {});
+            return corrected;
+          }
+        }
+      }
+    }
   } catch (err) {
     console.error(`[ORHistory] Failed to fetch OR snapshot from Supabase for ${cleanDate}:`, err);
   }
@@ -1077,8 +1130,13 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
 
   // Deduplicate by normalized date
   const map = new Map<string, DateIndexEntry>();
+  const cairo = getCairoDateTime();
   for (const entry of diskEntries) {
-    const norm = normalizeToISODate(entry.date) || entry.date;
+    let norm = normalizeToISODate(entry.date) || entry.date;
+    // If an entry is 2026-06-10 but was created recently (within last 7 days), it belongs to 2026-10-06
+    if (norm === '2026-06-10' && Math.abs(Date.now() - (entry.timestamp || 0)) < 7 * 86400 * 1000) {
+      norm = cairo.dateStr;
+    }
     if (!map.has(norm)) {
       map.set(norm, { ...entry, date: norm });
     }

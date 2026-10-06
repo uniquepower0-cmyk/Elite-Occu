@@ -188,9 +188,16 @@ export function cleanAdmissionDateStr(val: any): string {
         month = n1 - 1;
         day = n2;
       } else {
-        // Standard format is DD-MM-YYYY (day first, month second)
-        day = n1;
-        month = n2 - 1;
+        const cairo = getCairoDateTime();
+        const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
+        if (y === cYr && n1 === cMo && n2 === cDy) {
+          month = cMo - 1;
+          day = cDy;
+        } else {
+          // Standard format is DD-MM-YYYY (day first, month second)
+          day = n1;
+          month = n2 - 1;
+        }
       }
 
       const dateObj = new Date(y, month, day, h, min, sec);

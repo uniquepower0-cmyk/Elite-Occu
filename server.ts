@@ -503,9 +503,16 @@ function cleanAdmissionDateStr(val: any): string {
         month = n1 - 1;
         day = n2;
       } else {
-        // Standard format is DD-MM-YYYY (day first, month second)
-        day = n1;
-        month = n2 - 1;
+        const cairo = getCairoDateTime();
+        const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
+        if (y === cYr && n1 === cMo && n2 === cDy) {
+          month = cMo - 1;
+          day = cDy;
+        } else {
+          // Standard format is DD-MM-YYYY (day first, month second)
+          day = n1;
+          month = n2 - 1;
+        }
       }
 
       const dateObj = new Date(y, month, day, h, min, sec);
@@ -7414,16 +7421,18 @@ async function takeORSnapshotHelper(customDate?: string) {
   if (!cumulativeORList || cumulativeORList.length === 0) return null;
   const cairo = getCairoDateTime();
 
-  // 1. Prefer the embedded orListDate from the OR items themselves
+  // 1. Prefer customDate if provided
   let resolvedDate: string | null = null;
-  const rawListDate = cumulativeORList[0]?.orListDate || '';
-  if (rawListDate) {
-    resolvedDate = normalizeToISODate(rawListDate);
+  if (customDate) {
+    resolvedDate = normalizeToISODate(customDate) || customDate;
   }
 
-  // 2. If no valid embedded date, use customDate if provided
-  if (!resolvedDate && customDate) {
-    resolvedDate = normalizeToISODate(customDate) || customDate;
+  // 2. Fallback to embedded orListDate only if valid
+  if (!resolvedDate) {
+    const rawListDate = cumulativeORList[0]?.orListDate || '';
+    if (rawListDate) {
+      resolvedDate = normalizeToISODate(rawListDate);
+    }
   }
 
   // 3. Fallback to today's Cairo date
@@ -8095,7 +8104,8 @@ app.get('/api/history/or/detail', async (req, res) => {
 
 app.post('/api/history/or/snapshot', async (req, res) => {
   try {
-    const customDate = req.body?.date ? String(req.body.date).trim() : undefined;
+    const cairo = getCairoDateTime();
+    const customDate = req.body?.date ? (normalizeToISODate(String(req.body.date).trim()) || String(req.body.date).trim()) : cairo.dateStr;
     const snap = await takeORSnapshotHelper(customDate);
     if (!snap) {
       return res.status(400).json({ error: 'No OR list data currently loaded to snapshot.' });
