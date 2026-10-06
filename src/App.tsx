@@ -76,7 +76,7 @@ const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then
 
 const ViewLoadingFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
-    <RefreshCw className="w-7 h-7 animate-spin text-[#0b3c34]" />
+    <RefreshCw className="w-7 h-7 animate-spin text-brand-primary" />
     <span className="text-xs font-bold uppercase tracking-wider font-mono text-slate-600">Loading module...</span>
   </div>
 );
@@ -2302,10 +2302,10 @@ export default function App() {
             <div className="w-[76px] h-[76px] bg-white border border-teal-100/80 rounded-2xl shadow-md p-2 flex items-center justify-center overflow-hidden">
               {logoLoadFailed ? (
                 <div className="flex flex-col items-center justify-center text-center">
-                  <svg viewBox="0 0 100 100" className="w-10 h-10 text-[#0b3c34] opacity-90">
+                  <svg viewBox="0 0 100 100" className="w-10 h-10 text-brand-primary opacity-90">
                     <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                   </svg>
-                  <span className="text-[10px] uppercase font-black tracking-widest text-[#0b3c34] font-mono leading-none mt-1">ELITE</span>
+                  <span className="text-[10px] uppercase font-black tracking-widest text-brand-primary font-mono leading-none mt-1">ELITE</span>
                 </div>
               ) : (
                 <img 
@@ -2324,7 +2324,7 @@ export default function App() {
               )}
             </div>
           </div>
-          <h1 className="text-2xl font-extrabold mb-3 tracking-tight text-[#0b3c34]">Mohanad's Elite Unified Dashboard</h1>
+          <h1 className="text-2xl font-extrabold mb-3 tracking-tight text-brand-primary">Mohanad's Elite Unified Dashboard</h1>
           <p className="text-slate-600 text-xs mb-6 leading-relaxed font-semibold">
             Please sign in to access your administrative hospital workspace.
           </p>
@@ -2353,7 +2353,7 @@ export default function App() {
           <button 
             onClick={handleLogin}
             disabled={loading}
-            className="w-full py-4 bg-[#0b3c34] hover:bg-[#0e4e43] text-white rounded-xl font-extrabold flex items-center justify-center gap-3 transition-all hover:shadow-lg hover:shadow-teal-900/10 active:scale-95 disabled:opacity-50 shadow-md text-sm"
+            className="w-full py-4 bg-brand-primary hover:bg-brand-hover text-white rounded-xl font-extrabold flex items-center justify-center gap-3 transition-all hover:shadow-lg hover:shadow-teal-900/10 active:scale-95 disabled:opacity-50 shadow-md text-sm"
           >
             {loading ? (
               <RefreshCw className="w-5 h-5 animate-spin text-emerald-400" />
@@ -2363,7 +2363,7 @@ export default function App() {
             Sign in with Gmail
           </button>
 
-          <div className="mt-8 pt-8 border-t border-slate-200/50 text-[10px] text-[#0b3c34]/70 font-bold uppercase tracking-widest font-mono">
+          <div className="mt-8 pt-8 border-t border-slate-200/50 text-[10px] text-brand-primary/70 font-bold uppercase tracking-widest font-mono">
             Elite Hospital Management Systems
           </div>
         </motion.div>
@@ -2392,10 +2392,10 @@ export default function App() {
             <div className="w-[76px] h-[76px] bg-white border border-teal-100/80 rounded-2xl shadow-md p-2 flex items-center justify-center overflow-hidden">
               {logoLoadFailed ? (
                 <div className="flex flex-col items-center justify-center text-center">
-                  <svg viewBox="0 0 100 100" className="w-10 h-10 text-[#0b3c34] opacity-90">
+                  <svg viewBox="0 0 100 100" className="w-10 h-10 text-brand-primary opacity-90">
                     <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                   </svg>
-                  <span className="text-[10px] uppercase font-black tracking-widest text-[#0b3c34] font-mono leading-none mt-1">ELITE</span>
+                  <span className="text-[10px] uppercase font-black tracking-widest text-brand-primary font-mono leading-none mt-1">ELITE</span>
                 </div>
               ) : (
                 <img 
@@ -2414,19 +2414,19 @@ export default function App() {
               )}
             </div>
           </div>
-          <h1 className="text-2xl font-extrabold mb-8 tracking-tight text-[#0b3c34]">Mohanad's Elite Unified Dashboard</h1>
+          <h1 className="text-2xl font-extrabold mb-8 tracking-tight text-brand-primary">Mohanad's Elite Unified Dashboard</h1>
           
           <label className="block group cursor-pointer">
             <div className={`w-full py-12 px-6 border-2 border-dashed rounded-2xl transition-all flex flex-col items-center justify-center gap-4 ${
               loading 
                 ? 'bg-teal-50/50 border-teal-300' 
-                : 'bg-white border-teal-200/80 group-hover:border-[#0b3c34] group-hover:bg-teal-50/20 shadow-inner'
+                : 'bg-white border-teal-200/80 group-hover:border-brand-primary group-hover:bg-teal-50/20 shadow-inner'
             }`}>
               {loading ? (
-                <RefreshCw className="w-10 h-10 text-[#0b3c34] animate-spin" />
+                <RefreshCw className="w-10 h-10 text-brand-primary animate-spin" />
               ) : (
                 <>
-                  <div className="w-12 h-12 bg-teal-50 text-[#0b3c34] rounded-full flex items-center justify-center border border-teal-100">
+                  <div className="w-12 h-12 bg-teal-50 text-brand-primary rounded-full flex items-center justify-center border border-teal-100">
                     <Download className="w-6 h-6" />
                   </div>
                   <div className="text-center">
@@ -2448,11 +2448,11 @@ export default function App() {
           <div className="mt-10 pt-8 border-t border-slate-200/50 flex flex-col items-center gap-6">
             <div className="flex items-center justify-center gap-8 opacity-80">
                <div className="flex flex-col items-center gap-1">
-                 <FileText className="w-5 h-5 text-[#0b3c34]" />
+                 <FileText className="w-5 h-5 text-brand-primary" />
                  <span className="text-[10px] font-bold uppercase tracking-wider font-mono text-slate-600">Secure parsing</span>
                </div>
                <div className="flex flex-col items-center gap-1">
-                 <RefreshCw className="w-5 h-5 text-[#0b3c34]" />
+                 <RefreshCw className="w-5 h-5 text-brand-primary" />
                  <span className="text-[10px] font-bold uppercase tracking-wider font-mono text-slate-600">Live logic</span>
                </div>
             </div>
@@ -2480,7 +2480,7 @@ export default function App() {
       return (
         <div className="flex flex-col gap-6 h-full">
           <div>
-            <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Main View</h3>
+            <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Main View</h3>
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'dashboard'} 
@@ -2498,7 +2498,7 @@ export default function App() {
           </div>
 
           <div className="pt-2 border-t border-white/10">
-            <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Management</h3>
+            <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Management</h3>
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'medical-director'} 
@@ -2523,7 +2523,7 @@ export default function App() {
           </div>
 
           <div className="pt-2 border-t border-white/10">
-            <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">History & Archives</h3>
+            <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">History & Archives</h3>
             <nav className="space-y-1.5">
               <NavItem 
                 active={currentView === 'occupancy-history'} 
@@ -2544,7 +2544,7 @@ export default function App() {
 
           {user?.email?.toLowerCase() === 'mohanad.md07@gmail.com' && (
             <div className="pt-2 border-t border-white/10">
-              <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Support</h3>
+              <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Support</h3>
               <nav className="space-y-1.5">
                 <NavItem 
                   active={currentView === 'audit-logs'} 
@@ -2558,7 +2558,7 @@ export default function App() {
           )}
 
           <div className="pt-2 border-t border-white/10">
-             <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Data Sync</h3>
+             <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Data Sync</h3>
              <div className="space-y-2">
                 <button 
                   onClick={() => {
@@ -2571,7 +2571,7 @@ export default function App() {
                   <RefreshCw className={`w-4 h-4 text-teal-600 ${loading ? 'animate-spin' : ''}`} />
                   Sync with Server
                 </button>
-                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-[#0b3c34] hover:bg-[#0e4e43] border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
+                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-brand-primary hover:bg-brand-hover border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
                   {loading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Database className="w-4 h-4 text-emerald-400" />}
                   Upload Recent Unified Sheet
                   <input 
@@ -2603,14 +2603,14 @@ export default function App() {
           </div>
 
           <div>
-            <h3 className="text-[10px] font-extrabold text-[#0b3c34]/70 uppercase tracking-widest mb-3 px-3">Configuration</h3>
+            <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Configuration</h3>
             <div className="space-y-2">
               <div className="p-3 bg-white/40 border border-white/15 rounded-xl">
-                <p className="text-[9px] font-extrabold text-[#0b3c34] mb-1 uppercase">EXCLUSION KEYWORDS</p>
+                <p className="text-[9px] font-extrabold text-brand-primary mb-1 uppercase">EXCLUSION KEYWORDS</p>
                 <p className="text-[11px] font-mono leading-tight text-slate-600">homecare, dialysis, wellbaby...</p>
               </div>
               <div className="p-3 bg-white/40 border border-white/15 rounded-xl">
-                <p className="text-[9px] font-extrabold text-[#0b3c34] mb-1 uppercase">SYNC STATUS</p>
+                <p className="text-[9px] font-extrabold text-brand-primary mb-1 uppercase">SYNC STATUS</p>
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
                   <span className="text-[11px] font-mono text-slate-600">Live Connection</span>
@@ -2620,7 +2620,7 @@ export default function App() {
           </div>
 
           <div className="mt-auto pt-4">
-            <div className="bg-[#0b3c34]/15 border border-teal-400/40 text-[#0b3c34] p-4 rounded-xl shadow-[0_4px_20px_rgba(20,184,166,0.1)]">
+            <div className="bg-brand-primary/15 border border-teal-400/40 text-brand-primary p-4 rounded-xl shadow-[0_4px_20px_rgba(20,184,166,0.1)]">
               <p className="text-[10px] font-bold opacity-75 uppercase tracking-wider mb-1">Upcoming Trigger</p>
               <p className="text-base font-extrabold">14:00 (Daily Exit)</p>
             </div>
@@ -2644,15 +2644,15 @@ export default function App() {
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[#0b3c34] hover:bg-white/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-brand-primary hover:bg-white/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
               aria-label="Open navigation menu"
             >
               <Menu className="w-6 h-6" />
             </button>
-            <div className="w-10 h-10 sm:w-11 sm:h-11 bg-[#0b3c34] rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
+            <div className="w-10 h-10 sm:w-11 sm:h-11 bg-brand-primary rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
               <Building2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-100" />
             </div>
-            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-[#0b3c34] font-sans truncate">
+            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-brand-primary font-sans truncate">
               Mohanad's Elite Unified Dashboard
             </h1>
           </div>
@@ -2662,10 +2662,10 @@ export default function App() {
             <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden">
               {logoLoadFailed ? (
                 <div className="flex flex-col items-center justify-center text-center">
-                  <svg viewBox="0 0 100 100" className="w-8 h-8 text-[#0b3c34] opacity-90">
+                  <svg viewBox="0 0 100 100" className="w-8 h-8 text-brand-primary opacity-90">
                     <path fill="currentColor" d="M50,15 C42,25 32,35 20,40 C32,45 40,55 45,72 C48,55 56,45 68,40 C56,35 48,25 50,15 Z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                   </svg>
-                  <span className="text-[8px] uppercase font-black tracking-widest text-[#0b3c34] font-mono leading-none mt-0.5">ELITE</span>
+                  <span className="text-[8px] uppercase font-black tracking-widest text-brand-primary font-mono leading-none mt-0.5">ELITE</span>
                 </div>
               ) : (
                 <img 
@@ -2689,7 +2689,7 @@ export default function App() {
 
           <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <div className="hidden sm:flex flex-col items-end text-right">
-              <span className="text-xs font-bold text-[#0b3c34] uppercase tracking-wider">MOHANAD M.D.</span>
+              <span className="text-xs font-bold text-brand-primary uppercase tracking-wider">MOHANAD M.D.</span>
               <span className="text-[10px] font-mono font-semibold text-slate-500 mt-0.5">
                 {(() => {
                   const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
@@ -2737,10 +2737,10 @@ export default function App() {
               >
                 <div className="flex items-center justify-between pb-3 border-b border-slate-200/60">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 bg-[#0b3c34] rounded-lg flex items-center justify-center text-white shadow-sm">
+                    <div className="w-9 h-9 bg-brand-primary rounded-lg flex items-center justify-center text-white shadow-sm">
                       <Building2 className="w-5 h-5 text-teal-100" />
                     </div>
-                    <span className="font-extrabold text-sm text-[#0b3c34] uppercase tracking-wide">Elite Occupancy</span>
+                    <span className="font-extrabold text-sm text-brand-primary uppercase tracking-wide">Elite Occupancy</span>
                   </div>
                   <button
                     onClick={() => setIsMobileMenuOpen(false)}
@@ -2766,7 +2766,7 @@ export default function App() {
           <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto bg-white/5 backdrop-blur-sm flex flex-col relative z-0">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 sm:mb-8 shrink-0">
               <div>
-                <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-[#0b3c34] tracking-tight capitalize font-sans">{currentView}</h2>
+                <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-brand-primary tracking-tight capitalize font-sans">{currentView}</h2>
                 <p className="text-xs font-bold text-slate-600 mt-1 uppercase tracking-wide">Live operational overview of your infrastructure</p>
               </div>
               <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
@@ -2783,14 +2783,14 @@ export default function App() {
                   {loading ? 'Resetting...' : showResetConfirm ? 'CONFIRM RESET' : 'Reset Data'}
                 </button>
                 <div className="relative flex-1 sm:flex-none">
-                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#0b3c34]" />
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-primary" />
                   <input 
                     type="text" 
                     placeholder="Patient / Room search..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     aria-label="Patient and room search"
-                    className="w-full sm:w-72 pl-11 pr-5 py-2.5 min-h-[44px] bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm shadow-sm font-medium transition-all text-[#0b3c34] placeholder-slate-400"
+                    className="w-full sm:w-72 pl-11 pr-5 py-2.5 min-h-[44px] bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm shadow-sm font-medium transition-all text-brand-primary placeholder-slate-400"
                   />
                 </div>
               </div>
@@ -2811,7 +2811,7 @@ export default function App() {
                     onClick={() => setDashboardTab('hospital')}
                     className={`pb-3 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 ${
                       dashboardTab === 'hospital'
-                        ? 'text-[#0b3c34]'
+                        ? 'text-brand-primary'
                         : 'text-slate-400 hover:text-slate-600'
                     }`}
                   >
@@ -2819,7 +2819,7 @@ export default function App() {
                     {dashboardTab === 'hospital' && (
                       <motion.div 
                         layoutId="activeSubDashboardTab" 
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0b3c34]" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary" 
                       />
                     )}
                   </button>
@@ -2827,20 +2827,20 @@ export default function App() {
                     onClick={() => setDashboardTab('or-list')}
                     className={`pb-3 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 ${
                       dashboardTab === 'or-list'
-                        ? 'text-[#0b3c34]'
+                        ? 'text-brand-primary'
                         : 'text-slate-400 hover:text-slate-600'
                     }`}
                   >
                     OR Dashboard
                     {(orListCount > 0 || orOccupancyPatients.length > 0) && (
-                      <span className="px-1.5 py-0.5 bg-[#0b3c34]/10 text-[#0b3c34] text-[10px] font-bold rounded-full font-mono">
+                      <span className="px-1.5 py-0.5 bg-brand-primary/10 text-brand-primary text-[10px] font-bold rounded-full font-mono">
                         {orListCount > 0 ? orListCount : orOccupancyPatients.length}
                       </span>
                     )}
                     {dashboardTab === 'or-list' && (
                       <motion.div 
                         layoutId="activeSubDashboardTab" 
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0b3c34]" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary" 
                       />
                     )}
                   </button>
@@ -3050,7 +3050,7 @@ export default function App() {
                   <div className="lg:col-span-2 space-y-8">
                     <div className="bg-white/60 backdrop-blur-md p-8 rounded-2xl border border-white/40 shadow-sm">
                       <div className="flex justify-between items-center mb-8">
-                        <h3 className="font-extrabold text-[#0b3c34] tracking-tight">Occupancy Distribution</h3>
+                        <h3 className="font-extrabold text-brand-primary tracking-tight">Occupancy Distribution</h3>
                         <div className="text-[10px] font-bold text-teal-700 uppercase tracking-widest bg-teal-500/10 px-2.5 py-1 rounded-md">Live Metrics</div>
                       </div>
                       <div className="h-80 w-full min-w-0" style={{ minHeight: 320 }}>
@@ -3076,7 +3076,7 @@ export default function App() {
                     {/* Empty Rooms Panel */}
                     <div className="bg-white/60 backdrop-blur-md p-8 rounded-2xl border border-white/40 shadow-sm">
                       <div className="flex justify-between items-center mb-6 border-b border-teal-600/10 pb-3">
-                        <h3 className="font-extrabold text-[#0b3c34] tracking-tight flex items-center gap-2">
+                        <h3 className="font-extrabold text-brand-primary tracking-tight flex items-center gap-2">
                           <CheckCircle2 className="w-5 h-5 text-teal-600" />
                           Empty Rooms Dashboard ({emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length})
                         </h3>
@@ -3162,7 +3162,7 @@ export default function App() {
                             <UserPlus className="w-6 h-6" />
                           </div>
                           <div>
-                            <h3 className="font-extrabold text-[#0b3c34] text-lg tracking-tight flex items-center gap-2">
+                            <h3 className="font-extrabold text-brand-primary text-lg tracking-tight flex items-center gap-2">
                               Detected New Admissions ({entryRows.length})
                             </h3>
                             <p className="text-xs text-slate-500 font-semibold mt-1">
@@ -3174,7 +3174,7 @@ export default function App() {
                           {entryRows.length > 0 && (
                             <button
                               onClick={copyFormattedEntries}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0b3c34] hover:bg-[#155a4e] text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer hover:scale-[1.02]"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary hover:bg-[#155a4e] text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer hover:scale-[1.02]"
                             >
                               <Copy className="w-3.5 h-3.5" />
                               Copy WhatsApp Format
@@ -3192,7 +3192,7 @@ export default function App() {
                             value={entrySearchQuery}
                             onChange={(e) => setEntrySearchQuery(e.target.value)}
                             aria-label="Search new admissions by patient name, room, physician or contractor"
-                            className="w-full pl-9 pr-10 py-2.5 min-h-[40px] bg-white/50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-[#0b3c34] transition-all"
+                            className="w-full pl-9 pr-10 py-2.5 min-h-[40px] bg-white/50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-brand-primary transition-all"
                           />
                           {entrySearchQuery && (
                             <button
@@ -3228,7 +3228,7 @@ export default function App() {
                         }
 
                         return (
-                          <div className="max-h-96 overflow-y-auto border border-teal-500/10 rounded-2xl divide-y divide-[#0b3c34]/5 bg-white/30 shadow-2xs">
+                          <div className="max-h-96 overflow-y-auto border border-teal-500/10 rounded-2xl divide-y divide-brand-primary/5 bg-white/30 shadow-2xs">
                             {filtered.map((entry, idx) => {
                               const isOnORList = isPatientOnORList(entry, orList);
 
@@ -3236,7 +3236,7 @@ export default function App() {
                                 <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-teal-500/5 transition-colors">
                                   <div className="space-y-1.5 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="text-xs font-black text-[#0b3c34]">{entry.name}</span>
+                                      <span className="text-xs font-black text-brand-primary">{entry.name}</span>
                                       <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-800 font-mono text-[10px] font-extrabold uppercase tracking-wider">
                                         Room {entry.room}
                                       </span>
@@ -3270,8 +3270,8 @@ export default function App() {
 
                   <div className="bg-white/60 backdrop-blur-md p-8 rounded-2xl border border-white/40 shadow-sm flex flex-col">
                     <div className="flex justify-between items-center mb-6">
-                      <h3 className="font-extrabold text-[#0b3c34] tracking-tight">Resource Health</h3>
-                      <div className="px-3 py-1 bg-[#0b3c34]/10 text-[#0b3c34] rounded-full text-[10px] font-bold uppercase tracking-wider border border-teal-400/20">
+                      <h3 className="font-extrabold text-brand-primary tracking-tight">Resource Health</h3>
+                      <div className="px-3 py-1 bg-brand-primary/10 text-brand-primary rounded-full text-[10px] font-bold uppercase tracking-wider border border-teal-400/20">
                         Inpatient: {inpatientOccupancyRate}% | Total: {totalOccupancyRate}%
                       </div>
                     </div>
@@ -3309,16 +3309,16 @@ export default function App() {
 
                         return (
                           <div className="grid grid-cols-1 gap-4 py-3 border-y border-white/25">
-                             <div className="flex justify-between items-center bg-[#0b3c34]/10 p-3.5 rounded-xl border border-teal-400/10">
-                               <span className="text-[11px] font-bold text-[#0b3c34] uppercase">1st Floor</span>
+                             <div className="flex justify-between items-center bg-brand-primary/10 p-3.5 rounded-xl border border-teal-400/10">
+                               <span className="text-[11px] font-bold text-brand-primary uppercase">1st Floor</span>
                                <span className="text-xs font-mono font-bold text-teal-700">{firstFloor ? ((firstFloor.occupied/firstFloor.total)*100).toFixed(1) : 0}%</span>
                              </div>
-                             <div className="flex justify-between items-center bg-[#0b3c34]/10 p-3.5 rounded-xl border border-teal-400/10">
-                               <span className="text-[11px] font-bold text-[#0b3c34] uppercase">3rd Floor (Zone A+B+C)</span>
+                             <div className="flex justify-between items-center bg-brand-primary/10 p-3.5 rounded-xl border border-teal-400/10">
+                               <span className="text-[11px] font-bold text-brand-primary uppercase">3rd Floor (Zone A+B+C)</span>
                                <span className="text-xs font-mono font-bold text-teal-700">{thirdFloorPerc}%</span>
                              </div>
-                             <div className="flex justify-between items-center bg-[#0b3c34]/10 p-3.5 rounded-xl border border-teal-400/10">
-                               <span className="text-[11px] font-bold text-[#0b3c34] uppercase">4th Floor</span>
+                             <div className="flex justify-between items-center bg-brand-primary/10 p-3.5 rounded-xl border border-teal-400/10">
+                               <span className="text-[11px] font-bold text-brand-primary uppercase">4th Floor</span>
                                <span className="text-xs font-mono font-bold text-teal-700">{fourthFloor ? ((fourthFloor.occupied/fourthFloor.total)*100).toFixed(1) : 0}%</span>
                              </div>
                           </div>
@@ -3328,7 +3328,7 @@ export default function App() {
                       {stats.map(s => (
                         <div key={s.name} className="space-y-2">
                           <div className="flex justify-between text-[11px] font-bold uppercase tracking-wide">
-                            <span className="text-[#0b3c34]">{s.name}</span>
+                            <span className="text-brand-primary">{s.name}</span>
                             <div className="flex gap-2">
                               <span className="text-teal-700 font-mono italic">{((s.occupied / s.total) * 100).toFixed(1)}%</span>
                               <span className="text-slate-400 font-normal">({s.occupied} / {s.total})</span>
@@ -3615,7 +3615,7 @@ export default function App() {
                         <div className="bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/40 shadow-xs space-y-6">
                           <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-indigo-500/10 pb-4">
                             <div>
-                              <h3 className="text-base font-extrabold text-[#0b3c34] tracking-tight flex items-center gap-1.5">
+                              <h3 className="text-base font-extrabold text-brand-primary tracking-tight flex items-center gap-1.5">
                                 <Activity className="w-5 h-5 text-indigo-600 animate-pulse" />
                                 Operating Room Live Occupancy Tracker Timeline
                               </h3>
@@ -3945,7 +3945,7 @@ export default function App() {
                               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-2 border-b border-indigo-500/10">
                                 <div className="flex items-center gap-2.5">
                                   <span className="p-1 px-2.5 rounded-lg bg-indigo-500/10 text-indigo-700 text-[10px] uppercase font-mono font-black tracking-wide">Active</span>
-                                  <h3 className="font-extrabold text-[#0b3c34] tracking-tight">
+                                  <h3 className="font-extrabold text-brand-primary tracking-tight">
                                     Operating Room Schedule Grid
                                   </h3>
                                 </div>
@@ -4099,7 +4099,7 @@ export default function App() {
                           {/* Statistics breakdown */}
                           <div className="bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/40 shadow-xs flex flex-col h-fit">
                             <div className="border-b border-indigo-600/10 pb-4 mb-4">
-                              <h3 className="font-extrabold text-[#0b3c34] tracking-tight">OR Room Statistics</h3>
+                              <h3 className="font-extrabold text-brand-primary tracking-tight">OR Room Statistics</h3>
                               <p className="text-[11px] text-slate-400 font-bold uppercase mt-1">Patient Volume & Density</p>
                             </div>
                             <div className="space-y-4">
@@ -4142,7 +4142,7 @@ export default function App() {
                         <div className="bg-white/80 backdrop-blur-md p-6 rounded-2xl border border-indigo-200 shadow-md space-y-4">
                           <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-indigo-500/10 pb-4">
                             <div>
-                              <h3 className="text-base font-extrabold text-[#0b3c34] tracking-tight flex items-center gap-2">
+                              <h3 className="text-base font-extrabold text-brand-primary tracking-tight flex items-center gap-2">
                                 <Activity className="w-5 h-5 text-indigo-600 animate-pulse" />
                                 Patients Currently in the OR / المرضى الموجودين في العمليات حالياً
                               </h3>
@@ -4199,7 +4199,7 @@ export default function App() {
                         <div className="bg-white/80 backdrop-blur-md p-6 rounded-2xl border border-indigo-200 shadow-md space-y-4">
                           <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-indigo-500/10 pb-4">
                             <div>
-                              <h3 className="text-base font-extrabold text-[#0b3c34] tracking-tight flex items-center gap-2">
+                              <h3 className="text-base font-extrabold text-brand-primary tracking-tight flex items-center gap-2">
                                 <AlertCircle className={`w-5 h-5 ${overList.length > 0 ? 'text-orange-550 animate-pulse' : 'text-emerald-500'}`} />
                                 Detected Over List Patients (Admitted OR-x not in list) / Over-Listed OR Cases
                               </h3>
@@ -4280,14 +4280,14 @@ export default function App() {
                 className="bg-white/60 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm flex flex-col overflow-hidden"
               >
                 <div className="p-4 bg-white/30 backdrop-blur-md border-b border-white/20 flex justify-between items-center shrink-0">
-                  <h3 className="font-extrabold text-[#0b3c34] text-xs uppercase tracking-wider">Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Asia/Riyadh' })}</h3>
+                  <h3 className="font-extrabold text-brand-primary text-xs uppercase tracking-wider">Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Asia/Riyadh' })}</h3>
                   <div className="flex gap-2">
                     <span 
                       onClick={() => setPaymentFilter('all')}
                       className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase cursor-pointer transition-all shadow-sm ${
                         paymentFilter === 'all' 
-                          ? 'bg-[#0b3c34] text-white border-[#0b3c34] shadow-teal-900/10' 
-                          : 'bg-white/50 border-white/30 text-[#0b3c34] hover:bg-white/80'
+                          ? 'bg-brand-primary text-white border-brand-primary shadow-teal-900/10' 
+                          : 'bg-white/50 border-white/30 text-brand-primary hover:bg-white/80'
                       }`}>
                       ALL ({totalOccupied})
                     </span>
@@ -4335,7 +4335,7 @@ export default function App() {
                           return (
                             <React.Fragment key={i}>
                               {isNewGroup && (
-                                <tr className="group-separator font-black text-[10px] uppercase tracking-widest bg-emerald-500/10 text-[#0b3c34]">
+                                <tr className="group-separator font-black text-[10px] uppercase tracking-widest bg-emerald-500/10 text-brand-primary">
                                   <td colSpan={5} className="px-6 py-2 border-y border-white/20">{group}</td>
                                 </tr>
                               )}
@@ -4350,7 +4350,7 @@ export default function App() {
                                 <td className="px-6 py-3">
                                   <span className={`px-2.5 py-1 rounded-lg text-[9px] font-extrabold uppercase tracking-wider border ${
                                     isCashPayment(p.payment)
-                                      ? 'bg-teal-500/10 text-[#0b3c34] border-teal-500/20' 
+                                      ? 'bg-teal-500/10 text-brand-primary border-teal-500/20' 
                                       : 'bg-sky-500/10 text-sky-800 border-sky-500/20'
                                   }`}>
                                     {p.payment || 'Unknown'}
@@ -4365,7 +4365,7 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
-                <div className="p-3.5 bg-white/20 border-t border-white/20 text-[10px] text-[#0b3c34]/60 flex justify-between shrink-0 font-bold uppercase tracking-wider">
+                <div className="p-3.5 bg-white/20 border-t border-white/20 text-[10px] text-brand-primary/60 flex justify-between shrink-0 font-bold uppercase tracking-wider">
                   <span>Source: Elite Hospital Integrated Database</span>
                   <span className="font-extrabold uppercase tracking-tight">Sync Interval: 10s | Priority Sorting: ACTIVE</span>
                 </div>
@@ -4384,7 +4384,7 @@ export default function App() {
                 {currentView === 'medical-director' && (
                   <section>
                     <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-[#0b3c34] tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Medical Director & Inpatient manager</h3>
+                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Medical Director & Inpatient manager</h3>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -4412,7 +4412,7 @@ export default function App() {
                 {currentView === 'duty-manager' && (
                   <section>
                     <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-[#0b3c34] tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Duty Manager</h3>
+                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Duty Manager</h3>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -4440,26 +4440,26 @@ export default function App() {
                 {currentView === 'mohanad-sheets' && (
                   <section className="space-y-6">
                     <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-[#0b3c34] tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Mohanad's Sheets</h3>
+                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Mohanad's Sheets</h3>
                     </div>
 
-                    <div className="bg-[#0b3c34]/10 border border-teal-500/20 rounded-xl p-4 flex gap-3 text-teal-900 text-xs shadow-sm">
-                      <Info size={18} className="text-[#0b3c34] shrink-0 mt-0.5" />
+                    <div className="bg-brand-primary/10 border border-teal-500/20 rounded-xl p-4 flex gap-3 text-teal-900 text-xs shadow-sm">
+                      <Info size={18} className="text-brand-primary shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-extrabold text-[#0b3c34]">Mohanad's Premium Refined Series:</span> These high-fidelity, polished reports utilize Mohanad's signature transparent text box overlay laid perfectly over elegant header images, customized font sizing, and refined spacing formats across every worksheet.
+                        <span className="font-extrabold text-brand-primary">Mohanad's Premium Refined Series:</span> These high-fidelity, polished reports utilize Mohanad's signature transparent text box overlay laid perfectly over elegant header images, customized font sizing, and refined spacing formats across every worksheet.
                       </div>
                     </div>
 
                     {/* Sub Tab Navigation for Mohanad's Sheets */}
-                    <div className="flex border-b border-[#0b3c34]/10 pb-px gap-2 mb-6 flex-wrap">
+                    <div className="flex border-b border-brand-primary/10 pb-px gap-2 mb-6 flex-wrap">
                       <button
                         id="tab-downloads-btn"
                         onClick={() => setMohanadSubTab('downloads')}
                         type="button"
                         className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
                           mohanadSubTab === 'downloads'
-                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
-                            : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-brand-primary shadow-sm'
+                            : 'text-slate-500 hover:text-brand-primary hover:bg-brand-primary/5'
                         }`}
                       >
                         <FileSpreadsheet size={16} className="text-teal-700" />
@@ -4471,8 +4471,8 @@ export default function App() {
                         type="button"
                         className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
                           mohanadSubTab === 'inputs'
-                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
-                            : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-brand-primary shadow-sm'
+                            : 'text-slate-500 hover:text-brand-primary hover:bg-brand-primary/5'
                         }`}
                       >
                         <Database size={16} className="text-teal-700" />
@@ -4487,8 +4487,8 @@ export default function App() {
                         type="button"
                         className={`px-5 py-3 text-xs md:text-sm font-extrabold tracking-tight transition-all relative rounded-t-xl flex items-center gap-2 ${
                           mohanadSubTab === 'transfers'
-                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-[#0b3c34] shadow-sm'
-                            : 'text-slate-500 hover:text-[#0b3c34] hover:bg-[#0b3c34]/5'
+                            ? 'bg-white/95 border-t-2 border-teal-600 border-x border-teal-500/25 text-brand-primary shadow-sm'
+                            : 'text-slate-500 hover:text-brand-primary hover:bg-brand-primary/5'
                         }`}
                       >
                         <ArrowRightLeft size={16} className="text-teal-700" />
@@ -4509,7 +4509,7 @@ export default function App() {
                             <div className="flex items-center gap-2">
                               <ShieldCheck className="text-teal-600" size={22} />
                               <div>
-                                <h4 className="text-base font-extrabold text-[#0b3c34]">VIP Cases Name Matcher (VIP STATUS)</h4>
+                                <h4 className="text-base font-extrabold text-brand-primary">VIP Cases Name Matcher (VIP STATUS)</h4>
                                 <div className="flex items-center gap-2 mt-0.5">
                                   <span className="text-[11px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -4572,7 +4572,7 @@ export default function App() {
                                 className={`px-5 py-2.5 text-xs font-bold rounded-xl shadow-md transition-all flex items-center gap-2 ${
                                   isCopied
                                     ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/10'
-                                    : 'bg-[#e2f0ee] hover:bg-[#d0e5e2] text-[#0b3c34] active:scale-95 border border-[#0b3c34]/20 shadow-teal-900/5'
+                                    : 'bg-[#e2f0ee] hover:bg-[#d0e5e2] text-brand-primary active:scale-95 border border-brand-primary/20 shadow-teal-900/5'
                                 }`}
                               >
                                 <Copy size={14} />
@@ -4585,7 +4585,7 @@ export default function App() {
                                 className={`px-5 py-2.5 text-xs font-bold rounded-xl text-white shadow-md transition-all flex items-center gap-2 ${
                                   processing 
                                     ? 'bg-slate-400 cursor-not-allowed shadow-none'
-                                    : 'bg-[#0b3c34] hover:bg-[#0e4e43] active:scale-95 shadow-teal-900/10'
+                                    : 'bg-brand-primary hover:bg-brand-hover active:scale-95 shadow-teal-900/10'
                                 }`}
                               >
                                 <Send size={14} />
@@ -4599,7 +4599,7 @@ export default function App() {
                         <div className="bg-white/60 backdrop-blur-md border border-white/45 rounded-2xl p-6 shadow-sm">
                           <div className="flex items-center gap-2 mb-3">
                             <FileSpreadsheet className="text-teal-600" size={22} />
-                            <h4 className="text-base font-extrabold text-[#0b3c34]">Early Discharge Cases Room Numbers</h4>
+                            <h4 className="text-base font-extrabold text-brand-primary">Early Discharge Cases Room Numbers</h4>
                           </div>
                           <p className="text-xs text-slate-600 mb-4 leading-relaxed font-semibold">
                             Enter the room numbers of early discharge cases (separated by lines, commas, or spaces). The system will search for these rooms in the occupancy sheet to extract their dates of admission, room numbers, names, and contractors, then organize them by zone under the <strong>Early Discharge Cases Sheet</strong>.
@@ -4619,7 +4619,7 @@ export default function App() {
                               className={`px-5 py-2.5 text-xs font-bold rounded-xl text-white shadow-md transition-all flex items-center gap-2 ${
                                 processing 
                                   ? 'bg-slate-400 cursor-not-allowed shadow-none'
-                                  : 'bg-[#0b3c34] hover:bg-[#0e4e43] active:scale-95 shadow-teal-900/10'
+                                  : 'bg-brand-primary hover:bg-brand-hover active:scale-95 shadow-teal-900/10'
                               }`}
                             >
                               <Send size={14} />
@@ -4632,7 +4632,7 @@ export default function App() {
                         <div className="bg-white/60 backdrop-blur-md border border-white/45 rounded-2xl p-6 shadow-sm">
                           <div className="flex items-center gap-2 mb-3">
                             <Users className="text-teal-600" size={22} />
-                            <h4 className="text-base font-extrabold text-[#0b3c34]">Pending Discharge Patients</h4>
+                            <h4 className="text-base font-extrabold text-brand-primary">Pending Discharge Patients</h4>
                           </div>
                           <p className="text-xs text-slate-600 mb-4 leading-relaxed font-semibold">
                             Enter patient names (one per line, or separated by commas). When you click save/discharge, they will be matched against active patients, removed from the active occupancy and other sheets, and safely added to the <strong>Discharged Patients</strong> statistics and historical sheets.
@@ -4652,7 +4652,7 @@ export default function App() {
                               className={`px-5 py-2.5 text-xs font-bold rounded-xl text-white shadow-md transition-all flex items-center gap-2 ${
                                 processing 
                                   ? 'bg-slate-400 cursor-not-allowed shadow-none'
-                                  : 'bg-[#0b3c34] hover:bg-[#0e4e43] active:scale-95 shadow-teal-900/10'
+                                  : 'bg-brand-primary hover:bg-brand-hover active:scale-95 shadow-teal-900/10'
                               }`}
                             >
                               <Send size={14} />
@@ -4667,7 +4667,7 @@ export default function App() {
                             <div className="flex items-center gap-2">
                               <LogOut className="text-teal-600" size={22} />
                               <div>
-                                <h4 className="text-base font-extrabold text-[#0b3c34]">Active Exclusions & Discharged Patients</h4>
+                                <h4 className="text-base font-extrabold text-brand-primary">Active Exclusions & Discharged Patients</h4>
                                 <div className="text-[10px] text-teal-700 font-semibold">Persistent per day and saved with daily snapshots</div>
                               </div>
                             </div>
@@ -4686,13 +4686,13 @@ export default function App() {
                               No manually excluded or discharged patients found in database.
                             </div>
                           ) : (
-                            <div className="max-h-64 overflow-y-auto border border-teal-500/10 rounded-xl divide-y divide-[#0b3c34]/5 bg-white/30">
+                            <div className="max-h-64 overflow-y-auto border border-teal-500/10 rounded-xl divide-y divide-brand-primary/5 bg-white/30">
                               {dischargedPatients.map((p, idx) => {
                                   const isVip = (p as any).isVip || (p as any).isVIP;
                                   return (
                                     <div key={idx} className="p-3.5 flex items-center justify-between hover:bg-teal-500/5 transition-colors gap-4">
                                       <div className="flex flex-col gap-1 min-w-0">
-                                        <div className="text-xs font-extrabold text-[#0b3c34] flex items-center gap-2 flex-wrap">
+                                        <div className="text-xs font-extrabold text-brand-primary flex items-center gap-2 flex-wrap">
                                           <span className="truncate">{p.name}</span>
                                           <span className="px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-800 font-mono text-[10px] font-extrabold shrink-0">
                                             {p.room}
@@ -4713,7 +4713,7 @@ export default function App() {
                                         onClick={() => handleRestorePatient(p.name)}
                                         disabled={!!processing}
                                         type="button"
-                                        className="px-3 py-1.5 bg-[#0b3c34]/5 text-[11px] font-extrabold text-[#0b3c34] rounded-lg border border-[#0b3c34]/15 hover:bg-[#0b3c34]/10 active:scale-95 transition-all flex items-center gap-1 shrink-0 shadow-sm"
+                                        className="px-3 py-1.5 bg-brand-primary/5 text-[11px] font-extrabold text-brand-primary rounded-lg border border-brand-primary/15 hover:bg-brand-primary/10 active:scale-95 transition-all flex items-center gap-1 shrink-0 shadow-sm"
                                       >
                                         <RotateCcw size={12} />
                                         Restore to Active
@@ -4884,20 +4884,20 @@ export default function App() {
                   <section className="space-y-6 animate-fade-in">
                     <div>
                       <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                        <h3 className="text-xl font-extrabold text-[#0b3c34] tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">User Login Audit Logs</h3>
+                        <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">User Login Audit Logs</h3>
                       </div>
                     </div>
 
                     <div className="bg-white/60 backdrop-blur-md rounded-2xl border border-white/20 p-6 shadow-sm">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100">
                         <div>
-                          <h4 className="text-lg font-bold text-[#0b3c34]">Active Authentication Logs</h4>
+                          <h4 className="text-lg font-bold text-brand-primary">Active Authentication Logs</h4>
                           <p className="text-xs text-slate-500">Tracks user authentication and access sessions secured through Google SSO (Limit: 100 entries)</p>
                         </div>
                         <button
                           onClick={fetchLoginLogs}
                           disabled={loadingLogs}
-                          className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-[#0b3c34] hover:text-[#0b3c34]/80 bg-white border border-slate-200 hover:border-slate-300 rounded-xl transition duration-150 shadow-sm"
+                          className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-brand-primary hover:text-brand-primary/80 bg-white border border-slate-200 hover:border-slate-300 rounded-xl transition duration-150 shadow-sm"
                         >
                           <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? 'animate-spin' : ''}`} />
                           Refresh logs
@@ -4919,7 +4919,7 @@ export default function App() {
                         <div className="overflow-y-auto max-h-[500px] border border-slate-100 rounded-xl custom-scrollbar">
                           <table className="w-full text-left text-xs border-collapse">
                             <thead className="sticky top-0 bg-white/95 backdrop-blur z-10 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
-                              <tr className="text-[#0b3c34]/70 uppercase tracking-wider font-extrabold text-[10px]">
+                              <tr className="text-brand-primary/70 uppercase tracking-wider font-extrabold text-[10px]">
                                 <th className="py-3 pl-4">User (Display Name)</th>
                                 <th className="py-3">Email Address</th>
                                 <th className="py-3">Session Date & Time</th>
@@ -4976,7 +4976,7 @@ function NavItem({ active, onClick, icon, label, highlighted, badge }: {
       onClick={onClick}
       className={`flex items-center justify-between w-full px-3.5 py-2.5 min-h-[44px] rounded-xl transition-all text-sm font-medium relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
         active 
-          ? 'bg-[#0b3c34] text-white shadow-md shadow-teal-900/10' 
+          ? 'bg-brand-primary text-white shadow-md shadow-teal-900/10' 
           : highlighted
             ? 'bg-amber-500/15 text-amber-700 hover:text-amber-900 hover:bg-amber-500/20 border-2 border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.25)] animate-pulse'
             : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
@@ -5104,7 +5104,7 @@ function StatCard({ label, value, subValue, icon, color = 'indigo', onCopy, copy
       <div className="flex justify-between items-start mb-6">
         <div className="w-10 h-10 rounded-full flex items-center justify-center bg-teal-500/10 text-emerald-800 shadow-[0_0_15px_rgba(20,184,166,0.25)] relative">
           <div className="absolute inset-0 rounded-full bg-emerald-400/20 blur-sm"></div>
-          {React.cloneElement(icon, { className: 'w-5 h-5 relative z-10 text-[#0b3c34]' } as any)}
+          {React.cloneElement(icon, { className: 'w-5 h-5 relative z-10 text-brand-primary' } as any)}
         </div>
         <div className="text-[10px] font-mono text-slate-400 font-bold">{new Date().getHours()}:00 HR</div>
       </div>
@@ -5168,16 +5168,16 @@ function WorkflowCard({
   return (
     <div className={`bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/45 shadow-sm flex flex-col hover:border-teal-500/40 hover:shadow-md transition-all group ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
       <div className="mb-4 p-3.5 bg-teal-500/10 rounded-xl w-fit group-hover:bg-teal-500/20 transition-all shadow-sm">
-        {React.cloneElement(icon, { className: 'w-7 h-7 text-[#0b3c34] transition-transform group-hover:scale-110' } as any)}
+        {React.cloneElement(icon, { className: 'w-7 h-7 text-brand-primary transition-transform group-hover:scale-110' } as any)}
       </div>
-      <h3 className="text-base font-extrabold mb-2 text-[#0b3c34] tracking-tight">{title}</h3>
+      <h3 className="text-base font-extrabold mb-2 text-brand-primary tracking-tight">{title}</h3>
       <p className="text-slate-600 text-[12px] mb-6 leading-relaxed font-semibold">
         {description}
       </p>
       <button 
         onClick={onAction}
         disabled={disabled}
-        className="mt-auto py-3 px-5 bg-[#0b3c34] text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-[#0e4e43] transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300"
+        className="mt-auto py-3 px-5 bg-brand-primary text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300"
       >
         {actionLabel}
         <ArrowRightLeft className="w-3.5 h-3.5 text-teal-100" />

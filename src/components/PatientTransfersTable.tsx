@@ -312,7 +312,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
               onClick={onDownloadExcel}
               disabled={isDownloading}
               type="button"
-              className="px-4 py-2.5 bg-white text-[#0b3c34] hover:bg-teal-50 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              className="px-4 py-2.5 bg-white text-brand-primary hover:bg-teal-50 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               <FileSpreadsheet size={16} className="text-emerald-700" />
               {isDownloading ? 'Downloading...' : 'Download Excel Report'}
@@ -360,7 +360,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by patient, room, physician, or contractor..."
-            className="w-full pl-10 pr-10 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+            className="w-full pl-10 pr-10 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
           />
           {searchQuery && (
             <button
@@ -373,7 +373,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
         </div>
 
         <div className="text-xs font-semibold text-slate-500 self-start sm:self-center">
-          Showing <span className="text-[#0b3c34] font-bold">{filteredTransfers.length}</span> of <span className="font-bold">{transfers.length}</span> records
+          Showing <span className="text-brand-primary font-bold">{filteredTransfers.length}</span> of <span className="font-bold">{transfers.length}</span> records
         </div>
       </div>
 
@@ -382,7 +382,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm border-collapse" dir="ltr">
             <thead>
-              <tr className="bg-[#0b3c34] text-white text-xs font-bold select-none">
+              <tr className="bg-brand-primary text-white text-xs font-bold select-none">
                 <th className="py-3 px-4 text-center w-12 border-b border-teal-800">#</th>
                 <th className="py-3 px-4 border-b border-teal-800">Patient Name</th>
                 <th className="py-3 px-4 border-b border-teal-800 text-center">Transfer Journey</th>
@@ -507,7 +507,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                             title="Add next transfer destination for this patient"
                             aria-label={`Add next transfer destination for ${item.name}`}
                             type="button"
-                            className="w-9 h-9 flex items-center justify-center bg-teal-50 hover:bg-teal-100 text-[#0b3c34] rounded-lg transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                            className="w-9 h-9 flex items-center justify-center bg-teal-50 hover:bg-teal-100 text-brand-primary rounded-lg transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
                           >
                             <Plus size={16} />
                           </button>
@@ -553,7 +553,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           onClick={(e) => { if (e.target === e.currentTarget) setIsAddModalOpen(false); }}
         >
           <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden text-left">
-            <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
+            <div className="px-6 py-4 bg-brand-primary text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ArrowRightLeft size={18} className="text-teal-300" />
                 <h3 id="add-transfer-modal-title" className="font-bold text-base">Record New Patient Transfer</h3>
@@ -578,7 +578,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   value={patientName}
                   onChange={(e) => setPatientName(e.target.value)}
                   placeholder="e.g. Khadija Mohamed Ahmed Jaber"
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                 />
               </div>
 
@@ -593,7 +593,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                     value={fromRoom}
                     onChange={(e) => setFromRoom(e.target.value)}
                     placeholder="e.g. 309"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                   />
                 </div>
                 <div>
@@ -606,7 +606,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                     value={toRoom}
                     onChange={(e) => setToRoom(e.target.value)}
                     placeholder="e.g. Cath Lab or PICU Room 2"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                   />
                 </div>
               </div>
@@ -621,7 +621,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                     value={transferDate}
                     onChange={(e) => setTransferDate(e.target.value)}
                     placeholder="Auto-assigned if empty"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                   />
                 </div>
                 <div>
@@ -633,7 +633,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                     value={physician}
                     onChange={(e) => setPhysician(e.target.value)}
                     placeholder="Doctor's name"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                   />
                 </div>
               </div>
@@ -647,7 +647,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   value={contractor}
                   onChange={(e) => setContractor(e.target.value)}
                   placeholder="e.g. TAWUNIYA, BUPA, CASH..."
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                 />
               </div>
 
@@ -660,7 +660,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Clinical reasons or transfer notes..."
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                 />
               </div>
 
@@ -675,7 +675,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                 <button
                   type="submit"
                   disabled={loadingAction}
-                  className="px-5 py-2 text-sm font-bold bg-[#0b3c34] hover:bg-teal-900 text-white rounded-xl shadow-md disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2 text-sm font-bold bg-brand-primary hover:bg-teal-900 text-white rounded-xl shadow-md disabled:opacity-50 cursor-pointer"
                 >
                   {loadingAction ? 'Saving...' : 'Save Transfer'}
                 </button>
@@ -696,7 +696,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           onClick={(e) => { if (e.target === e.currentTarget) setStepModalPatient(null); }}
         >
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden text-left">
-            <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
+            <div className="px-6 py-4 bg-brand-primary text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Plus size={18} className="text-teal-300" />
                 <h3 id="step-transfer-modal-title" className="font-bold text-base">Add Next Transfer Destination</h3>
@@ -712,7 +712,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
 
             <form onSubmit={handleAddNextStep} className="p-6 space-y-4">
               <div className="bg-teal-50 p-3 rounded-xl border border-teal-100 text-xs">
-                <div className="font-bold text-[#0b3c34]">{stepModalPatient.name}</div>
+                <div className="font-bold text-brand-primary">{stepModalPatient.name}</div>
                 <div className="text-teal-800 mt-1">
                   Current Location: <span className="font-bold">{stepModalPatient.currentRoom}</span>
                 </div>
@@ -728,7 +728,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   value={nextToRoom}
                   onChange={(e) => setNextToRoom(e.target.value)}
                   placeholder="e.g. PICU Room 2 or 405"
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                 />
               </div>
 
@@ -741,7 +741,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                   value={stepDate}
                   onChange={(e) => setStepDate(e.target.value)}
                   placeholder="Auto-assigned if empty"
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0b3c34]/20 focus:border-[#0b3c34]"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary"
                 />
               </div>
 
@@ -756,7 +756,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                 <button
                   type="submit"
                   disabled={loadingAction}
-                  className="px-5 py-2 text-sm font-bold bg-[#0b3c34] hover:bg-teal-900 text-white rounded-xl shadow-md disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2 text-sm font-bold bg-brand-primary hover:bg-teal-900 text-white rounded-xl shadow-md disabled:opacity-50 cursor-pointer"
                 >
                   {loadingAction ? 'Updating...' : 'Update Journey'}
                 </button>
@@ -777,7 +777,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
           onClick={(e) => { if (e.target === e.currentTarget) setHistoryPatient(null); }}
         >
           <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden text-left">
-            <div className="px-6 py-4 bg-[#0b3c34] text-white flex items-center justify-between">
+            <div className="px-6 py-4 bg-brand-primary text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <History size={18} className="text-teal-300" />
                 <h3 id="history-transfer-modal-title" className="font-bold text-base">Detailed Patient Transfer Journey</h3>

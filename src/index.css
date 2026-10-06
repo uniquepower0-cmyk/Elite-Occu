@@ -2,23 +2,55 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Calibri", "Carlito", "Cairo", "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Inter", "Cairo", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Brand Tokens */
+  --color-brand-primary: #0b3c34;
+  --color-brand-hover: #0e4e43;
+  --color-brand-light: #e4f2f0;
+  --color-brand-mint: #ccfbf1;
+  --color-brand-border: #14532d;
+
+  /* Surface Tokens */
+  --color-surface-app: var(--bg-app);
+  --color-surface-sidebar: var(--bg-sidebar);
+  --color-surface-card: var(--bg-card);
+  --color-surface-separator: #DDEBF7;
 }
 
 :root {
-  --bg-app: #f1f5f9; /* slate-100 */
-  --bg-sidebar: #f8fafc; /* slate-50 */
-  --bg-white: #ffffff;
-  --accent-indigo: #4f46e5; /* indigo-600 */
-  --accent-indigo-dark: #312e81; /* indigo-900 */
-  --text-slate-900: #0f172a;
-  --text-slate-500: #64748b;
+  --bg-app: #f1f5f9;
+  --bg-sidebar: #f8fafc;
+  --bg-card: #ffffff;
+  --color-brand-primary: #0b3c34;
+  --color-brand-hover: #0e4e43;
+  --color-brand-light: #e4f2f0;
+  --color-brand-mint: #ccfbf1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --border-subtle: rgba(226, 232, 240, 0.8);
+}
+
+[data-theme="dark"],
+.dark {
+  --bg-app: #081210;
+  --bg-sidebar: #0d1a17;
+  --bg-card: #122421;
+  --color-brand-primary: #10b981;
+  --color-brand-hover: #059669;
+  --color-brand-light: #134e4a;
+  --color-brand-mint: #042f2e;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border-subtle: rgba(30, 41, 59, 0.8);
 }
 
 body {
   background-color: var(--bg-app);
-  color: var(--text-slate-900);
+  color: var(--text-primary);
   font-family: var(--font-sans);
 }
 
