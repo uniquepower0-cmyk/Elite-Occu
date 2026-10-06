@@ -16,7 +16,8 @@ import {
   Camera,
   LogOut,
   Tag,
-  Filter
+  Filter,
+  AlertTriangle
 } from 'lucide-react';
 
 interface OccupancyHistoryViewProps {
@@ -29,8 +30,10 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
+  const [datesError, setDatesError] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
   const [detailData, setDetailData] = useState<any>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [takingSnapshot, setTakingSnapshot] = useState<boolean>(false);
@@ -55,6 +58,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
 
   const fetchDates = async () => {
     setLoadingDates(true);
+    setDatesError(null);
     try {
       const res = await fetch('/api/history/occupancy/dates');
       if (res.ok) {
@@ -68,9 +72,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
             setSelectedDate(available[0]);
           }
         }
+      } else {
+        setDatesError('Server returned an error fetching occupancy archive dates.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch occupancy history dates:', err);
+      setDatesError(err?.message || 'Network error fetching occupancy archive dates.');
     } finally {
       setLoadingDates(false);
     }
@@ -79,6 +86,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
   const fetchDetail = async (dateStr: string) => {
     if (!dateStr) return;
     setLoadingDetail(true);
+    setDetailError(null);
     try {
       const res = await fetch(`/api/history/occupancy/detail?date=${encodeURIComponent(dateStr)}`);
       if (res.ok) {
@@ -86,10 +94,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
         setDetailData(data);
       } else {
         setDetailData(null);
+        setDetailError(`Server returned an error (${res.status}) while loading records for ${dateStr}.`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch occupancy detail for date:', dateStr, err);
       setDetailData(null);
+      setDetailError(err?.message || 'Network connection failed while fetching snapshot data.');
     } finally {
       setLoadingDetail(false);
     }
@@ -427,6 +437,22 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-12 text-center text-slate-500 text-sm font-bold flex flex-col items-center justify-center gap-3">
               <RefreshCw size={24} className="animate-spin text-teal-600" />
               Loading occupancy snapshot data for {selectedDate}...
+            </div>
+          ) : detailError ? (
+            <div role="alert" className="bg-rose-50/90 border border-rose-200 rounded-2xl p-8 text-center text-rose-800 shadow-sm flex flex-col items-center gap-3">
+              <AlertTriangle className="w-8 h-8 text-rose-600" />
+              <div>
+                <h4 className="text-sm font-bold text-slate-900">Failed to load snapshot for {selectedDate}</h4>
+                <p className="text-xs text-rose-700 mt-1">{detailError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => fetchDetail(selectedDate)}
+                className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+              >
+                <RefreshCw size={14} />
+                Retry Loading Snapshot
+              </button>
             </div>
           ) : detailData ? (
             <>

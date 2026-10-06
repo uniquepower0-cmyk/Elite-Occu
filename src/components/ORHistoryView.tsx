@@ -12,7 +12,8 @@ import {
   Camera,
   Database,
   Building2,
-  Trash2
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 
 interface ORHistoryViewProps {
@@ -24,8 +25,10 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
+  const [datesError, setDatesError] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
   const [detailData, setDetailData] = useState<any>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [takingSnapshot, setTakingSnapshot] = useState<boolean>(false);
@@ -48,6 +51,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
 
   const fetchDates = async () => {
     setLoadingDates(true);
+    setDatesError(null);
     try {
       const res = await fetch('/api/history/or/dates');
       if (res.ok) {
@@ -63,9 +67,12 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
           setSelectedDate('');
           setDetailData(null);
         }
+      } else {
+        setDatesError('Server returned an error while loading OR archive dates.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch OR history dates:', err);
+      setDatesError(err?.message || 'Network request failed while loading OR dates.');
     } finally {
       setLoadingDates(false);
     }
@@ -77,6 +84,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
       return;
     }
     setLoadingDetail(true);
+    setDetailError(null);
     try {
       const res = await fetch(`/api/history/or/detail?date=${encodeURIComponent(dateStr)}`);
       if (res.ok) {
@@ -84,10 +92,12 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
         setDetailData(data);
       } else {
         setDetailData(null);
+        setDetailError(`Server returned an error (${res.status}) while retrieving OR records for ${dateStr}.`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch OR detail for date:', dateStr, err);
       setDetailData(null);
+      setDetailError(err?.message || 'Network connection failed while fetching OR records.');
     } finally {
       setLoadingDetail(false);
     }
@@ -434,6 +444,22 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
             <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-12 text-center text-slate-500 text-sm font-bold flex flex-col items-center justify-center gap-3">
               <RefreshCw size={24} className="animate-spin text-teal-600" />
               Loading OR snapshot data for {selectedDate}...
+            </div>
+          ) : detailError ? (
+            <div role="alert" className="bg-rose-50/90 border border-rose-200 rounded-2xl p-8 text-center text-rose-800 shadow-sm flex flex-col items-center gap-3">
+              <AlertTriangle className="w-8 h-8 text-rose-600" />
+              <div>
+                <h4 className="text-sm font-bold text-slate-900">Failed to load OR snapshot for {selectedDate}</h4>
+                <p className="text-xs text-rose-700 mt-1">{detailError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => fetchDetail(selectedDate)}
+                className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+              >
+                <RefreshCw size={14} />
+                Retry Loading Snapshot
+              </button>
             </div>
           ) : (detailData && detailData.found !== false && (detailData.totalCases > 0 || (detailData.orList && detailData.orList.length > 0))) ? (
             <>

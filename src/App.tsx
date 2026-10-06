@@ -37,7 +37,8 @@ import {
   Zap,
   Radio,
   Timer,
-  Sparkles
+  Sparkles,
+  AlertTriangle
 } from 'lucide-react';
 import { supabase, fetchSupabaseAuditLogs, logUserLogin, SUPABASE_ANON_KEY } from './supabase';
 import { auth, googleProvider } from './firebase';
@@ -81,6 +82,7 @@ import { NavItem } from './components/ui/NavItem';
 import { ActionButton } from './components/ui/ActionButton';
 import { StatCard } from './components/ui/StatCard';
 import { WorkflowCard } from './components/ui/WorkflowCard';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const ViewLoadingFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
@@ -640,20 +642,48 @@ export default function App() {
     setIsAuthenticated(false);
   };
 
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [showResetORConfirm, setShowResetORConfirm] = useState(false);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [resetChallengeText, setResetChallengeText] = useState('');
+  const [resetModalType, setResetModalType] = useState<'occupancy' | 'or'>('occupancy');
 
-  const handleReset = async () => {
-    console.log('handleReset triggered');
-    if (!showResetConfirm) {
-      setShowResetConfirm(true);
-      // Auto-cancel after 4 seconds
-      setTimeout(() => setShowResetConfirm(false), 4000);
+  // Mobile drawer keyboard dismiss (Escape) & body scroll lock
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isMobileMenuOpen]);
+
+  const handleOpenResetModal = (type: 'occupancy' | 'or' = 'occupancy') => {
+    setResetModalType(type);
+    setResetChallengeText('');
+    setIsResetModalOpen(true);
+  };
+
+  const handleConfirmReset = async () => {
+    if (resetChallengeText.trim().toUpperCase() !== 'RESET') {
       return;
     }
-    
+    setIsResetModalOpen(false);
+    if (resetModalType === 'occupancy') {
+      await executeOccupancyReset();
+    } else {
+      await executeORReset();
+    }
+  };
+
+  const executeOccupancyReset = async () => {
     setLoading(true);
-    setShowResetConfirm(false);
     console.log('Resetting occupancy data and removing today\'s state from database...');
     try {
       const res = await fetch('/api/reset', { 
@@ -680,17 +710,8 @@ export default function App() {
     }
   };
 
-  const handleResetORList = async () => {
-    console.log('handleResetORList triggered');
-    if (!showResetORConfirm) {
-      setShowResetORConfirm(true);
-      // Auto-cancel after 4 seconds
-      setTimeout(() => setShowResetORConfirm(false), 4000);
-      return;
-    }
-    
+  const executeORReset = async () => {
     setLoading(true);
-    setShowResetORConfirm(false);
     console.log('Resetting OR List with history archive reference...');
     try {
       const res = await fetch('/api/reset-or', { 
@@ -2782,16 +2803,13 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                 <button 
-                  onClick={handleReset}
+                  onClick={() => handleOpenResetModal('occupancy')}
                   disabled={loading}
-                  className={`flex items-center gap-2 px-4 py-2.5 min-h-[44px] border rounded-xl text-xs font-bold transition-all shadow-sm group disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
-                    showResetConfirm 
-                      ? 'bg-red-600 border-red-700 text-white animate-pulse' 
-                      : 'bg-white/70 backdrop-blur border-slate-200/50 hover:border-slate-300 text-slate-700 hover:bg-slate-50'
-                  }`}
+                  className="flex items-center gap-2 px-4 py-2.5 min-h-[44px] border rounded-xl text-xs font-bold transition-all shadow-sm group disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 bg-white/70 backdrop-blur border-slate-200/50 hover:border-red-300 text-slate-700 hover:text-red-700 hover:bg-red-50/50"
+                  title="Purge today's live occupancy census"
                 >
-                  <Trash2 className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`} />
-                  {loading ? 'Resetting...' : showResetConfirm ? 'CONFIRM RESET' : 'Reset Data'}
+                  <Trash2 className={`w-3.5 h-3.5 text-slate-500 group-hover:text-red-600 ${loading ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`} />
+                  {loading ? 'Processing...' : 'Reset Data'}
                 </button>
                 <div className="relative flex-1 sm:flex-none">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-primary" />
@@ -3608,16 +3626,13 @@ export default function App() {
                               {processing === 'Downloading OR Reconciliation Sheet' ? 'Generating...' : "Download OR Reconciliation Sheet"}
                             </button>
                             <button
-                              onClick={handleResetORList}
+                              onClick={() => handleOpenResetModal('or')}
                               disabled={loading || !!processing}
-                              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer active:scale-95 shrink-0 disabled:opacity-50 ${
-                                showResetORConfirm
-                                  ? 'bg-red-700 hover:bg-red-800 text-white animate-pulse'
-                                  : 'bg-rose-600 hover:bg-rose-700 text-white'
-                              }`}
+                              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer active:scale-95 shrink-0 disabled:opacity-50 bg-rose-600 hover:bg-rose-700 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                              title="Reset current OR schedule data"
                             >
                               <Trash2 className="w-4 h-4" />
-                              {loading ? 'Resetting...' : showResetORConfirm ? 'Confirm Reset!' : 'Reset OR List Data'}
+                              {loading ? 'Processing...' : 'Reset OR List Data'}
                             </button>
                           </div>
                         </div>
@@ -4821,15 +4836,21 @@ export default function App() {
 
                     {mohanadSubTab === 'transfers' && (
                       <div className="space-y-6 animate-fade-in">
-                        <React.Suspense fallback={<ViewLoadingFallback />}>
-                          <PatientTransfersTable
-                            transfers={transfersList}
-                            onRefresh={fetchTransfers}
-                            onDownloadExcel={downloadTransfersReport}
-                            isDownloading={processing === 'Downloading Patient Transfers Sheet'}
-                            activePatients={patients}
-                          />
-                        </React.Suspense>
+                        <ErrorBoundary
+                          fallbackTitle="Patient Transfers Unavailable"
+                          fallbackSubtitle="Could not load the transfers table module. Please retry."
+                          onReset={() => fetchTransfers()}
+                        >
+                          <React.Suspense fallback={<ViewLoadingFallback />}>
+                            <PatientTransfersTable
+                              transfers={transfersList}
+                              onRefresh={fetchTransfers}
+                              onDownloadExcel={downloadTransfersReport}
+                              isDownloading={processing === 'Downloading Patient Transfers Sheet'}
+                              activePatients={patients}
+                            />
+                          </React.Suspense>
+                        </ErrorBoundary>
                       </div>
                     )}
                   </section>
@@ -4838,9 +4859,15 @@ export default function App() {
                 {/* Section: Standalone Occupancy History View */}
                 {currentView === 'occupancy-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <React.Suspense fallback={<ViewLoadingFallback />}>
-                      <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
-                    </React.Suspense>
+                    <ErrorBoundary
+                      fallbackTitle="Occupancy History Unavailable"
+                      fallbackSubtitle="Could not load the occupancy archives view. Check network and retry."
+                      onReset={() => setOccupancyHistoryRefreshKey(k => k + 1)}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
+                      </React.Suspense>
+                    </ErrorBoundary>
                   </section>
                 )}
 
@@ -4848,21 +4875,33 @@ export default function App() {
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <React.Suspense fallback={<ViewLoadingFallback />}>
-                      <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
-                    </React.Suspense>
+                    <ErrorBoundary
+                      fallbackTitle="OR History Archive Unavailable"
+                      fallbackSubtitle="Could not load the operating room archives view. Check network and retry."
+                      onReset={() => setOrHistoryRefreshKey(k => k + 1)}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
+                      </React.Suspense>
+                    </ErrorBoundary>
                   </section>
                 )}
 
                 {/* Section: User Login Audit Logs */}
                 {currentView === 'audit-logs' && (
-                  <React.Suspense fallback={<ViewLoadingFallback />}>
-                    <AuditLogsView 
-                      loginLogs={loginLogs}
-                      loadingLogs={loadingLogs}
-                      onRefreshLogs={fetchLoginLogs}
-                    />
-                  </React.Suspense>
+                  <ErrorBoundary
+                    fallbackTitle="Audit Trail Unavailable"
+                    fallbackSubtitle="Could not load the user activity logs. Please retry."
+                    onReset={() => fetchLoginLogs()}
+                  >
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <AuditLogsView 
+                        loginLogs={loginLogs}
+                        loadingLogs={loadingLogs}
+                        onRefreshLogs={fetchLoginLogs}
+                      />
+                    </React.Suspense>
+                  </ErrorBoundary>
                 )}
 
 
@@ -4871,6 +4910,98 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Safety Confirmation Challenge Modal for Destructive Data Resets */}
+      <AnimatePresence>
+        {isResetModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsResetModalOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
+              aria-hidden="true"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+              className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-red-200 p-6 z-50 overflow-hidden"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="reset-modal-title"
+              aria-describedby="reset-modal-description"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-red-100 border border-red-200 text-red-700 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 id="reset-modal-title" className="text-lg font-extrabold text-slate-900">
+                    {resetModalType === 'occupancy' ? 'Reset Occupancy Census' : 'Reset OR Schedule'}
+                  </h3>
+                  <p className="text-xs text-red-600 font-semibold uppercase tracking-wide">
+                    Destructive Administrative Action
+                  </p>
+                </div>
+              </div>
+
+              <div id="reset-modal-description" className="space-y-3 text-sm text-slate-600 mb-6">
+                <p>
+                  {resetModalType === 'occupancy'
+                    ? "This will permanently purge today's hospital census data and active patient allocations from the live database."
+                    : "This will permanently reset today's Operating Room schedule records and reconciliation cache."}
+                </p>
+                <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-xs text-red-800 font-medium">
+                  To prevent accidental loss during live clinical rounds, type <strong className="font-bold text-red-900 font-mono tracking-wider">RESET</strong> below to confirm.
+                </div>
+                <div>
+                  <label htmlFor="reset-challenge-input" className="block text-xs font-bold text-slate-700 mb-1">
+                    Type confirmation phrase:
+                  </label>
+                  <input
+                    id="reset-challenge-input"
+                    type="text"
+                    value={resetChallengeText}
+                    onChange={(e) => setResetChallengeText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && resetChallengeText.trim().toUpperCase() === 'RESET') {
+                        handleConfirmReset();
+                      }
+                      if (e.key === 'Escape') {
+                        setIsResetModalOpen(false);
+                      }
+                    }}
+                    placeholder="Type RESET to confirm"
+                    autoFocus
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500 focus:bg-white text-slate-900 placeholder:text-slate-400 placeholder:font-sans"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsResetModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-100 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 min-h-[44px]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={resetChallengeText.trim().toUpperCase() !== 'RESET' || loading}
+                  onClick={handleConfirmReset}
+                  className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 min-h-[44px]"
+                >
+                  {loading ? 'Processing...' : 'Confirm Destruction'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
