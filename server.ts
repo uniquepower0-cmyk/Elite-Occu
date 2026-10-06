@@ -370,43 +370,42 @@ function isDialysisCase(p: {
   const visit = (p.visitType || "").trim().toLowerCase();
   const notes = (p.notes || "").trim().toLowerCase();
 
-  // 1. Room/Bed name matches
+  // Exclude operating rooms
+  if (isOperatingRoom(r)) return false;
+
+  // Patient in room 323 is in an inpatient room, not a dialysis room
+  if (r.includes("323") || r === "323") return false;
+
+  // 1. Room/Bed name matches a dialysis room
   if (isDialysisRoom(r)) return true;
 
-  // 2. Floor / Ward / Unit matches
+  // Inpatient rooms (such as standard numbered rooms 1xx, 3xx, 4xx, ICU, CCU, SICU, PICU, NICU, suites)
+  // are NOT dialysis rooms and cannot be dialysis cases even if the patient's medical diagnosis includes hemodialysis
+  const isInpatientRoom = /^(room\s*)?(10[1-8]|3[0-3][0-9]|4[0-2][0-9])(\s*[-/]?\s*[ab])?$/i.test(r) ||
+                          r.includes("suite") || r.includes("سويت") || r.includes("icu") || r.includes("ccu");
+  if (isInpatientRoom) return false;
+
+  // 2. Floor / Ward / Unit matches dialysis unit (and room is not an inpatient room)
   const floorKws = [
     "dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى", 
     "وحدة الغسيل", "قسم الغسيل", "استصفاء", "ديلزة", "وحدة غسيل"
   ];
   if (floorKws.some(kw => f.includes(kw))) return true;
 
-  // 3. Service matches
-  if (s.includes("dialysis") || s.includes("hemodialysis") || s.includes("haemodialysis") || s.includes("غسيل")) {
-    return true;
-  }
-
-  // 4. Visit type or Financial status indicates Dialysis session
+  // 3. Specialty is Nephrology / Dialysis AND room is in Daycase / station / chair
   if (
-    visit.includes("dialysis") || visit.includes("hemodialysis") || visit.includes("غسيل") ||
-    fin.includes("جلسة غسيل") || fin.includes("جلسات غسيل") || fin.includes("جلسه غسيل") ||
-    fin.includes("dialysis session")
+    (spec.includes("dialysis") || spec.includes("غسيل") || spec.includes("nephrology") || spec.includes("أمراض كلى")) &&
+    (r.includes("dc") || r.includes("daycase") || r.includes("day case") || r.includes("chair") || r.includes("station") || f.includes("day") || s.includes("day"))
   ) {
     return true;
   }
 
-  // 5. Notes or Diagnosis explicitly indicates regular Hemodialysis / Dialysis session
-  const diagKws = [
-    "regular hemodialysis", "regular hd", "maintenance hemodialysis", "routine hemodialysis",
-    "جلسة غسيل كلوي", "جلسه غسيل كلوي", "جلسات غسيل", "غسيل كلوي دوري", "hemodialysis session"
-  ];
-  if (diagKws.some(kw => diag.includes(kw) || notes.includes(kw))) {
-    return true;
-  }
-
-  // 6. Specialty is Nephrology / Dialysis AND room is in Daycase / station / chair
+  // 4. Visit type or Financial status indicates Dialysis session AND room is not an inpatient room
   if (
-    (spec.includes("dialysis") || spec.includes("غسيل") || spec.includes("nephrology") || spec.includes("أمراض كلى")) &&
-    (r.includes("dc") || r.includes("daycase") || r.includes("day case") || r.includes("chair") || r.includes("station") || f.includes("day") || s.includes("day"))
+    (visit.includes("dialysis") || visit.includes("hemodialysis") || visit.includes("غسيل") ||
+     fin.includes("جلسة غسيل") || fin.includes("جلسات غسيل") || fin.includes("جلسه غسيل") ||
+     fin.includes("dialysis session")) &&
+    (r.includes("dc") || r.includes("daycase") || r.includes("chair") || r.includes("station") || r.includes("dial") || !r)
   ) {
     return true;
   }
@@ -621,16 +620,46 @@ function buildColumnIndexResolver(rows: any[][], maxHeaderRows = 5) {
 
   const findCol = (candidates: string[], defaultIdx: number): number => {
     if (colMap.size === 0) return defaultIdx;
+
+    // 1. Exact match
     for (const c of candidates) {
       const norm = c.toLowerCase().trim();
       if (colMap.has(norm)) return colMap.get(norm)!;
     }
+
+    // 2. Exact match ignoring spaces, underscores, dashes
+    for (const c of candidates) {
+      const cleanC = c.toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]/g, "");
+      if (!cleanC) continue;
+      for (const [key, idx] of colMap.entries()) {
+        const cleanKey = key.replace(/[^a-z0-9\u0600-\u06FF]/g, "");
+        if (cleanKey === cleanC) return idx;
+      }
+    }
+
+    // 3. Substring match with exclusion guards
     for (const c of candidates) {
       const norm = c.toLowerCase().trim();
       for (const [key, idx] of colMap.entries()) {
+        // If searching for contractor name, DO NOT match share, percentage, or amount columns
+        if (norm.includes("contract") || norm.includes("جهة") || norm.includes("شرك")) {
+          if (
+            key.includes("share") || key.includes("مساهمة") || key.includes("تحمل") ||
+            key.includes("نسبة") || key.includes("amount") || key.includes("مبلغ")
+          ) {
+            continue;
+          }
+        }
+        // If searching for financial status, DO NOT match payment by
+        if (norm.includes("financial") || norm.includes("فئة") || norm.includes("حالة")) {
+          if (key.includes("payment") || key.includes("دفع") || key.includes("سداد")) {
+            continue;
+          }
+        }
         if (key.includes(norm) || norm.includes(key)) return idx;
       }
     }
+
     return defaultIdx;
   };
 
@@ -653,10 +682,10 @@ function extractDialysisRowsFromData(sourceData: any[][], skip: number = 0): any
   const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
   const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
   const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال"], 4);
-  const colFinIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
+  const colFinIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
   const colFloorIdx = findCol(["floor name", "floorname_en", "floor", "floorstructurename_en", "الطابق", "الدور", "القسم"], 7);
   const colVisitIdx = findCol(["visit", "visittypeguid", "visit type", "نوع الزيارة"], 10);
-  const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
   const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
   const colSpecIdx = findCol(["speciality", "specialty", "التخصص"], 23);
@@ -1640,9 +1669,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const colAlosIdx = findCol(["elitealos", "target alos", "alos", "المعيار المستهدف"], 37);
   const colDiagIdx = findCol(["icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14);
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
-  const colContractorIdx = findCol(["contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12);
-  const colFinancialIdx = findCol(["financial status", "financial class", "paymentby", "الفئة", "نوع"], 5);
-  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "الدفع"], 11);
+  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
+  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11);
   const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
   const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "expected discharge"], 20);
   const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
@@ -1653,15 +1682,17 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     financialStatus: string;
     contractor: string;
     paymentBy: string;
+    physician?: string;
     notes?: string;
   }): boolean => {
     if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room)) return true;
 
-    const fLower = (p.financialStatus || "").toLowerCase();
-    const mLower = (p.contractor || "").toLowerCase();
-    const lLower = (p.paymentBy || "").toLowerCase();
-    const nLower = (p.notes || "").toLowerCase();
-    const dLower = (p.patientName || "").toLowerCase();
+    const fLower = (p.financialStatus || "").toLowerCase().trim();
+    const mLower = (p.contractor || "").toLowerCase().trim();
+    const lLower = (p.paymentBy || "").toLowerCase().trim();
+    const nLower = (p.notes || "").toLowerCase().trim();
+    const dLower = (p.patientName || "").toLowerCase().trim();
+    const physLower = (p.physician || "").toLowerCase().trim();
 
     // Exclude header rows
     if (dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name") return true;
@@ -1675,7 +1706,8 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       lLower.includes("طبيب") ||
       lLower.includes("فيزيشن") ||
       lLower.includes("doctor") ||
-      lLower.includes("دكتور")
+      lLower.includes("دكتور") ||
+      lLower.includes("other ex")
     ) {
       return true;
     }
@@ -1683,17 +1715,43 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     // Direct physician/doctor contractor or financial status
     if (
       mLower === "طبيب" || mLower === "physician" || mLower === "doctor" || mLower === "دكتور" ||
+      mLower.startsWith("د/") || mLower.startsWith("د.") || mLower.startsWith("dr.") || mLower.startsWith("dr ") ||
       fLower === "طبيب" || fLower === "physician" || fLower === "doctor" || fLower === "دكتور"
     ) {
       return true;
     }
 
-    // 2. Exclude if patient is Doctor Case / حالة طبيب
+    // If PaymentBy is specified and NOT the patient/cash, it indicates payment by physician or external party
+    if (lLower && lLower !== "patient" && lLower !== "مريض" && lLower !== "cash" && lLower !== "نقدي" && lLower !== "نقدى" && lLower !== "self") {
+      // If it matches the treating physician
+      if (physLower && isNameMatch(lLower, physLower)) {
+        return true;
+      }
+      // If PaymentBy is any non-patient name/text
+      if (!isNameMatch(lLower, dLower)) {
+        return true;
+      }
+    }
+
+    // Notes or remarks indicating payment by physician
+    if (
+      nLower.includes("حساب الطبيب") || nLower.includes("حساب الدكتور") ||
+      nLower.includes("دفع بواسطة الطبيب") || nLower.includes("على حساب الطبيب") ||
+      nLower.includes("payment by physician") || nLower.includes("paid by doctor") ||
+      nLower.includes("physician payment")
+    ) {
+      return true;
+    }
+
+    // 2. Exclude Doctor Cases / حالات الأطباء
     const doctorCaseKeywords = [
       "doctor case", "doctor_case", "doctorcase", "doctor-case",
       "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
       "cash doctor", "كاش طبيب", "كاش دكتور",
-      "doctor case surgery"
+      "doctor case surgery", "نقابة اطباء", "نقابة الأطباء", "نقابه اطباء",
+      "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+      "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
+      "خصم دكتور", "خصم طبيب"
     ];
     for (const kw of doctorCaseKeywords) {
       if (lLower.includes(kw) || fLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
@@ -1703,7 +1761,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
 
     // Check for standalone DC / D.C. abbreviation
     const combined = ` ${lLower} ${fLower} ${mLower} ${nLower} `;
-    if (/\b(dc|d\.c\.)\b/i.test(combined)) {
+    if (/\b(dc|d\.c\.|d\.c)\b/i.test(combined)) {
       return true;
     }
 
@@ -1733,6 +1791,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     );
     const payBy = String(row[colPaymentByIdx] || row[11] || "").trim();
     const remarks = String(row[colRemarksIdx] || "").trim();
+    const contractorVal = String(row[colContractorIdx] || "").trim();
+    const financialVal = String(row[colFinancialIdx] || "").trim();
+    const physicianVal = String(row[colPhysIdx] || "").trim();
 
     return {
       colA: admDate,
@@ -1741,12 +1802,14 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       room: cleanRoomStr(String(row[1] || "").trim()),
       mrn: String(row[2] || "").trim(),
       colD: String(row[3] || "").trim(),
-      colF: String(row[colFinancialIdx] || "").trim(),
-      colM: String(row[colContractorIdx] || "").trim(),
+      colF: financialVal,
+      financialStatus: financialVal,
+      colM: contractorVal,
+      contractor: contractorVal,
       colL: payBy,
       paymentBy: payBy,
       notes: remarks,
-      physician: String(row[colPhysIdx] || "").trim(),
+      physician: physicianVal,
       colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
       colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
       valZ,
@@ -1759,37 +1822,71 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   });
 
   const cashKeywords = [
-    "cash", "كاش", "elite", "نقدي", "نقدى", "افراد", "أفراد", 
+    "cash", "كاش", "نقدي", "نقدى", "افراد", "أفراد", 
     "شخصي", "شخصى", "self", "private", "personal", "individual", 
     "بدون جهة", "بدون جهه", "عميل"
   ];
 
-  cumulativeDebts = rawDebts.filter(p => {
-    const fLower = p.colF.toLowerCase();
-    const mLower = p.colM.toLowerCase();
-    const isCash = cashKeywords.some(kw => fLower.includes(kw) || mLower.includes(kw));
+  const nonCashKeywords = [
+    "insured", "تأمين", "تامين", "شركات", "شركة", "شركه", "company", "co.",
+    "نقابة", "نقابه", "syndicate", "نادي", "نادى", "club",
+    "هيئة", "هيئه", "authority", "بنك", "bank", "مؤسسة", "مؤسسه",
+    "عقد", "contract", "تعاقد", "اجل", "آجل"
+  ];
 
-    return isCash && !isExcludedDebtCase({
+  cumulativeDebts = rawDebts.filter(p => {
+    const fLower = (p.colF || "").toLowerCase().trim();
+    const mLower = (p.colM || "").toLowerCase().trim();
+
+    // 1. Exclude any non-cash patient (Insured or company/syndicate/club/authority contractor)
+    if (fLower.includes("insured") || fLower.includes("تأمين") || fLower.includes("تامين") || fLower.includes("تعاقد")) {
+      return false;
+    }
+    if (nonCashKeywords.some(kw => mLower.includes(kw))) {
+      return false;
+    }
+
+    // 2. Financial status MUST be explicitly cash
+    const isFinancialCash = cashKeywords.some(kw => fLower.includes(kw)) || fLower === "" || fLower === "elite";
+    if (!isFinancialCash) {
+      return false;
+    }
+
+    // 3. Contractor must be cash, individual, or empty
+    const isContractorCash = cashKeywords.some(kw => mLower.includes(kw)) || mLower === "" || mLower === "elite";
+    if (!isContractorCash) {
+      return false;
+    }
+
+    // 4. Must not be excluded debt case (doctor cases, payment by physician, etc.)
+    const isExcluded = isExcludedDebtCase({
       room: p.room,
       patientName: p.colD,
       financialStatus: p.colF,
       contractor: p.colM,
       paymentBy: p.colL,
+      physician: p.physician,
       notes: p.notes
-    }) && p.colD.length > 0;
+    });
+
+    return !isExcluded && p.colD.length > 0;
   });
 
   cumulativeInsuredDebts = rawDebts.filter(p => {
-    const fLower = p.colF.toLowerCase();
-    const mLower = p.colM.toLowerCase();
-    const isCash = cashKeywords.some(kw => fLower.includes(kw) || mLower.includes(kw));
+    const fLower = (p.colF || "").toLowerCase().trim();
+    const mLower = (p.colM || "").toLowerCase().trim();
 
-    return !isCash && !isExcludedDebtCase({
+    const isExplicitInsured = fLower.includes("insured") || fLower.includes("تأمين") || fLower.includes("تامين") || fLower.includes("تعاقد");
+    const hasContractorOrg = nonCashKeywords.some(kw => mLower.includes(kw));
+    const isInsured = isExplicitInsured || hasContractorOrg;
+
+    return isInsured && !isExcludedDebtCase({
       room: p.room,
       patientName: p.colD,
       financialStatus: p.colF,
       contractor: p.colM,
       paymentBy: p.colL,
+      physician: p.physician,
       notes: p.notes
     }) && (p.valAB > 0 || p.valZ > 0) && p.colD.length > 0;
   });
@@ -2307,7 +2404,11 @@ async function executeLoadData(force = false) {
     if (p && p.room) p.room = cleanRoomStr(p.room);
     return p;
   });
-  cumulativeDialysis = (cumulativeDialysis || []).map(p => {
+  cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
+    if (!p) return false;
+    const r = String(p.room || "").trim().toLowerCase();
+    return !r.includes("323");
+  }).map(p => {
     if (p && p.room) p.room = cleanRoomStr(p.room);
     return p;
   });
@@ -2332,18 +2433,11 @@ async function executeLoadData(force = false) {
     return p;
   });
 
-  // Self-heal/Extract missing sub-datasets if hospitalData is present
+  // Self-heal/Extract sub-datasets if hospitalData is present
   if (hospitalData && hospitalData.length > 1) {
-    const debtsNeedExtraction = cumulativeDebts.length === 0 || cumulativeDebts.every(d => (!d.colZ && !d.colAB) || (d.valZ === 0 && d.valAB === 0));
-    const plansNeedExtraction = cumulativeMedicalPlans.length === 0 || cumulativeMedicalPlans.every(m => !m.colAH || m.colAH === "undefined" || m.colAH.trim() === "");
-    const losNeedsExtraction = cumulativeLOS.length === 0 || cumulativeLOS.every(l => (!l.alos || l.alos === 0) && (!l.colAL || l.colAL === "0" || l.colAL === ""));
-
-    let needsSave = false;
-    if (debtsNeedExtraction || plansNeedExtraction || losNeedsExtraction || cumulativeEntries.length === 0 || cumulativeInsuredDebts.length === 0) {
-      console.log('Extracting/enriching derived sub-datasets (entries, debts, insured debts, medical plans, los) from hospitalData...');
-      extractSubsheetsFromHospitalData(hospitalData);
-      needsSave = true;
-    }
+    console.log('Refreshing derived sub-datasets (entries, debts, insured debts, dialysis, medical plans, los) with revised filters...');
+    extractSubsheetsFromHospitalData(hospitalData);
+    let needsSave = true;
 
     // Always ensure all of today's admissions from hospitalData are included in cumulativeEntries
     const rawActivePatients = extractRawPatientsFromRows(hospitalData);
@@ -4689,7 +4783,7 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
   const processedData = dialysisPatients.filter(p => {
     if (!p) return false;
     const room = String(p.room || "").trim();
-    if (isOperatingRoom(room)) return false;
+    if (isOperatingRoom(room) || room.includes("323")) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
     return !DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw));
   });
@@ -4930,7 +5024,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
   });
 
   const renderPatientRow = (p: any) => {
-    const contractVal = p.colM || p.colF || 'Insured';
+    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
       p.room || '', 
@@ -5321,7 +5415,7 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   });
 
   const renderPatientRow = (p: any) => {
-    const contractVal = p.colM || p.colF || 'Cash';
+    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
       p.room || '', 
@@ -6076,7 +6170,7 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
   const processedData = dialysisPatients.filter(p => {
     if (!p) return false;
     const room = String(p.room || "").trim();
-    if (isOperatingRoom(room)) return false;
+    if (isOperatingRoom(room) || room.includes("323")) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
     return !DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw));
   });
@@ -6179,7 +6273,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
-    const contractVal = p.colM || p.colF || 'Insured';
+    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
 
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 
@@ -6266,7 +6360,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
-    const contractVal = p.colM || p.colF || 'Cash';
+    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
 
     const rowValues = [
       p.colA ? String(p.colA).split(' ')[0] : '', 

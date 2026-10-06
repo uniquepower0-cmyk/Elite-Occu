@@ -353,14 +353,15 @@ def fetch_powerbi_and_sync():
                 "Unnamed: 2": "MRN",
                 "Unnamed: 3": "Patient",
                 "Unnamed: 4": "DefaultMobile",
-                "Unnamed: 5": "Financial Class",
+                "Unnamed: 5": "Financial Status",
                 "Unnamed: 6": "Age",
                 "Unnamed: 7": "Floor Name",
-                "Unnamed: 8": "Companion",
-                "Unnamed: 9": "Patient Share",
-                "Unnamed: 10": "Contractor Share",
-                "Unnamed: 11": "Remarks",
-                "Unnamed: 12": "Financial Status",
+                "Unnamed: 8": "Notes",
+                "Unnamed: 9": "Companions #",
+                "Unnamed: 10": "Visit",
+                "Unnamed: 11": "PaymentBy",
+                "Unnamed: 12": "ContractorName",
+                "Unnamed: 13": "FloorStructureName_EN",
                 "Unnamed: 14": "Diagnosis",
                 "Unnamed: 18": "LOS Status",
                 "Unnamed: 20": "Expected Discharge",
@@ -394,15 +395,15 @@ def fetch_powerbi_and_sync():
                     1: ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"],
                     2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"],
                     3: ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"],
-                    4: ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Floor Name", "Unnamed: 4"],
-                    5: ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
-                    6: ["Age", "PatientAgeDBComputed", "Service", "الخدمة", "Unnamed: 6"],
-                    7: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Age", "PatientAgeDBComputed", "Unnamed: 7"],
-                    8: ["Companion", "Companions #", "Count of Companions", "مرافق", "Unnamed: 8"],
-                    9: ["Patient Share", "PatientAmount", "مساهمة المريض", "نسبة المريض", "Unnamed: 9"],
-                    10: ["Contractor Share", "ContractorAmount", "مساهمة الجهة", "تحمل الجهة", "Unnamed: 10"],
-                    11: ["PaymentBy", "Remarks", "Notes", "ملاحظات", "Unnamed: 11"],
-                    12: ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
+                    4: ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4"],
+                    5: ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
+                    6: ["Age", "PatientAgeDBComputed", "Unnamed: 6"],
+                    7: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7"],
+                    8: ["Notes", "Remarks", "ملاحظات", "Unnamed: 8"],
+                    9: ["Companions #", "Count of Companions", "Companion", "مرافق", "Unnamed: 9"],
+                    10: ["Visit", "VisitTypeGUID", "Visit Type", "نوع الزيارة", "Unnamed: 10"],
+                    11: ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"],
+                    12: ["ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
                     14: ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"],
                     18: ["LOS", "Sum(LOS)", "LOS Status", "Unnamed: 18"],
                     20: ["DischargeExpectedDate", "Expected Discharge", "ALOS", "Unnamed: 20"],
@@ -446,34 +447,54 @@ def fetch_powerbi_and_sync():
             cash_debts = []
             insured_debts = []
             
-            def is_doctor_case_or_physician_payment(fin_status, contractor, payment_by, notes="", name=""):
-                f_low = (fin_status or "").lower()
-                m_low = (contractor or "").lower()
-                l_low = (payment_by or "").lower()
-                n_low = (notes or "").lower()
-                d_low = (name or "").lower()
+            def is_doctor_case_or_physician_payment(fin_status, contractor, payment_by, notes="", name="", physician=""):
+                f_low = (fin_status or "").lower().strip()
+                m_low = (contractor or "").lower().strip()
+                l_low = (payment_by or "").lower().strip()
+                n_low = (notes or "").lower().strip()
+                d_low = (name or "").lower().strip()
+                phys_low = (physician or "").lower().strip()
 
                 # 1. Exclude if payment is by physician
-                physician_payment_kws = ["physician", "طبيب", "فيزيشن", "doctor", "دكتور"]
+                physician_payment_kws = ["physician", "طبيب", "فيزيشن", "doctor", "دكتور", "other ex"]
                 if any(kw in l_low for kw in physician_payment_kws):
                     return True
 
-                if m_low in ["طبيب", "physician", "doctor", "دكتور"] or f_low in ["طبيب", "physician", "doctor", "دكتور"]:
+                if (
+                    m_low in ["طبيب", "physician", "doctor", "دكتور"] or
+                    m_low.startswith("د/") or m_low.startswith("د.") or m_low.startswith("dr.") or m_low.startswith("dr ") or
+                    f_low in ["طبيب", "physician", "doctor", "دكتور"]
+                ):
+                    return True
+
+                # If PaymentBy is specified and NOT the patient/cash, it indicates payment by physician or external party
+                if l_low and l_low not in ["patient", "مريض", "cash", "نقدي", "نقدى", "self"]:
+                    if phys_low and l_low == phys_low:
+                        return True
+                    if l_low != d_low:
+                        return True
+
+                # Notes or remarks indicating payment by physician
+                notes_phys_kws = ["حساب الطبيب", "حساب الدكتور", "دفع بواسطة الطبيب", "على حساب الطبيب", "payment by physician", "paid by doctor", "physician payment"]
+                if any(kw in n_low for kw in notes_phys_kws):
                     return True
 
                 # 2. Exclude if patient is Doctor Case / حالة طبيب
                 dc_keywords = [
                     "doctor case", "doctor_case", "doctorcase", "doctor-case",
                     "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
-                    "cash doctor", "كاش طبيب", "كاش دكتور",
-                    "doctor case surgery"
+                    "cash doctor", "كاش طبيب", "كاش دكتور", "doctor case surgery",
+                    "نقابة اطباء", "نقابة الأطباء", "نقابه اطباء",
+                    "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+                    "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
+                    "خصم دكتور", "خصم طبيب"
                 ]
                 for kw in dc_keywords:
                     if kw in l_low or kw in f_low or kw in m_low or kw in n_low or kw in d_low:
                         return True
 
                 combined = f" {l_low} {f_low} {m_low} {n_low} "
-                if re.search(r"\b(dc|d\.c\.)\b", combined):
+                if re.search(r"\b(dc|d\.c\.|d\.c)\b", combined):
                     return True
 
                 return False
@@ -494,10 +515,11 @@ def fetch_powerbi_and_sync():
                 if not patient_name or patient_name.lower() in ["patient", "المريض", "name", "unknown"]:
                     continue
                 
-                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip()
-                contractor = str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip()
-                pay_by = str(get_val(row, ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11", "Unnamed: 9"]) or "").strip()
-                notes_val = str(get_val(row, ["Notes", "Remarks", "ملاحظات", "Unnamed: 8", "Unnamed: 5"]) or "").strip()
+                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip()
+                contractor = str(get_val(row, ["ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip()
+                pay_by = str(get_val(row, ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"]) or "").strip()
+                notes_val = str(get_val(row, ["Notes", "Remarks", "ملاحظات", "Unnamed: 8"]) or "").strip()
+                physician_val = str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip()
                 
                 f_low = fin_status.lower()
                 m_low = contractor.lower()
@@ -506,11 +528,22 @@ def fetch_powerbi_and_sync():
                     continue
                     
                 # Exclude if patient is Doctor Case or payment is by physician
-                if is_doctor_case_or_physician_payment(fin_status, contractor, pay_by, notes_val, patient_name):
+                if is_doctor_case_or_physician_payment(fin_status, contractor, pay_by, notes_val, patient_name, physician_val):
                     continue
 
-                cash_keywords = ["cash", "كاش", "elite", "نقدي", "نقدى", "افراد", "أفراد", "شخصي", "شخصى", "self", "private", "personal", "individual", "بدون جهة", "بدون جهه", "عميل"]
-                is_cash = any(kw in f_low or kw in m_low for kw in cash_keywords)
+                cash_keywords = ["cash", "كاش", "نقدي", "نقدى", "افراد", "أفراد", "شخصي", "شخصى", "self", "private", "personal", "individual", "بدون جهة", "بدون جهه", "عميل"]
+                non_cash_keywords = [
+                    "insured", "تأمين", "تامين", "شركات", "شركة", "شركه", "company", "co.",
+                    "نقابة", "نقابه", "syndicate", "نادي", "نادى", "club",
+                    "هيئة", "هيئه", "authority", "بنك", "bank", "مؤسسة", "مؤسسه",
+                    "عقد", "contract", "تعاقد", "اجل", "آجل"
+                ]
+
+                is_non_cash = any(kw in f_low for kw in ["insured", "تأمين", "تامين", "تعاقد"]) or any(kw in m_low for kw in non_cash_keywords)
+                is_financial_cash = (any(kw in f_low for kw in cash_keywords) or f_low in ["", "elite"]) and not any(kw in f_low for kw in ["insured", "تأمين", "تامين"])
+                is_contractor_cash = any(kw in m_low for kw in cash_keywords) or m_low in ["", "elite"]
+
+                is_cash = is_financial_cash and is_contractor_cash and not is_non_cash
                 
                 t_val = clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"]))
                 r_val = clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"]))
@@ -543,11 +576,13 @@ def fetch_powerbi_and_sync():
                     "mrn": str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip(),
                     "colD": patient_name,
                     "colF": fin_status,
+                    "financialStatus": fin_status,
                     "colM": contractor,
+                    "contractor": contractor,
                     "colL": pay_by,
                     "paymentBy": pay_by,
                     "notes": notes_val,
-                    "physician": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
+                    "physician": physician_val,
                     "colZ": str(f_tot),
                     "colAB": str(f_rem),
                     "valZ": f_tot,
@@ -599,9 +634,13 @@ def fetch_powerbi_and_sync():
                 ):
                     return False
 
+                # Room 323 is an inpatient room, not a dialysis room
+                if "323" in b_low:
+                    return False
+
                 floor_val = str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7"])).strip().lower()
-                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip().lower()
-                contractor = str(get_val(row, ["ContractorName", "Contractor", "Financial Status", "Financial", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip().lower()
+                fin_status = str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"]) or "").strip().lower()
+                contractor = str(get_val(row, ["ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"]) or "").strip().lower()
                 visit = str(get_val(row, ["Visit", "VisitTypeGUID", "Visit Type", "نوع الزيارة", "Unnamed: 10"]) or "").strip().lower()
                 specialty = str(get_val(row, ["Speciality", "Specialty", "التخصص", "Unnamed: 23"]) or "").strip().lower()
                 diag = str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"]) or "").strip().lower()
@@ -615,6 +654,11 @@ def fetch_powerbi_and_sync():
                 if is_dialysis_room(bed_val):
                     return True
 
+                # Inpatient rooms (standard numbered rooms 1xx, 3xx, 4xx, ICU, CCU, SICU, PICU, NICU, suites) cannot be dialysis cases
+                is_inpatient = bool(re.search(r"^(room\s*)?(10[1-8]|3[0-3][0-9]|4[0-2][0-9])(\s*[-/]?\s*[ab])?$", b_low, re.I)) or "suite" in b_low or "سويت" in b_low or "icu" in b_low or "ccu" in b_low
+                if is_inpatient:
+                    return False
+
                 # 2. Floor / Ward / Unit match
                 floor_kws = [
                     "dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى",
@@ -623,27 +667,19 @@ def fetch_powerbi_and_sync():
                 if any(kw in floor_val for kw in floor_kws):
                     return True
 
-                # 3. Visit type or Financial status indicates Dialysis session
-                if (
-                    "dialysis" in visit or "hemodialysis" in visit or "غسيل" in visit or
-                    "جلسة غسيل" in fin_status or "جلسات غسيل" in fin_status or "جلسه غسيل" in fin_status or
-                    "dialysis session" in fin_status
-                ):
-                    return True
-
-                # 4. Notes or Diagnosis explicitly indicates regular Hemodialysis
-                diag_kws = [
-                    "regular hemodialysis", "regular hd", "maintenance hemodialysis", "routine hemodialysis",
-                    "جلسة غسيل كلوي", "جلسه غسيل كلوي", "جلسات غسيل", "غسيل كلوي دوري", "hemodialysis session",
-                    "chronic hemodialysis", "end stage renal", "esrd on hemodialysis", "esrd on hd"
-                ]
-                if any(kw in diag or kw in notes for kw in diag_kws):
-                    return True
-
-                # 5. Specialty is Nephrology / Dialysis AND bed/room is in daycase / DC / chair / station
+                # 3. Specialty is Nephrology / Dialysis AND bed/room is in daycase / DC / chair / station
                 if (
                     any(kw in specialty for kw in ["dialysis", "غسيل", "nephrology", "أمراض كلى", "كلى", "امراض كلى"]) and
                     any(kw in b_low or kw in floor_val for kw in ["dc", "daycase", "day case", "chair", "station", "day"])
+                ):
+                    return True
+
+                # 4. Visit type or Financial status indicates Dialysis session AND in daycase/chair/station
+                if (
+                    ("dialysis" in visit or "hemodialysis" in visit or "غسيل" in visit or
+                     "جلسة غسيل" in fin_status or "جلسات غسيل" in fin_status or "جلسه غسيل" in fin_status or
+                     "dialysis session" in fin_status) and
+                    any(kw in b_low or kw in floor_val for kw in ["dc", "daycase", "chair", "station", "dial", "day"])
                 ):
                     return True
 
@@ -737,8 +773,10 @@ def fetch_powerbi_and_sync():
                 cumulative_transfers = []
             else:
                 # Keep dialysis cumulative throughout the day
-                cumulative_dialysis = list(existing.get("dialysis") or [])
+                cumulative_dialysis = [p for p in (existing.get("dialysis") or []) if "323" not in str(p.get("room", ""))]
                 for p in dialysis_cases:
+                    if "323" in str(p.get("room", "")):
+                        continue
                     p_name = p.get("name", "").strip().lower()
                     if p_name and not any(ex.get("name", "").strip().lower() == p_name for ex in cumulative_dialysis if ex.get("name")):
                         cumulative_dialysis.append(p)
