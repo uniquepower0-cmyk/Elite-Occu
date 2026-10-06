@@ -1254,7 +1254,7 @@ function isProcedureOrTemporaryRoom(room: string): boolean {
          low.includes("recovery");
 }
 
-function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }[] {
+function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }[] {
   if (!data || !Array.isArray(data)) return [];
   let startIdx = 0;
   for (let i = 0; i < Math.min(data.length, 10); i++) {
@@ -1269,7 +1269,7 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
 
   // Deduplicate by patient within the same sheet:
   // If a patient is listed in an OR/procedure room AND an inpatient room, their inpatient room is their primary bed.
-  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }>();
+  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }>();
 
   data.slice(startIdx).forEach(r => {
     let rawRoom = "";
@@ -1312,7 +1312,8 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
       physician: rawPhysician,
       contractor: rawContractor,
       date: cleanDate,
-      rawDate: rawDateStr
+      rawDate: rawDateStr,
+      rawRow: [...r]
     };
 
     if (patientMap.has(patientKey)) {
@@ -7233,7 +7234,8 @@ app.post('/api/pending-discharge', async (req, res) => {
           contractor: contVal,
           date: dateVal,
           dischargeDate: getTodayRiyadhDateStr(),
-          dischargeType: 'manual' as const
+          dischargeType: 'manual' as const,
+          rawRow: [...row]
         };
         
         const existingDiscIdx = cumulativeDischarged.findIndex(p => isNameMatch(p.name, patientName));
@@ -7286,7 +7288,8 @@ app.post('/api/pending-discharge', async (req, res) => {
         contractor: regMatch.contractor || '',
         date: regMatch.date || '',
         dischargeDate: getTodayRiyadhDateStr(),
-        dischargeType: 'manual' as const
+        dischargeType: 'manual' as const,
+        rawRow: (regMatch as any).rawRow ? [...(regMatch as any).rawRow] : null
       };
       const existingDiscIdx = cumulativeDischarged.findIndex(p => isNameMatch(p.name, regMatch.name));
       if (existingDiscIdx >= 0) {
@@ -7326,31 +7329,250 @@ app.post('/api/pending-discharge', async (req, res) => {
   });
 });
 
+function findPatientRowInHistoricalData(name: string, mrn?: string): any[] | null {
+  const cleanMrn = mrn ? String(mrn).trim().replace(/^0+/, "") : "";
+
+  // 1. Check previousHospitalData
+  if (previousHospitalData && Array.isArray(previousHospitalData)) {
+    for (let i = 0; i < previousHospitalData.length; i++) {
+      const row = previousHospitalData[i];
+      if (!row || !Array.isArray(row)) continue;
+      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+      const pName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
+      const pMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
+      if (isNameMatch(pName, name) || (cleanMrn && pMrn && pMrn === cleanMrn)) {
+        return [...row];
+      }
+    }
+  }
+
+  // 2. Check snapshot files on disk in history/occupancy/
+  try {
+    const snapDir = path.join(WRITABLE_BASE, 'history', 'occupancy');
+    if (fs.existsSync(snapDir)) {
+      const files = fs.readdirSync(snapDir).filter(f => f.endsWith('.json')).sort().reverse();
+      for (const file of files) {
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(snapDir, file), 'utf-8'));
+          const candidateLists = [content.hospitalData, content.previousHospitalData];
+          for (const rows of candidateLists) {
+            if (rows && Array.isArray(rows)) {
+              for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || !Array.isArray(row)) continue;
+                const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+                const pName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
+                const pMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
+                if (isNameMatch(pName, name) || (cleanMrn && pMrn && pMrn === cleanMrn)) {
+                  return [...row];
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // ignore single file parse error
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[RESTORE] Snapshot search warning:', err);
+  }
+
+  return null;
+}
+
+function buildHospitalDataRow(patientInfo: {
+  room?: string;
+  mrn?: string;
+  name: string;
+  physician?: string;
+  contractor?: string;
+  date?: string;
+  rawDate?: string;
+}, referenceRows: any[][] | null): any[] {
+  const isUnified = !referenceRows || referenceRows.length === 0 || (referenceRows[0] && referenceRows[0].length >= 10);
+  if (isUnified) {
+    const colCount = (referenceRows && referenceRows[0] && referenceRows[0].length >= 10) ? referenceRows[0].length : 40;
+    const newRow: any[] = Array(colCount).fill("");
+    newRow[0] = patientInfo.rawDate || patientInfo.date || getTodayRiyadhDateTimeStr();
+    newRow[1] = patientInfo.room || "";
+    newRow[2] = patientInfo.mrn ? String(patientInfo.mrn).replace(/^0+/, "") : "";
+    newRow[3] = patientInfo.name;
+    if (newRow.length > 12) newRow[12] = patientInfo.contractor || "";
+    if (newRow.length > 22) newRow[22] = patientInfo.physician || "";
+    return newRow;
+  } else {
+    return [
+      patientInfo.room || "",
+      patientInfo.name,
+      patientInfo.physician || "",
+      patientInfo.contractor || "",
+      patientInfo.date || getTodayRiyadhDateStr(),
+      patientInfo.mrn ? String(patientInfo.mrn).replace(/^0+/, "") : ""
+    ];
+  }
+}
+
 app.post('/api/restore-patient', async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, mrn } = req.body;
     if (!name) {
       return res.status(400).json({ error: "Patient name is required to restore." });
     }
 
-    console.log(`[RESTORE] Attempting to restore patient: "${name}"`);
+    console.log(`[RESTORE] Attempting to restore patient: "${name}" (MRN: ${mrn || 'N/A'})`);
 
-    // Remove from manuallyDischargedNames
-    manuallyDischargedNames = (manuallyDischargedNames || []).filter(mName => !isNameMatch(mName, name));
-
-    // Remove from cumulativeDischarged
-    cumulativeDischarged = (cumulativeDischarged || []).filter(item => {
+    // 1. Locate the discharged patient record in cumulativeDischarged or patientRoomRegistry
+    const cleanInputMrn = mrn ? String(mrn).trim().replace(/^0+/, "") : "";
+    const targetDischarged = (cumulativeDischarged || []).find(item => {
       const itemName = item.name || item.colD || "";
-      return !isNameMatch(itemName, name);
+      const itemMrn = (item.mrn || item.colC || "").replace(/^0+/, "");
+      return isNameMatch(itemName, name) || (cleanInputMrn && itemMrn && itemMrn === cleanInputMrn);
     });
 
+    const registryKey = Object.keys(patientRoomRegistry || {}).find(k => {
+      const reg = patientRoomRegistry[k];
+      return isNameMatch(reg?.name, name) || (cleanInputMrn && reg?.mrn && reg.mrn.replace(/^0+/, "") === cleanInputMrn);
+    });
+    const regPatient = registryKey ? patientRoomRegistry[registryKey] : null;
+
+    // 2. Resolve row to restore into hospitalData
+    let restoredRow: any[] | null = null;
+
+    // Priority A: targetDischarged.rawRow (if saved during discharge)
+    if (targetDischarged && Array.isArray((targetDischarged as any).rawRow) && (targetDischarged as any).rawRow.length > 0) {
+      restoredRow = [...(targetDischarged as any).rawRow];
+    }
+
+    // Priority B: Find patient row in historical/previous datasets or snapshots
+    if (!restoredRow) {
+      restoredRow = findPatientRowInHistoricalData(name, cleanInputMrn || targetDischarged?.mrn || regPatient?.mrn);
+    }
+
+    // Priority C: Synthesize a valid row adhering to hospitalData column structure
+    if (!restoredRow) {
+      const patientInfo = {
+        name: targetDischarged?.name || regPatient?.name || name,
+        mrn: targetDischarged?.mrn || regPatient?.mrn || cleanInputMrn || "",
+        room: targetDischarged?.room || regPatient?.lastRoom || "",
+        physician: targetDischarged?.physician || regPatient?.physician || "",
+        contractor: targetDischarged?.contractor || regPatient?.contractor || "",
+        date: targetDischarged?.date || regPatient?.date || getTodayRiyadhDateTimeStr(),
+        rawDate: (targetDischarged as any)?.rawDate || targetDischarged?.date || regPatient?.date || getTodayRiyadhDateTimeStr()
+      };
+      restoredRow = buildHospitalDataRow(patientInfo, hospitalData || previousHospitalData);
+    }
+
+    // 3. Ensure hospitalData exists and has proper headers, then insert the restored row
+    let startIdx = 3;
+    if (!hospitalData || hospitalData.length === 0) {
+      const headerRows = (previousHospitalData && previousHospitalData.length >= 3)
+        ? previousHospitalData.slice(0, 3)
+        : [
+            Array(40).fill(""),
+            Array(40).fill(""),
+            ["Admission Date", "Room", "MRN", "Patient Name", ...Array(36).fill("")]
+          ];
+      hospitalData = [...headerRows, restoredRow];
+    } else {
+      for (let i = 0; i < Math.min(hospitalData.length, 10); i++) {
+        const r1 = String(hospitalData[i][1] || "").toLowerCase();
+        const r3 = String(hospitalData[i][3] || "").toLowerCase();
+        if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة")) {
+          startIdx = i + 1;
+          break;
+        }
+      }
+
+      // Check if patient is already present in hospitalData to avoid duplicating
+      const alreadyPresent = hospitalData.slice(startIdx).some(row => {
+        const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+        const pName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
+        const pMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
+        const cleanMrn = (cleanInputMrn || targetDischarged?.mrn || "").replace(/^0+/, "");
+        return isNameMatch(pName, name) || (cleanMrn && pMrn && pMrn === cleanMrn);
+      });
+
+      if (!alreadyPresent) {
+        hospitalData.push(restoredRow);
+      }
+    }
+
+    // 4. Remove from manuallyDischargedNames
+    manuallyDischargedNames = (manuallyDischargedNames || []).filter(mName => !isNameMatch(mName, name));
+
+    // 5. Remove from cumulativeDischarged
+    const targetMrnClean = (cleanInputMrn || targetDischarged?.mrn || "").replace(/^0+/, "");
+    cumulativeDischarged = (cumulativeDischarged || []).filter(item => {
+      const itemName = item.name || item.colD || "";
+      const itemMrn = (item.mrn || item.colC || "").replace(/^0+/, "");
+      const matchByName = isNameMatch(itemName, name);
+      const matchByMrn = targetMrnClean && itemMrn && itemMrn === targetMrnClean;
+      return !matchByName && !matchByMrn;
+    });
+
+    // 6. Clean up pending discharge text if present
+    if (pendingDischargePatientsText) {
+      pendingDischargePatientsText = pendingDischargePatientsText
+        .split('\n')
+        .filter(line => !isNameMatch(line.trim(), name))
+        .join('\n');
+    }
+
+    // 7. Update patientRoomRegistry so room tracking remains synchronized
+    const restoredRoom = String(restoredRow[1] || targetDischarged?.room || regPatient?.lastRoom || "").trim();
+    const restoredMrn = String(restoredRow[2] || targetDischarged?.mrn || regPatient?.mrn || cleanInputMrn || "").trim().replace(/^0+/, "");
+    const restoredPtName = String(restoredRow[3] || targetDischarged?.name || regPatient?.name || name).trim();
+    const restoredDoc = String(restoredRow[22] || targetDischarged?.physician || regPatient?.physician || "").trim();
+    const restoredCont = String(restoredRow[12] || targetDischarged?.contractor || regPatient?.contractor || "").trim();
+    const restoredDate = cleanAdmissionDateStr(restoredRow[0] || targetDischarged?.date || regPatient?.date || "");
+
+    const pKey = restoredMrn ? `mrn:${restoredMrn}` : `name:${normalizeArabicName(restoredPtName)}`;
+    patientRoomRegistry[pKey] = {
+      mrn: restoredMrn,
+      name: restoredPtName,
+      lastRoom: restoredRoom,
+      physician: restoredDoc,
+      contractor: restoredCont,
+      date: restoredDate
+    };
+
+    // 8. Re-extract derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
+    extractSubsheetsFromHospitalData(hospitalData);
+
+    // 9. Re-evaluate today's entries if admitted today
+    if (isToday(restoredDate) || isToday(restoredRow[0])) {
+      const entryObj = {
+        room: restoredRoom,
+        mrn: restoredMrn,
+        name: restoredPtName,
+        physician: restoredDoc,
+        contractor: restoredCont,
+        date: restoredDate,
+        rawDate: String(restoredRow[0] || "")
+      };
+      if (!cumulativeEntries.some(e => isNameMatch(e.name, restoredPtName))) {
+        cumulativeEntries.push(entryObj);
+      }
+    }
+
+    // 10. Re-evaluate dialysis if applicable
+    const dialRows = extractDialysisRowsFromData(hospitalData, startIdx);
+    const restoredDial = dialRows.find(p => isNameMatch(p.name, restoredPtName));
+    if (restoredDial && !cumulativeDialysis.some(d => isNameMatch(d.name, restoredPtName))) {
+      cumulativeDialysis.push(restoredDial);
+    }
+
+    // 11. Persist changes to local file, cloud databases, and relational schemas
+    setSaveChangeType('restore');
     await saveData();
 
     res.json({
       success: true,
       message: `Patient ${name} has been successfully restored to active patient sheets.`,
       manuallyDischargedNames,
-      dischargedCount: cumulativeDischarged.length
+      dischargedCount: cumulativeDischarged.length,
+      patientCount: hospitalData ? hospitalData.length - startIdx : 0
     });
   } catch (err: any) {
     console.error("Error in /api/restore-patient:", err);

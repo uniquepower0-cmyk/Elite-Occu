@@ -85,6 +85,7 @@ export type ChangeType =
   | 'upload'
   | 'transfer'
   | 'discharge'
+  | 'restore'
   | 'setting'
   | 'daily_final'
   | 'manual_reset'

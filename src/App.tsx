@@ -1776,7 +1776,7 @@ export default function App() {
     }
   };
 
-  const handleRestorePatient = async (name: string) => {
+  const handleRestorePatient = async (name: string, mrn?: string) => {
     if (!window.confirm(`Are you sure you want to restore "${name}" to the active patient list?`)) {
       return;
     }
@@ -1785,11 +1785,11 @@ export default function App() {
       const res = await fetch('/api/restore-patient', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, mrn })
       });
       if (res.ok) {
         alert(`Successfully restored "${name}" to active sheets.`);
-        await fetchData(); // Refresh state
+        await fetchData({ force: true }); // Refresh state and active sheets with fresh data
       } else {
         const errData = await res.json().catch(() => ({}));
         alert(errData.error || 'Failed to restore patient.');
@@ -4683,7 +4683,7 @@ export default function App() {
                                         </div>
                                       </div>
                                       <button
-                                        onClick={() => handleRestorePatient(p.name)}
+                                        onClick={() => handleRestorePatient(p.name, (p as any).mrn || (p as any).id)}
                                         disabled={!!processing}
                                         type="button"
                                         className="px-3 py-1.5 bg-brand-primary/5 text-[11px] font-extrabold text-brand-primary rounded-lg border border-brand-primary/15 hover:bg-brand-primary/10 active:scale-95 transition-all flex items-center gap-1 shrink-0 shadow-sm"
