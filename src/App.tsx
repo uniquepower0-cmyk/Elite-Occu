@@ -73,6 +73,14 @@ import {
 const PatientTransfersTable = React.lazy(() => import('./components/PatientTransfersTable').then(m => ({ default: m.PatientTransfersTable })));
 const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
 const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then(m => ({ default: m.ORHistoryView })));
+const AuditLogsView = React.lazy(() => import('./components/AuditLogsView'));
+
+import { MedicalDirectorView } from './components/MedicalDirectorView';
+import { DutyManagerView } from './components/DutyManagerView';
+import { NavItem } from './components/ui/NavItem';
+import { ActionButton } from './components/ui/ActionButton';
+import { StatCard } from './components/ui/StatCard';
+import { WorkflowCard } from './components/ui/WorkflowCard';
 
 const ViewLoadingFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
@@ -4387,58 +4395,20 @@ export default function App() {
               >
                 {/* Section: Medical Director & Inpatient manager */}
                 {currentView === 'medical-director' && (
-                  <section>
-                    <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Medical Director & Inpatient manager</h3>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <WorkflowCard 
-                        title="Combined Inpatient & Medical Director Sheet"
-                        description="Download a single combined workbook including: Formatted Occupancy, Inpatient Summary Sheet, Closed Units Summary, Inpatients By Specialty, and LOS Sheet."
-                        icon={<FileSpreadsheet className="text-emerald-700" />}
-                        actionLabel={processing === 'Downloading Medical Director & Inpatient Manager Combined Report' ? 'Generating Combined Report...' : 'Download Combined Workbook'}
-                        onAction={downloadMedicalDirectorCombinedReport}
-                        disabled={!!processing}
-                      />
-                      <WorkflowCard 
-                        title="Medical Plans Sheet"
-                        description="Download structured SBAR medical plans (تطورات الحالات) extracted from the debt source."
-                        icon={<FileText className="text-teal-600" />}
-                        actionLabel={processing === 'Downloading Medical Plans' ? 'Generating...' : 'Download Medical Plans'}
-                        onAction={downloadMedicalPlansReport}
-                        disabled={!!processing}
-                      />
-                    </div>
-                  </section>
+                  <MedicalDirectorView 
+                    processing={processing}
+                    onDownloadCombinedReport={downloadMedicalDirectorCombinedReport}
+                    onDownloadMedicalPlans={downloadMedicalPlansReport}
+                  />
                 )}
 
                 {/* Section: Duty Manager */}
                 {currentView === 'duty-manager' && (
-                  <section>
-                    <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Duty Manager</h3>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      <WorkflowCard 
-                        title="Download Combined Sheet"
-                        description="Download a single Excel file containing Formatted Occupancy, Entry, and Exit sheets."
-                        icon={<FileText className="text-indigo-600" />}
-                        actionLabel={processing === 'Downloading Combined Sheet' ? 'Generating...' : 'Download Combined'}
-                        onAction={downloadCombinedReport}
-                        disabled={!!processing}
-                      />
-                      <WorkflowCard 
-                        title="Medical Plans Sheet"
-                        description="Download structured SBAR medical plans (تطورات الحالات) extracted from the debt source."
-                        icon={<FileText className="text-sky-600" />}
-                        actionLabel={processing === 'Downloading Medical Plans' ? 'Generating...' : 'Download Medical Plans'}
-                        onAction={downloadMedicalPlansReport}
-                        disabled={!!processing}
-                      />
-                    </div>
-                  </section>
+                  <DutyManagerView 
+                    processing={processing}
+                    onDownloadCombinedReport={downloadCombinedReport}
+                    onDownloadMedicalPlans={downloadMedicalPlansReport}
+                  />
                 )}
 
                 {/* Section: Mohanad's Sheets */}
@@ -4886,76 +4856,13 @@ export default function App() {
 
                 {/* Section: User Login Audit Logs */}
                 {currentView === 'audit-logs' && (
-                  <section className="space-y-6 animate-fade-in">
-                    <div>
-                      <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                        <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">User Login Audit Logs</h3>
-                      </div>
-                    </div>
-
-                    <div className="bg-white/60 backdrop-blur-md rounded-2xl border border-white/20 p-6 shadow-sm">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100">
-                        <div>
-                          <h4 className="text-lg font-bold text-brand-primary">Active Authentication Logs</h4>
-                          <p className="text-xs text-slate-500">Tracks user authentication and access sessions secured through Google SSO (Limit: 100 entries)</p>
-                        </div>
-                        <button
-                          onClick={fetchLoginLogs}
-                          disabled={loadingLogs}
-                          className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-brand-primary hover:text-brand-primary/80 bg-white border border-slate-200 hover:border-slate-300 rounded-xl transition duration-150 shadow-sm"
-                        >
-                          <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? 'animate-spin' : ''}`} />
-                          Refresh logs
-                        </button>
-                      </div>
-
-                      {loadingLogs && loginLogs.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-                          <RefreshCw className="w-8 h-8 animate-spin mb-3 text-teal-600" />
-                          <p className="text-sm">Loading audit logs...</p>
-                        </div>
-                      ) : loginLogs.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
-                          <Clock className="w-8 h-8 mb-3 text-slate-300" />
-                          <p className="text-sm font-medium">No recent login records found</p>
-                          <p className="text-xs text-slate-400 mt-1">Activities will be tracked here dynamically</p>
-                        </div>
-                      ) : (
-                        <div className="overflow-y-auto max-h-[500px] border border-slate-100 rounded-xl custom-scrollbar">
-                          <table className="w-full text-left text-xs border-collapse">
-                            <thead className="sticky top-0 bg-white/95 backdrop-blur z-10 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
-                              <tr className="text-brand-primary/70 uppercase tracking-wider font-extrabold text-[10px]">
-                                <th className="py-3 pl-4">User (Display Name)</th>
-                                <th className="py-3">Email Address</th>
-                                <th className="py-3">Session Date & Time</th>
-                                <th className="py-3 text-right pr-4">Security ID</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {loginLogs.map((log) => {
-                                const localDate = new Date(log.timestamp).toLocaleString();
-                                return (
-                                  <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="py-3.5 pl-4 font-semibold text-slate-800 flex items-center gap-2">
-                                      <div className="w-6 h-6 rounded-full bg-teal-50 text-teal-700 flex items-center justify-center text-[10px] font-extrabold shadow-sm shrink-0">
-                                        {log.displayName ? log.displayName.charAt(0).toUpperCase() : (log.email ? log.email.charAt(0).toUpperCase() : '?')}
-                                      </div>
-                                      <span className="truncate max-w-[160px]" title={log.displayName || 'Unnamed User'}>
-                                        {log.displayName || 'Unnamed User'}
-                                      </span>
-                                    </td>
-                                    <td className="py-3.5 text-slate-600 font-mono text-xs">{log.email}</td>
-                                    <td className="py-3.5 text-slate-500 font-medium">{localDate}</td>
-                                    <td className="py-3.5 text-right pr-4 font-mono text-[9px] text-slate-400 select-all">{log.id}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </section>
+                  <React.Suspense fallback={<ViewLoadingFallback />}>
+                    <AuditLogsView 
+                      loginLogs={loginLogs}
+                      loadingLogs={loadingLogs}
+                      onRefreshLogs={fetchLoginLogs}
+                    />
+                  </React.Suspense>
                 )}
 
 
@@ -4968,225 +4875,3 @@ export default function App() {
   );
 }
 
-function NavItem({ active, onClick, icon, label, highlighted, badge }: { 
-  active: boolean, 
-  onClick: () => void, 
-  icon: React.ReactElement, 
-  label: string,
-  highlighted?: boolean,
-  badge?: string
-}) {
-  return (
-    <button 
-      onClick={onClick}
-      className={`flex items-center justify-between w-full px-3.5 py-2.5 min-h-[44px] rounded-xl transition-all text-sm font-medium relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
-        active 
-          ? 'bg-brand-primary text-white shadow-md shadow-teal-900/10' 
-          : highlighted
-            ? 'bg-amber-500/15 text-amber-700 hover:text-amber-900 hover:bg-amber-500/20 border-2 border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.25)] animate-pulse'
-            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
-      }`}
-    >
-      <div className="flex items-center gap-3 min-w-0">
-        {React.cloneElement(icon, { className: 'w-4 h-4 shrink-0' } as any)}
-        <span className="truncate">{label}</span>
-      </div>
-      <div className="flex items-center gap-1.5 shrink-0 ml-2">
-        {badge && (
-          <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-full ${
-            active ? 'bg-white/20 text-white' : 'bg-teal-500/10 text-teal-800'
-          }`}>
-            {badge}
-          </span>
-        )}
-        {highlighted && !active && (
-          <span className="flex h-2 w-2 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-          </span>
-        )}
-      </div>
-    </button>
-  );
-}
-
-function ActionButton({ icon, label, onClick, loading }: { icon: React.ReactElement, label: string, onClick: () => void, loading?: boolean }) {
-  return (
-    <button 
-      onClick={onClick}
-      disabled={loading}
-      className="w-full text-left px-3.5 py-2.5 min-h-[44px] text-xs bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-2.5 font-bold uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:opacity-50 disabled:cursor-not-allowed"
-    >
-      {React.cloneElement(icon, { className: `w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}` } as any)}
-      {label}
-    </button>
-  )
-}
-
-function StatCard({ label, value, subValue, icon, color = 'indigo', onCopy, copyLabel, highlighted }: { 
-  label: string, 
-  value: string, 
-  subValue: string, 
-  icon: React.ReactElement, 
-  color?: string,
-  onCopy?: () => void,
-  copyLabel?: string,
-  highlighted?: boolean
-}) {
-  const [copied, setCopied] = useState(false);
-  const isHighlighted = highlighted || label.toUpperCase().includes('TOTAL OCCUPIED') || label.toUpperCase().includes('AVAILABLE') || label.toUpperCase().includes('EXCEEDING') || label.toUpperCase().includes('VIP') || label.toUpperCase().includes('INPATIENT OCCUPANCY');
-
-  const renderMiniChart = (lbl: string) => {
-    const uLabel = lbl.toUpperCase();
-    
-    if (uLabel.includes("TOTAL OCCUPIED") || uLabel.includes("CASH") || uLabel.includes("DISCHARGED") || uLabel.includes("RATE") || uLabel.includes("OCCUPANCY RATE")) {
-      const barHeights = uLabel.includes("TOTAL OCCUPIED") ? [10, 16, 22, 14, 18, 30, 26, 35] :
-                         uLabel.includes("CASH") ? [6, 11, 17, 22, 28, 34, 40, 44] :
-                         uLabel.includes("DISCHARGED") ? [8, 14, 20, 26, 32, 38, 30, 42] : [8, 14, 20, 26, 32, 38, 32, 44];
-      return (
-        <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 120 45">
-          <g className="opacity-50">
-            {barHeights.map((h, i) => (
-              <rect 
-                key={i}
-                x={12 + i * 12} 
-                y={45 - h} 
-                width="6" 
-                height={h} 
-                fill="currentColor" 
-                rx="1"
-              />
-            ))}
-          </g>
-        </svg>
-      );
-    }
-    
-    if (uLabel.includes("INSURED") || uLabel.includes("ENTRY") || uLabel.includes("ENTRIES") || uLabel.includes("CRITICAL") || uLabel.includes("AVAILABLE")) {
-      const pathData = uLabel.includes("INSURED") ? "M10,28 L25,36 L40,16 L55,32 L70,22 L85,38 L100,12" :
-                       uLabel.includes("AVAILABLE") ? "M10,38 L25,25 L40,32 L55,14 L70,24 L85,36 L100,18" :
-                       uLabel.includes("ENTRIES") ? "M10,32 L25,20 L40,36 L55,16 L70,26 L85,38 L100,22" : "M10,34 L25,14 L40,24 L55,10 L70,22 L85,34 L100,16";
-      return (
-        <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 110 45">
-          <path 
-            d={pathData} 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="opacity-70"
-          />
-        </svg>
-      );
-    }
-    
-    return (
-      <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 100 45">
-        <g className="opacity-30">
-          {[12, 22, 18, 28, 32, 38].map((h, i) => (
-            <rect key={i} x={10 + i * 14} y={45 - h} width="6" height={h} fill="currentColor" rx="1" />
-          ))}
-        </g>
-      </svg>
-    );
-  };
-
-  return (
-    <div 
-      className={`p-5 rounded-2xl border transition-all duration-300 flex flex-col justify-between group h-full relative overflow-hidden backdrop-blur-md ${
-        isHighlighted 
-          ? label.toUpperCase().includes('EXCEEDING')
-            ? 'bg-amber-500/10 border-amber-400/80 shadow-[0_0_20px_rgba(245,158,11,0.25)]'
-            : 'bg-emerald-500/10 border-teal-400/80 shadow-[0_0_20px_rgba(20,184,166,0.25)]' 
-          : 'bg-white/45 border-white/40 shadow-sm hover:border-white/60 hover:shadow-md'
-      }`}
-      style={{
-        backgroundImage: 'radial-gradient(rgba(14, 78, 67, 0.08) 1.2px, transparent 1.2px)',
-        backgroundSize: '12px 12px'
-      }}
-    >
-      <div className="flex justify-between items-start mb-6">
-        <div className="w-10 h-10 rounded-full flex items-center justify-center bg-teal-500/10 text-emerald-800 shadow-[0_0_15px_rgba(20,184,166,0.25)] relative">
-          <div className="absolute inset-0 rounded-full bg-emerald-400/20 blur-sm"></div>
-          {React.cloneElement(icon, { className: 'w-5 h-5 relative z-10 text-brand-primary' } as any)}
-        </div>
-        <div className="text-[10px] font-mono text-slate-400 font-bold">{new Date().getHours()}:00 HR</div>
-      </div>
-      
-      <div className="flex flex-col items-center justify-center flex-1">
-        <h2 className="text-3xl font-extrabold text-[#0f172a] mb-1 tracking-tight text-center">{value}</h2>
-        <p className="text-[11px] font-black text-[#0f172a]/95 uppercase tracking-widest text-center mt-3">{label}</p>
-        <div className="text-[10px] text-slate-500 font-semibold italic text-center mt-1">
-          {subValue}
-        </div>
-        {onCopy && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopy();
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2000);
-            }}
-            className={`mt-4 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider transition-all shadow-sm flex items-center gap-1.5 border rounded-lg cursor-pointer z-10 ${
-              copied
-                ? 'bg-emerald-500/20 text-emerald-800 border-emerald-500/40'
-                : 'bg-amber-500/20 text-amber-800 hover:bg-amber-500/30 active:scale-95 border-amber-500/30'
-            }`}
-            title={copyLabel || "Copy Patients List"}
-          >
-            {copied ? (
-              <>
-                <Check size={10} className="stroke-[2.5]" />
-                Copied!
-              </>
-            ) : (
-              <>
-                <Copy size={10} className="stroke-[2.5]" />
-                {copyLabel || "Copy Patients List"}
-              </>
-            )}
-          </button>
-        )}
-      </div>
-
-      {renderMiniChart(label)}
-    </div>
-  );
-}
-
-function WorkflowCard({ 
-  title, 
-  description, 
-  icon, 
-  actionLabel, 
-  onAction,
-  disabled
-}: { 
-  title: string, 
-  description: string, 
-  icon: React.ReactElement, 
-  actionLabel: string, 
-  onAction: () => void,
-  disabled?: boolean
-}) {
-  return (
-    <div className={`bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/45 shadow-sm flex flex-col hover:border-teal-500/40 hover:shadow-md transition-all group ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
-      <div className="mb-4 p-3.5 bg-teal-500/10 rounded-xl w-fit group-hover:bg-teal-500/20 transition-all shadow-sm">
-        {React.cloneElement(icon, { className: 'w-7 h-7 text-brand-primary transition-transform group-hover:scale-110' } as any)}
-      </div>
-      <h3 className="text-base font-extrabold mb-2 text-brand-primary tracking-tight">{title}</h3>
-      <p className="text-slate-600 text-[12px] mb-6 leading-relaxed font-semibold">
-        {description}
-      </p>
-      <button 
-        onClick={onAction}
-        disabled={disabled}
-        className="mt-auto py-3 px-5 bg-brand-primary text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300"
-      >
-        {actionLabel}
-        <ArrowRightLeft className="w-3.5 h-3.5 text-teal-100" />
-      </button>
-    </div>
-  );
-}
