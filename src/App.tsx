@@ -70,9 +70,16 @@ import {
   isOperatingRoom,
   isPatientOnORList
 } from './logic/occupancy.ts';
-import { PatientTransfersTable } from './components/PatientTransfersTable';
-import { OccupancyHistoryView } from './components/OccupancyHistoryView';
-import { ORHistoryView } from './components/ORHistoryView';
+const PatientTransfersTable = React.lazy(() => import('./components/PatientTransfersTable').then(m => ({ default: m.PatientTransfersTable })));
+const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
+const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then(m => ({ default: m.ORHistoryView })));
+
+const ViewLoadingFallback = () => (
+  <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
+    <RefreshCw className="w-7 h-7 animate-spin text-[#0b3c34]" />
+    <span className="text-xs font-bold uppercase tracking-wider font-mono text-slate-600">Loading module...</span>
+  </div>
+);
 
 type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
@@ -2279,7 +2286,7 @@ export default function App() {
       <div 
         className="w-full min-h-screen flex items-center justify-center p-6 relative"
         style={{
-          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -2369,7 +2376,7 @@ export default function App() {
       <div 
         className="w-full min-h-screen flex items-center justify-center p-6 relative"
         style={{
-          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -2626,7 +2633,7 @@ export default function App() {
       <div 
         className="w-full min-h-screen flex flex-col font-sans text-slate-900 overflow-hidden relative bg-slate-100"
         style={{
-          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.png'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -4839,13 +4846,15 @@ export default function App() {
 
                     {mohanadSubTab === 'transfers' && (
                       <div className="space-y-6 animate-fade-in">
-                        <PatientTransfersTable
-                          transfers={transfersList}
-                          onRefresh={fetchTransfers}
-                          onDownloadExcel={downloadTransfersReport}
-                          isDownloading={processing === 'Downloading Patient Transfers Sheet'}
-                          activePatients={patients}
-                        />
+                        <React.Suspense fallback={<ViewLoadingFallback />}>
+                          <PatientTransfersTable
+                            transfers={transfersList}
+                            onRefresh={fetchTransfers}
+                            onDownloadExcel={downloadTransfersReport}
+                            isDownloading={processing === 'Downloading Patient Transfers Sheet'}
+                            activePatients={patients}
+                          />
+                        </React.Suspense>
                       </div>
                     )}
                   </section>
@@ -4854,7 +4863,9 @@ export default function App() {
                 {/* Section: Standalone Occupancy History View */}
                 {currentView === 'occupancy-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
+                    </React.Suspense>
                   </section>
                 )}
 
@@ -4862,7 +4873,9 @@ export default function App() {
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
                   <section className="space-y-6 animate-fade-in">
-                    <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
+                    </React.Suspense>
                   </section>
                 )}
 
