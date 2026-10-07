@@ -193,56 +193,68 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     
     # Extract metadata & manual discharges
     meta = state_map.get("state/metadata") or {}
+    last_active = str(meta.get("lastActiveDate") or "").strip()
+    is_new_day = bool(last_active and last_active < cairo_date_str)
+
+    occ = state_map.get("state/occupancy") or {}
+    occ_current = occ.get("current") or []
+    # If occupancy is empty or only has the header row, a system reset has occurred
+    is_system_reset = len(occ_current) <= 1
+
     raw_manual_names = meta.get("manuallyDischargedNames") or []
     if not isinstance(raw_manual_names, list):
         raw_manual_names = []
 
     disc_node = state_map.get("state/discharged") or {}
     disc_patients = disc_node.get("patients") if isinstance(disc_node, dict) else (disc_node if isinstance(disc_node, list) else [])
-    if not isinstance(disc_patients, list):
+    if not isinstance(disc_patients, list) or is_new_day or is_system_reset:
         disc_patients = []
 
-    manual_names_set = set(str(n).strip() for n in raw_manual_names if n)
+    # If raw_manual_names was cleared (by reset) or new day, start with empty manual set
+    manual_names_set = set(str(n).strip() for n in raw_manual_names if n) if (not is_new_day and not is_system_reset) else set()
     manual_mrns_set = set()
 
-    for dp in disc_patients:
-        if isinstance(dp, dict):
-            p_name = dp.get("name") or dp.get("colD")
-            p_mrn = clean_mrn_str(dp.get("mrn") or dp.get("colC") or dp.get("PatientBarcode") or "")
-            is_manual = (dp.get("dischargeType") == "manual") or (p_name and any(is_name_match(p_name, mn) for mn in raw_manual_names))
-            if is_manual:
-                if p_name:
-                    manual_names_set.add(str(p_name).strip())
-                if p_mrn:
-                    manual_mrns_set.add(p_mrn)
+    # Only inspect disc_patients for manual discharges if raw_manual_names is actively populated
+    if raw_manual_names and not is_new_day and not is_system_reset:
+        for dp in disc_patients:
+            if isinstance(dp, dict):
+                p_name = dp.get("name") or dp.get("colD")
+                p_mrn = clean_mrn_str(dp.get("mrn") or dp.get("colC") or dp.get("PatientBarcode") or "")
+                is_manual = (dp.get("dischargeType") == "manual") or (p_name and any(is_name_match(p_name, mn) for mn in raw_manual_names))
+                if is_manual:
+                    if p_name:
+                        manual_names_set.add(str(p_name).strip())
+                    if p_mrn:
+                        manual_mrns_set.add(p_mrn)
 
     # Minimal fallback mappings
     dataset = state_map.get("state/dataset") or {}
-    occ = state_map.get("state/occupancy") or {}
 
-    # Dialysis cases: only keep if updated TODAY in Cairo time (otherwise start empty for new day)
+    # Dialysis cases: only keep if updated TODAY in Cairo time AND not a new day / reset
     dial = state_map.get("state/dialysis") or {}
     raw_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
     dial_updated = time_map.get("state/dialysis")
-    existing_dial = raw_dial if (raw_dial and is_today_cairo(dial_updated, cairo_date_str)) else []
+    existing_dial = raw_dial if (raw_dial and is_today_cairo(dial_updated, cairo_date_str) and not is_new_day and not is_system_reset) else []
 
-    # Transfers: only keep if updated TODAY in Cairo time (otherwise start empty for new day)
+    # Transfers: only keep if updated TODAY in Cairo time AND not a new day / reset
     trans = state_map.get("state/transfers") or {}
     raw_trans = trans.get("items", []) if isinstance(trans, dict) else (trans if isinstance(trans, list) else [])
     trans_updated = time_map.get("state/transfers")
-    existing_trans = raw_trans if (raw_trans and is_today_cairo(trans_updated, cairo_date_str)) else []
+    existing_trans = raw_trans if (raw_trans and is_today_cairo(trans_updated, cairo_date_str) and not is_new_day and not is_system_reset) else []
 
     return {
         "previous": occ.get("previous") or dataset.get("current"),
-        "occupancy_current": occ.get("current") or [],
+        "occupancy_current": occ_current,
         "discharged": disc_patients,
-        "entries": (state_map.get("state/entries") or {}).get("items", []),
+        "entries": (state_map.get("state/entries") or {}).get("items", []) if not (is_new_day or is_system_reset) else [],
         "transfers": existing_trans,
         "orList": (state_map.get("state/or_list") or {}).get("items", []),
         "dialysis": existing_dial,
         "manually_discharged_names": list(manual_names_set),
         "manually_discharged_mrns": list(manual_mrns_set),
-        "existing_metadata": meta
+        "existing_metadata": meta,
+        "is_new_day": is_new_day,
+        "is_system_reset": is_system_reset
     }
 
 # --- FETCH & SYNC ---
@@ -886,8 +898,8 @@ def fetch_powerbi_and_sync():
                     }
                 return res
 
-            if is_1159_pm:
-                log(f"[Scheduled Reset] 11:59 PM Cairo time reached for {cairo_date_str}. Resetting daily dialysis cases and transfer cases...")
+            if is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset"):
+                log(f"[Sync Daily Rollover/Reset] Fresh daily counters active for {cairo_date_str} (new_day: {existing.get('is_new_day')}, reset: {existing.get('is_system_reset')}). Resetting daily dialysis & transfer cases...")
                 cumulative_dialysis = []
                 cumulative_transfers = []
             else:
@@ -1031,16 +1043,26 @@ def fetch_powerbi_and_sync():
 
         failure_countdown(5, "Data Fetch & Sync")
 
-last_cairo_reset_date = ""
+last_cairo_seen_date = ""
 
-def check_cairo_1159_reset():
-    global last_cairo_reset_date
+def check_cairo_day_rollover():
+    global last_cairo_seen_date
     now_cairo = get_cairo_now()
-    if now_cairo.hour == 23 and now_cairo.minute == 59:
-        today_str = now_cairo.strftime("%Y-%m-%d")
-        if last_cairo_reset_date != today_str:
-            last_cairo_reset_date = today_str
-            log(f"[Scheduled Reset] 11:59 PM Cairo time reached ({today_str}). Triggering daily reset for dialysis & transfers...")
+    today_str = now_cairo.strftime("%Y-%m-%d")
+    if not last_cairo_seen_date:
+        last_cairo_seen_date = today_str
+        return
+
+    # Check for calendar day change or 11:59 PM trigger
+    if today_str != last_cairo_seen_date:
+        log(f"[Scheduled Day Rollover] Cairo calendar date transitioned from {last_cairo_seen_date} to {today_str}. Triggering clean daily sync job...")
+        last_cairo_seen_date = today_str
+        run_sync_job()
+    elif now_cairo.hour == 23 and now_cairo.minute == 59:
+        if last_cairo_seen_date == today_str:
+            # Stamped to avoid re-triggering multiple times in minute 59
+            last_cairo_seen_date = f"{today_str}_1159_done"
+            log(f"[Scheduled Reset] 11:59 PM Cairo time reached ({today_str}). Triggering end-of-day rollover...")
             run_sync_job()
 
 def run_sync_job():
@@ -1054,7 +1076,7 @@ if __name__ == "__main__":
     schedule.every(30).minutes.do(run_sync_job)
 
     while True:
-        check_cairo_1159_reset()
+        check_cairo_day_rollover()
         schedule.run_pending()
         next_run = schedule.next_run()
         if next_run:

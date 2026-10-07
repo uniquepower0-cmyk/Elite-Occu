@@ -3321,6 +3321,13 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
       // Use smart timestamp diffing so only nodes with modified updated_at are fetched
       await loadData(false);
       console.log(`[Auto-Fetch Schedule] Server in-memory state successfully synchronized from database.`);
+      if (hospitalData && hospitalData.length > 3) {
+        const cairo = getCairoDateTime();
+        const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
+        takeOccupancySnapshotHelper(activeDateStr).catch(err => {
+          console.warn('[Auto-Fetch Schedule] Notice: Failed to ensure occupancy snapshot:', err);
+        });
+      }
     } catch (err) {
       console.error(`[Auto-Fetch Schedule] Failed to reload state from database:`, err);
     } finally {
@@ -8227,11 +8234,15 @@ app.post('/api/reset-or', async (req, res) => {
 app.get('/api/history/occupancy/dates', async (req, res) => {
   try {
     let dates = await getAvailableDates('occupancy');
-    // If empty and current hospitalData exists, take an initial reference snapshot for today
-    if (dates.length === 0 && hospitalData && hospitalData.length > 0) {
-      const snap = await takeOccupancySnapshotHelper();
-      if (snap) {
-        dates = await getAvailableDates('occupancy');
+    if (hospitalData && hospitalData.length > 3) {
+      const cairo = getCairoDateTime();
+      const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
+      const hasToday = dates.some(d => (typeof d === 'string' ? d : (d as any).date) === activeDateStr);
+      if (!hasToday) {
+        const snap = await takeOccupancySnapshotHelper(activeDateStr);
+        if (snap) {
+          dates = await getAvailableDates('occupancy');
+        }
       }
     }
     res.json({ dates });
@@ -8391,7 +8402,19 @@ app.post('/api/history/occupancy/snapshot', async (req, res) => {
 
 app.get('/api/history/or/dates', async (req, res) => {
   try {
-    const dates = await getAvailableDates('or');
+    let dates = await getAvailableDates('or');
+    if (cumulativeORList && cumulativeORList.length > 0) {
+      const cairo = getCairoDateTime();
+      const rawOrDate = cumulativeORList[0]?.orListDate || '';
+      const activeOrDate = normalizeToISODate(rawOrDate) || cairo.dateStr;
+      const hasToday = dates.some(d => (typeof d === 'string' ? d : (d as any).date) === activeOrDate);
+      if (!hasToday) {
+        const snap = await takeORSnapshotHelper(activeOrDate);
+        if (snap) {
+          dates = await getAvailableDates('or');
+        }
+      }
+    }
     res.json({ dates });
   } catch (err: any) {
     console.error('Failed to get OR history dates:', err);
@@ -9113,7 +9136,7 @@ app.get('/api/reports/transfers_formatted', async (req, res) => {
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedTransfersSheet(workbook, cumulativeTransfers || []);
-    const filename = `Transferred_Patients_Refined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filename = `Transferred_Patients_Refined_Report_${getCairoDateTime().dateStr}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     await workbook.xlsx.write(res);
@@ -9530,7 +9553,7 @@ app.post('/api/reports/vip_cases_medical_updates', async (req, res) => {
     // Create a single sheet with no sub sheets, styled beautifully
     await createSingleMedicalPlanSheetRefined(workbook, "VIP Cases Medical Updates", sortedPlans, 'FFF3E5F5');
 
-    const filename = `VIP_Cases_Medical_Updates_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filename = `VIP_Cases_Medical_Updates_${getCairoDateTime().dateStr}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     await workbook.xlsx.write(res);
@@ -10072,7 +10095,7 @@ app.get('/api/reports/inpatient_occupancy_by_floor_accommodation', async (req, r
     const workbook = new ExcelJS.Workbook();
     await addGridOccupancyWithAccommodationSheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Inpatient_occupancy_by_floor_accommodation_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Inpatient_occupancy_by_floor_accommodation_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -10087,7 +10110,7 @@ app.get('/api/reports/vacant_by_category', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     await addVacantRoomsByCategorySheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_by_Category_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_by_Category_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -10102,7 +10125,7 @@ app.get('/api/reports/vacant_rooms_ascending', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     await addVacantRoomsAscendingSheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_Ascending_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_Ascending_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -11339,7 +11362,7 @@ app.get('/api/reports/occupancy_charts_dashboard', async (req, res) => {
     );
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Occupancy_Statistical_Dashboard_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Occupancy_Statistical_Dashboard_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -11599,7 +11622,7 @@ app.get('/api/reports/early_discharge_cases', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     await addEarlyDischargeCasesSheet(workbook, getOccupancyRows(hospitalData), earlyDischargeRoomsText);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Early_Discharge_Cases_Sheet_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Early_Discharge_Cases_Sheet_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -14451,7 +14474,7 @@ app.get('/api/reports/or_admissions', async (req, res) => {
     const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
     await addORAdmissionsSheet(workbook, cumulativeORList, occRows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="OR_Admissions_Sheet_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="OR_Admissions_Sheet_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -15270,7 +15293,7 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     addExitSheet(workbook, uniqueCleanDischarged);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Formatted_Exit_${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Formatted_Exit_${getCairoDateTime().dateStr}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {

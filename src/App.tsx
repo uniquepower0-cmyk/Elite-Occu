@@ -95,6 +95,19 @@ type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mo
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured';
 
+export function getCairoDateString(): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().split('T')[0];
+  }
+}
+
 const isPrivateCreditCase = (p: any): boolean => {
   if (!p) return false;
   const fields = [
@@ -1045,7 +1058,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Patient_Transfers_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Patient_Transfers_Report_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1072,7 +1085,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Formatted_Occupancy_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Formatted_Occupancy_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1098,7 +1111,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Formatted_Entry_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Formatted_Entry_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1124,7 +1137,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Formatted_Exit_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Formatted_Exit_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1150,7 +1163,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Formatted_Dialysis_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Formatted_Dialysis_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1176,7 +1189,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Formatted_Debts_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Formatted_Debts_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1202,7 +1215,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Insured_Debts_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Insured_Debts_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1228,7 +1241,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Insured_Non_Cash_Patients_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Insured_Non_Cash_Patients_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1275,7 +1288,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Medical_Plans_Sheet_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Medical_Plans_Sheet_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1301,7 +1314,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Companion_Status_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Companion_Status_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1327,7 +1340,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Medical_Director_Combined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Medical_Director_Combined_Report_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1353,7 +1366,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `LOS_Sheet_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `LOS_Sheet_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1379,7 +1392,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Inpatient_Summary_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Inpatient_Summary_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1405,7 +1418,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Closed_Units_Summary_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Closed_Units_Summary_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1431,7 +1444,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Inpatients_By_Specialty_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Inpatients_By_Specialty_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1457,7 +1470,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Colored_Structured_Grid_Occupancy_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Colored_Structured_Grid_Occupancy_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1483,7 +1496,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Combined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Combined_Report_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1509,7 +1522,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Combined_Hospital_Refined_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Combined_Hospital_Refined_Report_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1535,7 +1548,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Companion_Status_Refined_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Companion_Status_Refined_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1814,7 +1827,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Operating_Room_List_Refined_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Operating_Room_List_Refined_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1840,7 +1853,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Operating_Room_Schedule_Refined_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Operating_Room_Schedule_Refined_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1866,7 +1879,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Over_Listed_OR_Cases_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Over_Listed_OR_Cases_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1892,7 +1905,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `OR_Reconciliation_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `OR_Reconciliation_Report_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1918,7 +1931,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `OR_Admissions_Sheet_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `OR_Admissions_Sheet_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1944,7 +1957,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Operating_Room_Timeline_Graphics_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Operating_Room_Timeline_Graphics_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1970,7 +1983,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Exceeding_ALOS_Refined_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Exceeding_ALOS_Refined_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -1996,7 +2009,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Early_Discharge_Cases_Sheet_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Early_Discharge_Cases_Sheet_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2043,7 +2056,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Medical_Plans_Sheet_Refined_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Medical_Plans_Sheet_Refined_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2090,7 +2103,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `VIP_Cases_Medical_Updates_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `VIP_Cases_Medical_Updates_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2116,7 +2129,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Inpatient_occupancy_by_floor_accommodation_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Inpatient_occupancy_by_floor_accommodation_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2142,7 +2155,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Vacant_Rooms_by_Category_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Vacant_Rooms_by_Category_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2168,7 +2181,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Vacant_Rooms_Ascending_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Vacant_Rooms_Ascending_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -2194,7 +2207,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Occupancy_Statistical_Dashboard_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `Occupancy_Statistical_Dashboard_${getCairoDateString()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
