@@ -86,8 +86,8 @@ BEGIN
       WHEN NULLIF(TRIM(rec->>'Financial Status'), '') IN ('None', 'nan') THEN NULL
       ELSE NULLIF(TRIM(rec->>'Financial Status'), '')
     END AS financial_status,
-    COALESCE(NULLIF(regexp_replace(TRIM(COALESCE(rec->>'Total Invoice', '')), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00) AS total_invoice,
-    COALESCE(NULLIF(regexp_replace(TRIM(COALESCE(rec->>'Remaining Amount', '')), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00) AS remaining_debt,
+    GREATEST(COALESCE(NULLIF(regexp_replace(TRIM(COALESCE(rec->>'Total Invoice', '')), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00), 0.00) AS total_invoice,
+    GREATEST(COALESCE(NULLIF(regexp_replace(TRIM(COALESCE(rec->>'Remaining Amount', '')), '[^0-9.-]', '', 'g'), '')::NUMERIC, 0.00), 0.00) AS remaining_debt,
     CASE 
       WHEN NULLIF(TRIM(rec->>'Diagnosis'), '') IN ('None', 'nan') THEN NULL
       ELSE NULLIF(TRIM(rec->>'Diagnosis'), '')

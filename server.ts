@@ -4225,12 +4225,14 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
       existingSet.add(`${et.patient_id}|${et.from_room_name}|${et.to_room_name}`);
     });
 
-    // 6. Build batch insert list
+    // 6. Build batch insert list (admission_id is mandatory for foreign key integrity)
     const insertsToPerform = resolvedCandidates.filter(c => {
+      const admId = admissionMap.get(c.patientId!);
+      if (!admId) return false;
       const key = `${c.patientId}|${c.fromRoom}|${c.toRoom}`;
       return !existingSet.has(key);
     }).map(c => ({
-      admission_id: admissionMap.get(c.patientId!) || null,
+      admission_id: admissionMap.get(c.patientId!)!,
       patient_id: c.patientId!,
       from_room_id: roomMap.get(c.fromRoom) || null,
       to_room_id: roomMap.get(c.toRoom) || null,

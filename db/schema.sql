@@ -290,7 +290,7 @@ END $$;
 DO $$ BEGIN
     ALTER TABLE public.admissions 
       ADD CONSTRAINT chk_admissions_financials 
-      CHECK (total_invoice >= 0 AND remaining_debt >= 0) NOT VALID;
+      CHECK (total_invoice >= 0) NOT VALID;
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
 

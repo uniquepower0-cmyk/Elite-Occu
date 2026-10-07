@@ -502,7 +502,23 @@ export async function saveOccupancySnapshot(
       }
     ];
 
-    const { error: sbErr } = await historySupabase.from('rtdb_nodes').upsert(granularHistoryUpserts);
+    let sbErr: any = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { error } = await historySupabase.from('rtdb_nodes').upsert(granularHistoryUpserts);
+      if (!error) {
+        sbErr = null;
+        break;
+      }
+      sbErr = error;
+      const errMsg = String(error.message || error.details || error);
+      const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+      if (isNetworkErr && attempt < 3) {
+        await new Promise(res => setTimeout(res, attempt * 300));
+      } else {
+        break;
+      }
+    }
+
     if (sbErr) {
       console.error('[OccupancyHistory] Supabase granular history upsert error:', sbErr);
     } else {
@@ -839,7 +855,23 @@ export async function saveORSnapshot(
       }
     ];
 
-    const { error: sbErr } = await historySupabase.from('rtdb_nodes').upsert(granularORUpserts);
+    let sbErr: any = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { error } = await historySupabase.from('rtdb_nodes').upsert(granularORUpserts);
+      if (!error) {
+        sbErr = null;
+        break;
+      }
+      sbErr = error;
+      const errMsg = String(error.message || error.details || error);
+      const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+      if (isNetworkErr && attempt < 3) {
+        await new Promise(res => setTimeout(res, attempt * 300));
+      } else {
+        break;
+      }
+    }
+
     if (sbErr) {
       console.error('[ORHistory] Supabase granular OR upsert error:', sbErr);
     } else {
