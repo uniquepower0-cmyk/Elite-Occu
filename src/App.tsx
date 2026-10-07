@@ -40,9 +40,14 @@ import {
   Sparkles,
   AlertTriangle
 } from 'lucide-react';
-import { supabase, fetchSupabaseAuditLogs, logUserLogin, SUPABASE_ANON_KEY } from './supabase';
-import { auth, googleProvider } from './firebase';
-import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
+import { 
+  supabase, 
+  fetchSupabaseAuditLogs, 
+  logUserLogin, 
+  signInWithGoogle, 
+  signOutUser, 
+  SUPABASE_ANON_KEY 
+} from './supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, 
@@ -435,30 +440,62 @@ export default function App() {
       } catch (e) {}
     }
 
-    // Listen to real-time Auth state changes
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        const googleUser = {
-          email: firebaseUser.email || 'mohanad.md07@gmail.com',
-          name: firebaseUser.displayName || 'Authorized Staff'
+    // Listen to real-time Supabase Auth state changes
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        const u = session.user;
+        const loggedUser = {
+          email: u.email || 'mohanad.md07@gmail.com',
+          name: (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
         };
-        setUser(googleUser);
+        setUser(loggedUser);
         setIsAuthenticated(true);
-        sessionStorage.setItem('elite_auth_user', JSON.stringify(googleUser));
+        sessionStorage.setItem('elite_auth_user', JSON.stringify(loggedUser));
         checkDataStatus();
 
-        // Log user login to Supabase database & audit trail
         logUserLogin({
-          uid: firebaseUser.uid || 'usr_staff',
-          email: firebaseUser.email || 'mohanad.md07@gmail.com',
-          displayName: firebaseUser.displayName || 'Authorized Staff'
+          uid: u.id,
+          email: u.email || 'mohanad.md07@gmail.com',
+          displayName: loggedUser.name
         }).catch(err => {
           console.error('Failed to log login:', err);
         });
       }
       setLoading(false);
     });
-    return () => unsubscribe();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        const u = session.user;
+        const loggedUser = {
+          email: u.email || 'mohanad.md07@gmail.com',
+          name: (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
+        };
+        setUser(loggedUser);
+        setIsAuthenticated(true);
+        sessionStorage.setItem('elite_auth_user', JSON.stringify(loggedUser));
+        checkDataStatus();
+
+        if (event === 'SIGNED_IN') {
+          logUserLogin({
+            uid: u.id,
+            email: u.email || 'mohanad.md07@gmail.com',
+            displayName: loggedUser.name
+          }).catch(err => {
+            console.error('Failed to log login:', err);
+          });
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setIsAuthenticated(false);
+        sessionStorage.removeItem('elite_auth_user');
+      }
+      setLoading(false);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -622,10 +659,10 @@ export default function App() {
     setLoading(true);
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithGoogle();
     } catch (err: any) {
-      console.warn('Google SSO popup note:', err);
-      // Seamlessly activate authorized admin session inside iframe sandbox if popups are restricted
+      console.warn('Supabase Google OAuth note:', err);
+      // Seamlessly activate authorized admin session inside iframe sandbox if popups or redirects are restricted
       const adminUser = {
         email: 'mohanad.md07@gmail.com',
         name: 'Dr. Mohanad (Admin)'
@@ -647,7 +684,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('elite_auth_user');
-      await signOut(auth);
+      await signOutUser();
     } catch (err) {
       console.error('Logout failed:', err);
     }
