@@ -1,13 +1,22 @@
+import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-export const historySupabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+if (!SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn('[Security Warning] SUPABASE_SERVICE_ROLE_KEY is not defined in process.env. Database operations may fail.');
+}
+
+export const historySupabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY || 'missing-service-key-placeholder',
+  {
+    auth: { persistSession: false, autoRefreshToken: false },
+  }
+);
 
 // On Vercel (and other read-only serverless environments), /var/task is read-only.
 // Use /tmp for ephemeral disk history; on Railway/local process.cwd() is writable.

@@ -184,6 +184,15 @@ BEGIN
     ';
 END $$;
 
+-- 9.5 Bridge RTDB Nodes Table (Key-Value State Bridge for Fast Migration Parity)
+CREATE TABLE IF NOT EXISTS public.rtdb_nodes (
+    path TEXT PRIMARY KEY,
+    data JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rtdb_nodes_path_pattern ON public.rtdb_nodes (path text_pattern_ops);
+ALTER TABLE public.rtdb_nodes ENABLE ROW LEVEL SECURITY;
+
 -- 10. Atomic Lock Function for Daily Reset Rollover (11:59 PM Cairo)
 CREATE OR REPLACE FUNCTION public.acquire_daily_reset_lock(p_date TEXT)
 RETURNS BOOLEAN LANGUAGE plpgsql AS $$

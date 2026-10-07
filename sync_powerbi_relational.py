@@ -84,17 +84,24 @@ def is_date_today_cairo(d_val, today_cairo_str=None):
     return False
 
 # --- CONFIGURATION & CREDENTIALS ---
+# Automatically read local .env file if present
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path, "r", encoding="utf-8") as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://uuvomcxbgldgtmuqtymk.supabase.co")
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0"
-)
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-FORTINET_USER = os.getenv("FORTINET_USER", "mohanad.elmaamoun")
-FORTINET_PASS = os.getenv("FORTINET_PASS", "Me@111222")
+FORTINET_USER = os.getenv("FORTINET_USER", "")
+FORTINET_PASS = os.getenv("FORTINET_PASS", "")
 
-POWERBI_USER = os.getenv("POWERBI_USER", "biviewer")
-POWERBI_PASS = os.getenv("POWERBI_PASS", "123456")
+POWERBI_USER = os.getenv("POWERBI_USER", "")
+POWERBI_PASS = os.getenv("POWERBI_PASS", "")
 
 # Endpoints
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1/rtdb_nodes"

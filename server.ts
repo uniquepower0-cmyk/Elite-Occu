@@ -1,5 +1,5 @@
+import 'dotenv/config';
 import express from 'express';
-
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
@@ -48,14 +48,22 @@ try {
 
 // Initialize Supabase Client for Primary Database Operations
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1dm9tY3hiZ2xkZ3RtdXF0eW1rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwNTQ4MSwiZXhwIjoyMTA0NDgxNDgxfQ.qd80QNiyhjO51Ky4zxKmzXtOb-bB4hFvhZ3cYnVoyn0';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-export const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-  },
-});
+if (!SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn('[Security Warning] SUPABASE_SERVICE_ROLE_KEY is not defined in process.env. Please configure it in .env');
+}
+
+export const supabaseAdmin = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY || 'missing-service-key-placeholder',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
+);
 console.log(`Supabase Client initialized successfully with endpoint: ${SUPABASE_URL}`);
 
 
@@ -109,28 +117,8 @@ const originalAddWorksheet = ExcelJS.Workbook.prototype.addWorksheet;
   return originalAddWorksheet.call(this, name, options);
 };
 
-let localFilename = "";
-let localDirname = "";
-try {
-  if (typeof import.meta !== "undefined" && import.meta.url) {
-    localFilename = fileURLToPath(import.meta.url);
-    localDirname = path.dirname(localFilename);
-  } else {
-    localFilename = eval("__filename");
-    localDirname = eval("process.cwd()");
-  }
-} catch (e) {
-  try {
-    localFilename = eval("__filename");
-    localDirname = eval("process.cwd()");
-  } catch (err) {
-    localFilename = "";
-    localDirname = "";
-  }
-}
-
-const __filename = localFilename;
-const __dirname = localDirname;
+const __filename = process.argv[1] || path.join(process.cwd(), 'server.ts');
+const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin for the backend Server
 const CONFIG_PATH = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -3084,9 +3072,9 @@ async function saveData() {
       lastTransfersDate: lastTransfersDate
     };
     
-    // 1. Save locally fast sync
+    // 1. Save locally fast sync (non-blocking async I/O)
     try { 
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data));
+      await fs.promises.writeFile(DATA_FILE, JSON.stringify(data));
       console.log('Hospital data saved to local persistence.'); 
     } catch (e) { 
       console.error('Failed to save local data (might be read-only env)', e); 
@@ -3274,13 +3262,13 @@ async function saveData() {
           console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
         }
         if (hospitalData && hospitalData.length > 0) {
-          syncOccupancyToRelationalSchema(hospitalData).catch(() => {});
+          syncOccupancyToRelationalSchema(hospitalData).catch(err => console.error('[Relational Occupancy Sync Error]:', err?.message || err));
         }
         if (cumulativeTransfers && cumulativeTransfers.length > 0) {
-          syncTransfersToRelationalSchema(cumulativeTransfers).catch(() => {});
+          syncTransfersToRelationalSchema(cumulativeTransfers).catch(err => console.error('[Relational Transfers Sync Error]:', err?.message || err));
         }
         if ((cumulativeDebts && cumulativeDebts.length > 0) || (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0)) {
-          syncDebtsToRelationalSchema(cumulativeDebts, cumulativeInsuredDebts).catch(() => {});
+          syncDebtsToRelationalSchema(cumulativeDebts, cumulativeInsuredDebts).catch(err => console.error('[Relational Debts Sync Error]:', err?.message || err));
         }
       } catch (snapErr) {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
@@ -4053,7 +4041,15 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
   try {
     if (!transfers || !Array.isArray(transfers) || transfers.length === 0) return;
     
-    // Process recent active transfers (last 50)
+    const candidates: Array<{
+      fromRoom: string;
+      toRoom: string;
+      mrn: string | null;
+      patName: string | null;
+      notes: string;
+    }> = [];
+
+    // Filter valid transfer candidates (last 50)
     for (const t of transfers.slice(0, 50)) {
       const lastStep = Array.isArray(t.history) && t.history.length > 0 ? t.history[t.history.length - 1] : null;
       const fromRoom = lastStep ? lastStep.fromRoom : (t.initialRoom || t.fromRoom || '');
@@ -4061,72 +4057,102 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
       if (!toRoom || !fromRoom || fromRoom === toRoom) continue;
 
       const mrn = t.mrn ? String(t.mrn).replace(/^0+/, '') : null;
-      let patientId: string | null = null;
-      if (mrn) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', mrn).maybeSingle();
-        if (pt) patientId = pt.id;
-      }
-      const patName = t.patientName || t.name;
-      if (!patientId && patName) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', patName).maybeSingle();
-        if (pt) patientId = pt.id;
-      }
+      const patName = t.patientName || t.name || null;
+      candidates.push({
+        fromRoom,
+        toRoom,
+        mrn,
+        patName,
+        notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
+      });
+    }
 
-      if (patientId) {
-        // Resolve room IDs if possible
-        let fromRoomId: string | null = null;
-        let toRoomId: string | null = null;
-        if (fromRoom) {
-          const { data: fr } = await supabaseAdmin.from('rooms').select('id').eq('name', fromRoom).maybeSingle();
-          if (fr) fromRoomId = fr.id;
-        }
-        if (toRoom) {
-          const { data: tr } = await supabaseAdmin.from('rooms').select('id').eq('name', toRoom).maybeSingle();
-          if (tr) toRoomId = tr.id;
-        }
+    if (candidates.length === 0) return;
 
-        // Resolve active admission ID if available
-        let admId: string | null = null;
-        const { data: adm } = await supabaseAdmin
-          .from('admissions')
-          .select('id')
-          .eq('patient_id', patientId)
-          .eq('status', 'Admitted')
-          .order('admission_date', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (adm) admId = adm.id;
+    // 1. Batch query patients by MRN and Name
+    const mrns = Array.from(new Set(candidates.map(c => c.mrn).filter(Boolean))) as string[];
+    const names = Array.from(new Set(candidates.map(c => c.patName).filter(Boolean))) as string[];
 
-        // Deduplicate against transfers recorded within the last 24 hours
-        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const { data: existing } = await supabaseAdmin
-          .from('transfers')
-          .select('id')
-          .eq('patient_id', patientId)
-          .eq('from_room_name', fromRoom)
-          .eq('to_room_name', toRoom)
-          .gte('transfer_date', oneDayAgo)
-          .limit(1);
+    const patientMap = new Map<string, string>();
+    if (mrns.length > 0) {
+      const { data: ptsByMrn } = await supabaseAdmin.from('patients').select('id, mrn').in('mrn', mrns);
+      (ptsByMrn || []).forEach(p => { if (p.mrn) patientMap.set(`mrn:${p.mrn}`, p.id); });
+    }
+    if (names.length > 0) {
+      const { data: ptsByName } = await supabaseAdmin.from('patients').select('id, name').in('name', names);
+      (ptsByName || []).forEach(p => { if (p.name) patientMap.set(`name:${p.name}`, p.id); });
+    }
 
-        if (!existing || existing.length === 0) {
-          const { error: insErr } = await supabaseAdmin.from('transfers').insert({
-            admission_id: admId,
-            patient_id: patientId,
-            from_room_id: fromRoomId,
-            to_room_id: toRoomId,
-            from_room_name: fromRoom,
-            to_room_name: toRoom,
-            transfer_type: 'inpatient',
-            is_auto_detected: true,
-            notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
-          });
-          if (insErr) {
-            console.warn(`[Relational Transfers Sync] Row insert notice: ${insErr.message}`);
-          }
-        }
+    // 2. Batch query rooms
+    const allRoomNames = Array.from(new Set([
+      ...candidates.map(c => c.fromRoom),
+      ...candidates.map(c => c.toRoom)
+    ])).filter(Boolean);
+
+    const roomMap = new Map<string, string>();
+    if (allRoomNames.length > 0) {
+      const { data: roomsData } = await supabaseAdmin.from('rooms').select('id, name').in('name', allRoomNames);
+      (roomsData || []).forEach(r => { if (r.name) roomMap.set(r.name, r.id); });
+    }
+
+    // 3. Resolve matched patients
+    const patientIds: string[] = [];
+    const resolvedCandidates = candidates.map(c => {
+      const pId = (c.mrn ? patientMap.get(`mrn:${c.mrn}`) : null) || (c.patName ? patientMap.get(`name:${c.patName}`) : null);
+      if (pId) patientIds.push(pId);
+      return { ...c, patientId: pId };
+    }).filter(c => c.patientId);
+
+    if (resolvedCandidates.length === 0) return;
+
+    const uniquePtIds = Array.from(new Set(patientIds));
+
+    // 4. Batch query active admissions
+    const admissionMap = new Map<string, string>();
+    const { data: adms } = await supabaseAdmin
+      .from('admissions')
+      .select('id, patient_id')
+      .in('patient_id', uniquePtIds)
+      .eq('status', 'Admitted');
+    (adms || []).forEach(a => admissionMap.set(a.patient_id, a.id));
+
+    // 5. Batch deduplicate against existing transfers within the last 24h
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: existingTransfers } = await supabaseAdmin
+      .from('transfers')
+      .select('patient_id, from_room_name, to_room_name')
+      .in('patient_id', uniquePtIds)
+      .gte('transfer_date', oneDayAgo);
+
+    const existingSet = new Set<string>();
+    (existingTransfers || []).forEach(et => {
+      existingSet.add(`${et.patient_id}|${et.from_room_name}|${et.to_room_name}`);
+    });
+
+    // 6. Build batch insert list
+    const insertsToPerform = resolvedCandidates.filter(c => {
+      const key = `${c.patientId}|${c.fromRoom}|${c.toRoom}`;
+      return !existingSet.has(key);
+    }).map(c => ({
+      admission_id: admissionMap.get(c.patientId!) || null,
+      patient_id: c.patientId!,
+      from_room_id: roomMap.get(c.fromRoom) || null,
+      to_room_id: roomMap.get(c.toRoom) || null,
+      from_room_name: c.fromRoom,
+      to_room_name: c.toRoom,
+      transfer_type: 'inpatient',
+      is_auto_detected: true,
+      notes: c.notes
+    }));
+
+    if (insertsToPerform.length > 0) {
+      const { error: insErr } = await supabaseAdmin.from('transfers').insert(insertsToPerform);
+      if (insErr) {
+        console.warn(`[Relational Transfers Sync] Batch insert notice: ${insErr.message}`);
+      } else {
+        console.log(`[Relational Sync] Audited transfers batch-synchronized (${insertsToPerform.length} rows inserted in 1 query).`);
       }
     }
-    console.log(`[Relational Sync] Audited transfers dual-synchronized to relational database.`);
   } catch (err: any) {
     console.warn('[Relational Transfers Sync] Notice:', err?.message || err);
   }
@@ -4141,114 +4167,126 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
     let updatedCount = 0;
     let insertedCount = 0;
 
-    for (const d of allDebts) {
-      const rawMrn = d.mrn ? String(d.mrn).trim() : null;
-      const cleanMrn = rawMrn ? rawMrn.replace(/^0+/, "") : null;
-      const patientName = d.colD ? String(d.colD).trim() : (d.patientName || null);
-      if (!rawMrn && !patientName) continue;
+    // Process debts in batches of 50 to eliminate N+1 query storms
+    const CHUNK_SIZE = 50;
+    for (let i = 0; i < allDebts.length; i += CHUNK_SIZE) {
+      const chunk = allDebts.slice(i, i + CHUNK_SIZE);
+      const mrnList: string[] = [];
+      const itemMetas: any[] = [];
 
-      const rawTotal = d.totalInvoice !== undefined ? d.totalInvoice : (d.valZ !== undefined ? d.valZ : d.colZ);
-      const rawRemaining = d.remainingAmount !== undefined ? d.remainingAmount : (d.valAB !== undefined ? d.valAB : d.colAB);
-      const totalVal = typeof rawTotal === 'number' ? rawTotal : (parseFloat(String(rawTotal || "").replace(/[^0-9.-]+/g, "")) || 0);
-      const remainingVal = typeof rawRemaining === 'number' ? rawRemaining : (parseFloat(String(rawRemaining || "").replace(/[^0-9.-]+/g, "")) || 0);
-      const contractor = d.colM ? String(d.colM).trim() : (d.contractor || null);
-      const financial = d.colF ? String(d.colF).trim() : (d.financial || null);
-      const phoneVal = cleanPhoneStr(d.phone || d.mobile || d.colE);
+      for (const d of chunk) {
+        const rawMrn = d.mrn ? String(d.mrn).trim() : null;
+        const cleanMrn = rawMrn ? rawMrn.replace(/^0+/, "") : null;
+        const patientName = d.colD ? String(d.colD).trim() : (d.patientName || null);
+        if (!rawMrn && !patientName) continue;
 
-      let patientId: string | null = null;
-      // 1. Try finding patient by clean MRN
-      if (cleanMrn) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', cleanMrn).maybeSingle();
-        if (pt) patientId = pt.id;
-      }
-      // 2. Try raw MRN
-      if (!patientId && rawMrn && rawMrn !== cleanMrn) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', rawMrn).maybeSingle();
-        if (pt) patientId = pt.id;
-      }
-      // 3. Try patient name
-      if (!patientId && patientName) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').ilike('name', patientName).maybeSingle();
-        if (pt) patientId = pt.id;
-      }
+        const rawTotal = d.totalInvoice !== undefined ? d.totalInvoice : (d.valZ !== undefined ? d.valZ : d.colZ);
+        const rawRemaining = d.remainingAmount !== undefined ? d.remainingAmount : (d.valAB !== undefined ? d.valAB : d.colAB);
+        const totalVal = typeof rawTotal === 'number' ? rawTotal : (parseFloat(String(rawTotal || "").replace(/[^0-9.-]+/g, "")) || 0);
+        const remainingVal = typeof rawRemaining === 'number' ? rawRemaining : (parseFloat(String(rawRemaining || "").replace(/[^0-9.-]+/g, "")) || 0);
+        const contractor = d.colM ? String(d.colM).trim() : (d.contractor || null);
+        const financial = d.colF ? String(d.colF).trim() : (d.financial || null);
+        const phoneVal = cleanPhoneStr(d.phone || d.mobile || d.colE);
 
-      // 4. If patient still not found, upsert patient so debt record is not lost
-      if (!patientId) {
-        const targetMrn = cleanMrn || rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`;
-        const newPtData: any = {
-          mrn: targetMrn,
-          name: patientName || 'Unknown Patient',
-          updated_at: new Date().toISOString()
-        };
-        if (phoneVal) newPtData.phone = phoneVal;
-        const { data: newPt } = await supabaseAdmin.from('patients').upsert(newPtData, { onConflict: 'mrn' }).select('id').maybeSingle();
-        if (newPt) patientId = newPt.id;
-      } else if (phoneVal) {
-        await supabaseAdmin.from('patients').update({ phone: phoneVal, updated_at: new Date().toISOString() }).eq('id', patientId);
+        const targetMrn = cleanMrn || rawMrn;
+        if (targetMrn) mrnList.push(targetMrn);
+        if (rawMrn && rawMrn !== cleanMrn) mrnList.push(rawMrn);
+
+        itemMetas.push({
+          d,
+          rawMrn,
+          cleanMrn,
+          patientName,
+          totalVal,
+          remainingVal,
+          contractor,
+          financial,
+          phoneVal,
+        });
       }
 
-      if (patientId) {
-        const updatePayload: any = {
-          total_invoice: totalVal,
-          remaining_debt: remainingVal,
-          updated_at: new Date().toISOString()
-        };
-        if (contractor) updatePayload.contractor_name = contractor;
-        if (financial) updatePayload.financial_status = financial;
+      if (itemMetas.length === 0) continue;
 
-        // Try updating active admission first
-        const { data: updatedAdms } = await supabaseAdmin
+      // 1. Batch query existing patients by MRN
+      const patientMap = new Map<string, string>();
+      if (mrnList.length > 0) {
+        const { data: pts } = await supabaseAdmin.from('patients').select('id, mrn').in('mrn', mrnList);
+        (pts || []).forEach(p => { if (p.mrn) patientMap.set(p.mrn, p.id); });
+      }
+
+      // 2. Identify missing patients and batch upsert them
+      const missingPatients: any[] = [];
+      for (const item of itemMetas) {
+        let pId = (item.cleanMrn ? patientMap.get(item.cleanMrn) : null) || (item.rawMrn ? patientMap.get(item.rawMrn) : null);
+        if (!pId) {
+          const m = item.cleanMrn || item.rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`;
+          missingPatients.push({
+            mrn: m,
+            name: item.patientName || 'Unknown Patient',
+            phone: item.phoneVal || null,
+            updated_at: new Date().toISOString()
+          });
+        }
+      }
+
+      if (missingPatients.length > 0) {
+        const { data: insertedPts } = await supabaseAdmin
+          .from('patients')
+          .upsert(missingPatients, { onConflict: 'mrn' })
+          .select('id, mrn');
+        (insertedPts || []).forEach(p => { if (p.mrn) patientMap.set(p.mrn, p.id); });
+      }
+
+      // 3. Batch query active admissions for matched patients
+      const resolvedPatientIds = itemMetas.map(item => {
+        const pId = (item.cleanMrn ? patientMap.get(item.cleanMrn) : null) || (item.rawMrn ? patientMap.get(item.rawMrn) : null);
+        item.patientId = pId;
+        return pId;
+      }).filter(Boolean) as string[];
+
+      const activeAdmissionsMap = new Map<string, string>();
+      if (resolvedPatientIds.length > 0) {
+        const { data: activeAdms } = await supabaseAdmin
           .from('admissions')
-          .update(updatePayload)
-          .eq('patient_id', patientId)
-          .eq('status', 'Admitted')
-          .select('id');
+          .select('id, patient_id')
+          .in('patient_id', resolvedPatientIds)
+          .eq('status', 'Admitted');
+        (activeAdms || []).forEach(a => activeAdmissionsMap.set(a.patient_id, a.id));
+      }
 
-        if (updatedAdms && updatedAdms.length > 0) {
+      // 4. Update or insert admissions in batch
+      for (const item of itemMetas) {
+        if (!item.patientId) continue;
+        const updatePayload: any = {
+          total_invoice: item.totalVal,
+          remaining_debt: item.remainingVal,
+          updated_at: new Date().toISOString()
+        };
+        if (item.contractor) updatePayload.contractor_name = item.contractor;
+        if (item.financial) updatePayload.financial_status = item.financial;
+
+        const activeAdmId = activeAdmissionsMap.get(item.patientId);
+        if (activeAdmId) {
+          await supabaseAdmin.from('admissions').update(updatePayload).eq('id', activeAdmId);
           updatedCount++;
         } else {
-          // If no active admission was updated, update any recent admission for this patient
-          const { data: existingAdm } = await supabaseAdmin
-            .from('admissions')
-            .select('id')
-            .eq('patient_id', patientId)
-            .order('admission_date', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (existingAdm) {
-            await supabaseAdmin
-              .from('admissions')
-              .update(updatePayload)
-              .eq('id', existingAdm.id);
-            updatedCount++;
-          } else {
-            // Insert a new admission record for this patient with the debt values
-            let roomId: string | null = null;
-            const roomName = d.room || d.colB;
-            if (roomName) {
-              const { data: rData } = await supabaseAdmin.from('rooms').select('id').eq('name', roomName).maybeSingle();
-              if (rData) roomId = rData.id;
-            }
-            await supabaseAdmin.from('admissions').insert({
-              patient_id: patientId,
-              room_id: roomId,
-              contractor_name: contractor,
-              financial_status: financial,
-              total_invoice: totalVal,
-              remaining_debt: remainingVal,
-              admission_date: d.colA ? (cleanAdmissionDateStr(d.colA) || new Date().toISOString()) : new Date().toISOString(),
-              status: 'Admitted',
-              source: 'manual'
-            });
-            insertedCount++;
-          }
+          await supabaseAdmin.from('admissions').insert({
+            patient_id: item.patientId,
+            contractor_name: item.contractor,
+            financial_status: item.financial,
+            total_invoice: item.totalVal,
+            remaining_debt: item.remainingVal,
+            admission_date: item.d.colA ? (cleanAdmissionDateStr(item.d.colA) || new Date().toISOString()) : new Date().toISOString(),
+            status: 'Admitted',
+            source: 'manual'
+          });
+          insertedCount++;
         }
       }
     }
     console.log(`[Relational Debts Sync] Successfully synced debts to admissions table: ${updatedCount} updated, ${insertedCount} inserted.`);
-  } catch (err) {
-    console.warn('[Relational Debts Sync] Notice:', err);
+  } catch (err: any) {
+    console.warn('[Relational Debts Sync] Notice:', err?.message || err);
   }
 }
 
@@ -16165,6 +16203,10 @@ if (!process.env.VERCEL) {
     console.error('FAILED TO START SERVER:', err);
   });
 }
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
 
 export default app;
 
