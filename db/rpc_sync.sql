@@ -23,6 +23,12 @@ DECLARE
   v_total_invoice NUMERIC(12,2);
   v_remaining_debt NUMERIC(12,2);
 BEGIN
+  -- Prevent concurrent sync execution via transactional advisory lock
+  IF NOT pg_try_advisory_xact_lock(hashtext('powerbi_sync_lock')) THEN
+    RAISE NOTICE 'Concurrent sync cycle in progress. Skipping redundant run.';
+    RETURN;
+  END IF;
+
   FOR rec IN SELECT * FROM json_array_elements(payload)
   LOOP
     -- 1. Ensure MRN exists (fallback to generating deterministic or random MRN)
@@ -148,7 +154,7 @@ BEGIN
     SET status = 'Discharged', discharge_date = NOW(), updated_at = NOW()
     WHERE status = 'Admitted' 
       AND (source IS NULL OR source = 'powerbi')
-      AND id != ALL(active_admission_ids);
+      AND NOT (id = ANY(active_admission_ids));
   END IF;
 END;
 $$;

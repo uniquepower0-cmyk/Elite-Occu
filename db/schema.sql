@@ -1,8 +1,8 @@
 -- ==============================================================================
--- HOSPITAL OCCUPANCY MANAGER: BULLETPROOF RELATIONAL MIGRATION (V2.1)
+-- HOSPITAL OCCUPANCY MANAGER: BULLETPROOF RELATIONAL MIGRATION (V2.2)
 -- ==============================================================================
 -- INSTRUCTIONS: Copy and paste this entire file into the Supabase SQL Editor.
--- Fully idempotent: Works on fresh databases AND databases with existing v1 tables.
+-- Fully idempotent: Works on fresh databases AND databases with existing v1/v2 tables.
 -- Uses dynamic execution to guarantee schema catalog cache alignment.
 -- ==============================================================================
 
@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS public.or_cases (
 -- ==============================================================================
 DO $$ 
 BEGIN
+    -- Ensure columns exist in patients
+    ALTER TABLE public.patients ADD COLUMN IF NOT EXISTS phone VARCHAR(50);
+
     -- Ensure columns exist in admissions
     ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE;
     ALTER TABLE public.admissions ADD COLUMN IF NOT EXISTS contractor_name VARCHAR(255);
@@ -221,10 +224,244 @@ DO $$ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.or_cases;
 EXCEPTION WHEN others THEN null;
 END $$;
+DO $$ BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.rtdb_nodes;
+EXCEPTION WHEN others THEN null;
+END $$;
 
 -- 13. Ensure rtdb_nodes uses REPLICA IDENTITY DEFAULT to avoid broadcasting unmodified payload columns
 DO $$ BEGIN
     ALTER TABLE public.rtdb_nodes REPLICA IDENTITY DEFAULT;
 EXCEPTION WHEN others THEN null;
 END $$;
+
+-- ==============================================================================
+-- 14. INTEGRITY & CONCURRENCY CONSTRAINTS (Zero Column Shifts)
+-- ==============================================================================
+
+-- Deduplicate any historical dirty data before creating partial unique index
+DELETE FROM public.admissions a
+WHERE status = 'Admitted'
+  AND a.id NOT IN (
+    SELECT id FROM (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY patient_id ORDER BY updated_at DESC, admission_date DESC) as rnum
+      FROM public.admissions
+      WHERE status = 'Admitted'
+    ) ranked
+    WHERE ranked.rnum = 1
+  );
+
+-- Guarantees at database level that a patient can have at most ONE active admission
+CREATE UNIQUE INDEX IF NOT EXISTS uq_admissions_active_patient 
+ON public.admissions (patient_id) 
+WHERE status = 'Admitted';
+
+-- Normalize any historical timestamp inversions before constraint validation
+UPDATE public.admissions 
+SET discharge_date = admission_date 
+WHERE discharge_date IS NOT NULL AND discharge_date < admission_date;
+
+-- Domain check constraints (safe duplicate handling + NOT VALID to prevent blocking on legacy history)
+DO $$ BEGIN
+    ALTER TABLE public.admissions 
+      ADD CONSTRAINT chk_admissions_dates 
+      CHECK (discharge_date IS NULL OR discharge_date >= admission_date) NOT VALID;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE public.admissions 
+      ADD CONSTRAINT chk_admissions_financials 
+      CHECK (total_invoice >= 0 AND remaining_debt >= 0) NOT VALID;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE public.or_cases 
+      ADD CONSTRAINT chk_or_cases_times 
+      CHECK (end_time IS NULL OR start_time IS NULL OR end_time >= start_time) NOT VALID;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- ==============================================================================
+-- 15. BRIDGE PARITY & AUTONOMOUS TRIGGERS
+-- ==============================================================================
+
+-- Trigger: Automatically capture transfers on room_id update
+CREATE OR REPLACE FUNCTION public.trg_fn_capture_admission_transfer()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_old_room_name VARCHAR(100);
+  v_new_room_name VARCHAR(100);
+BEGIN
+  IF OLD.room_id IS DISTINCT FROM NEW.room_id AND OLD.room_id IS NOT NULL AND NEW.room_id IS NOT NULL THEN
+    SELECT name INTO v_old_room_name FROM public.rooms WHERE id = OLD.room_id;
+    SELECT name INTO v_new_room_name FROM public.rooms WHERE id = NEW.room_id;
+
+    INSERT INTO public.transfers (
+      admission_id,
+      patient_id,
+      from_room_id,
+      to_room_id,
+      from_room_name,
+      to_room_name,
+      physician_id,
+      transfer_date,
+      transfer_type,
+      is_auto_detected,
+      notes
+    ) VALUES (
+      NEW.id,
+      NEW.patient_id,
+      OLD.room_id,
+      NEW.room_id,
+      v_old_room_name,
+      v_new_room_name,
+      NEW.physician_id,
+      NOW(),
+      'inpatient',
+      TRUE,
+      'Automated transfer captured via bridge room reassignment'
+    );
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_capture_admission_transfer ON public.admissions;
+CREATE TRIGGER trg_capture_admission_transfer
+AFTER UPDATE OF room_id ON public.admissions
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_capture_admission_transfer();
+
+-- Trigger: Automatically synchronize updated_at timestamp across core tables
+CREATE OR REPLACE FUNCTION public.trg_fn_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_patients_updated_at ON public.patients;
+CREATE TRIGGER trg_patients_updated_at
+  BEFORE UPDATE ON public.patients
+  FOR EACH ROW EXECUTE FUNCTION public.trg_fn_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_admissions_updated_at ON public.admissions;
+CREATE TRIGGER trg_admissions_updated_at
+  BEFORE UPDATE ON public.admissions
+  FOR EACH ROW EXECUTE FUNCTION public.trg_fn_set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_rtdb_nodes_updated_at ON public.rtdb_nodes;
+CREATE TRIGGER trg_rtdb_nodes_updated_at
+  BEFORE UPDATE ON public.rtdb_nodes
+  FOR EACH ROW EXECUTE FUNCTION public.trg_fn_set_updated_at();
+
+-- ==============================================================================
+-- 16. FOREIGN KEY & PERFORMANCE ACCELERATION INDEXES
+-- ==============================================================================
+
+-- Foreign Key supporting indexes on child tables (prevents full sequential scans)
+CREATE INDEX IF NOT EXISTS idx_transfers_admission_id ON public.transfers(admission_id);
+CREATE INDEX IF NOT EXISTS idx_transfers_from_room ON public.transfers(from_room_id);
+CREATE INDEX IF NOT EXISTS idx_transfers_to_room ON public.transfers(to_room_id);
+CREATE INDEX IF NOT EXISTS idx_transfers_physician ON public.transfers(physician_id);
+
+CREATE INDEX IF NOT EXISTS idx_admissions_physician ON public.admissions(physician_id);
+CREATE INDEX IF NOT EXISTS idx_admissions_contractor ON public.admissions(contractor_id);
+CREATE INDEX IF NOT EXISTS idx_admissions_room ON public.admissions(room_id);
+
+CREATE INDEX IF NOT EXISTS idx_or_cases_room ON public.or_cases(room_id);
+
+-- RTDB nodes path prefix search optimization (accelerates LIKE 'state/%')
+CREATE INDEX IF NOT EXISTS idx_rtdb_nodes_path_pattern 
+ON public.rtdb_nodes (path text_pattern_ops);
+
+-- Trigram fuzzy and substring matching for bilingual Arabic & English names
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_patients_name_trgm 
+ON public.patients USING gin (name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_staff_name_trgm 
+ON public.staff USING gin (name gin_trgm_ops);
+
+-- Composite index for fast OR scheduling lookups in sync_or_cases
+CREATE INDEX IF NOT EXISTS idx_or_cases_patient_date 
+ON public.or_cases (patient_id, scheduled_date);
+
+-- Covering index enabling 100% Index-Only Scans for active_occupancy_view
+CREATE INDEX IF NOT EXISTS idx_admissions_active_covering 
+ON public.admissions (status, patient_id) 
+INCLUDE (room_id, physician_id, contractor_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date)
+WHERE status = 'Admitted';
+
+-- High-Churn JSONB table storage tuning (enables HOT updates to eliminate index bloat)
+ALTER TABLE public.rtdb_nodes SET (
+    fillfactor = 85,
+    autovacuum_vacuum_scale_factor = 0.05,
+    autovacuum_vacuum_threshold = 20,
+    autovacuum_vacuum_cost_limit = 1000
+);
+
+-- Query planner statistics (calibrates cost model for skewed admitted vs discharged ratio)
+ALTER TABLE public.admissions ALTER COLUMN status SET STATISTICS 500;
+
+-- ==============================================================================
+-- 17. SPECIALIZED OPERATIONAL & FINANCIAL VIEWS
+-- ==============================================================================
+
+-- Financial debt monitoring view
+CREATE OR REPLACE VIEW public.active_debt_watch_view AS
+SELECT 
+    a.id AS admission_id,
+    p.mrn,
+    p.name AS patient_name,
+    p.phone AS patient_phone,
+    r.name AS room_name,
+    s.name AS treating_physician,
+    a.financial_status,
+    a.total_invoice,
+    a.remaining_debt,
+    CASE 
+        WHEN a.total_invoice > 0 THEN ROUND((a.remaining_debt / a.total_invoice) * 100, 2)
+        ELSE 0 
+    END AS debt_percentage,
+    EXTRACT(DAY FROM (NOW() - a.admission_date))::int AS los_days
+FROM public.admissions a
+JOIN public.patients p ON a.patient_id = p.id
+LEFT JOIN public.rooms r ON a.room_id = r.id
+LEFT JOIN public.staff s ON a.physician_id = s.id
+WHERE a.status = 'Admitted' AND a.remaining_debt > 0;
+
+-- Operating Room scheduling parity view
+CREATE OR REPLACE VIEW public.or_schedule_occupancy_view AS
+SELECT 
+    oc.id AS or_case_id,
+    oc.scheduled_date,
+    oc.start_time,
+    oc.end_time,
+    p.mrn,
+    p.name AS patient_name,
+    or_room.name AS operating_room,
+    s.name AS surgeon_name,
+    oc.operation_name_en,
+    oc.operation_name_ar,
+    oc.status AS surgical_status,
+    curr_adm.status AS current_inpatient_status,
+    curr_room.name AS current_inpatient_bed
+FROM public.or_cases oc
+JOIN public.patients p ON oc.patient_id = p.id
+LEFT JOIN public.rooms or_room ON oc.room_id = or_room.id
+LEFT JOIN public.staff s ON oc.surgeon_id = s.id
+LEFT JOIN LATERAL (
+    SELECT status, room_id 
+    FROM public.admissions 
+    WHERE patient_id = p.id AND status = 'Admitted'
+    ORDER BY admission_date DESC 
+    LIMIT 1
+) curr_adm ON true
+LEFT JOIN public.rooms curr_room ON curr_adm.room_id = curr_room.id;
+
 
