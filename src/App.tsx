@@ -429,6 +429,15 @@ export default function App() {
   }, [isAuthenticated, currentView]);
 
   useEffect(() => {
+    // 0. Check for OAuth error redirected back in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const oauthError = urlParams.get('error_description') || urlParams.get('error');
+    if (oauthError) {
+      const cleanDesc = oauthError.replace(/\+/g, ' ');
+      setAuthError(`Sign-in error: ${cleanDesc}. Please check Supabase Redirect URL configuration or retry.`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     // Check local session storage first for quick session restore
     const savedSession = sessionStorage.getItem('elite_auth_user');
     if (savedSession) {
