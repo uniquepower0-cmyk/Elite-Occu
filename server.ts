@@ -502,17 +502,14 @@ function cleanAdmissionDateStr(val: any): string {
         // n1 is Month, n2 is Day
         month = n1 - 1;
         day = n2;
+      } else if (cleanStr.includes('/')) {
+        // PowerBI/Excel slash format is Month/Day/Year
+        month = n1 - 1;
+        day = n2;
       } else {
-        const cairo = getCairoDateTime();
-        const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
-        if (y === cYr && n1 === cMo && n2 === cDy) {
-          month = cMo - 1;
-          day = cDy;
-        } else {
-          // Standard format is DD-MM-YYYY (day first, month second)
-          day = n1;
-          month = n2 - 1;
-        }
+        // Standard user-formatted dash format is Day-Month-Year
+        day = n1;
+        month = n2 - 1;
       }
 
       const dateObj = new Date(y, month, day, h, min, sec);
@@ -575,22 +572,34 @@ function parseAdmissionDateToISO(val: any): string | null {
     return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
   }
 
-  // Pattern 2: DD-MM-YYYY or MM-DD-YYYY
-  const matchD1D2Y = cleanStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  // Pattern 2: D/M/Y or M/D/Y (detect delimiter: slashes from PowerBI are M/D/Y, dashes from app are D-M-Y)
+  const matchD1D2Y = cleanStr.match(/^(\d{1,2})([-/.](\d{1,2}))[-/.](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
   if (matchD1D2Y) {
     const n1 = parseInt(matchD1D2Y[1], 10);
-    const n2 = parseInt(matchD1D2Y[2], 10);
-    let y = parseInt(matchD1D2Y[3], 10);
+    const n2 = parseInt(matchD1D2Y[3], 10);
+    let y = parseInt(matchD1D2Y[4], 10);
     if (y < 100) y += 2000;
-    let h = parseInt(matchD1D2Y[4] || '0', 10);
-    const min = parseInt(matchD1D2Y[5] || '0', 10);
-    const sec = parseInt(matchD1D2Y[6] || '0', 10);
+    let h = parseInt(matchD1D2Y[5] || '0', 10);
+    const min = parseInt(matchD1D2Y[6] || '0', 10);
+    const sec = parseInt(matchD1D2Y[7] || '0', 10);
     if (isPM && h < 12) h += 12;
     if (isAM && h === 12) h = 0;
+
     let day = n1, month = n2 - 1;
-    if (n1 <= 12 && n2 > 12) {
-      day = n2;
+    if (n1 > 12 && n2 <= 12) {
+      day = n1;
+      month = n2 - 1;
+    } else if (n2 > 12 && n1 <= 12) {
       month = n1 - 1;
+      day = n2;
+    } else if (cleanStr.includes('/')) {
+      // PowerBI / Excel date export is Month/Day/Year
+      month = n1 - 1;
+      day = n2;
+    } else {
+      // Application user formatted date is Day-Month-Year
+      day = n1;
+      month = n2 - 1;
     }
     const dateObj = new Date(Date.UTC(y, month, day, h, min, sec));
     return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
@@ -620,6 +629,13 @@ function parseDateToTimestamp(val: any): number | null {
   if (!isNaN(num) && num > 40000 && num < 60000) {
     return (num - 25569) * 86400 * 1000;
   }
+
+  const iso = parseAdmissionDateToISO(str);
+  if (iso) {
+    const ts = Date.parse(iso);
+    if (!isNaN(ts)) return ts;
+  }
+
   const parsed = Date.parse(str);
   if (!isNaN(parsed)) return parsed;
   return null;
@@ -627,10 +643,10 @@ function parseDateToTimestamp(val: any): number | null {
 
 function calculateCurrentLOS(admissionDateStr: any): number {
   const ts = parseDateToTimestamp(admissionDateStr);
-  if (!ts) return 1;
+  if (!ts) return 0;
   const now = Date.now();
   const diffDays = Math.floor((now - ts) / (1000 * 60 * 60 * 24));
-  return Math.max(1, diffDays);
+  return Math.max(0, diffDays);
 }
 
 function getDefaultBenchmarkALOS(room: string, specialty?: string): number {
