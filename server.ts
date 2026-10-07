@@ -121,21 +121,33 @@ const __filename = process.argv[1] || path.join(process.cwd(), 'server.ts');
 const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin for the backend Server
-const CONFIG_PATH = path.join(process.cwd(), 'firebase-applet-config.json');
-const SERVICE_ACCOUNT_PATH = path.join(process.cwd(), 'service-account-key.json'); // <--- New line
+const candidateConfigPaths = [
+  path.join(process.cwd(), 'firebase-applet-config.json'),
+  path.join(__dirname, 'firebase-applet-config.json'),
+  path.join(process.cwd(), '..', 'firebase-applet-config.json')
+];
+const candidateServiceAccountPaths = [
+  path.join(process.cwd(), 'service-account-key.json'),
+  path.join(__dirname, 'service-account-key.json'),
+  path.join(process.cwd(), '..', 'service-account-key.json')
+];
+
+const CONFIG_PATH = candidateConfigPaths.find(p => fs.existsSync(p));
+const SERVICE_ACCOUNT_PATH = candidateServiceAccountPaths.find(p => fs.existsSync(p));
+
 let adminDb: any = null;
 let adminRTDB: any = null;
 
-if (fs.existsSync(CONFIG_PATH) && fs.existsSync(SERVICE_ACCOUNT_PATH)) {
+if (CONFIG_PATH && SERVICE_ACCOUNT_PATH) {
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8')); // <--- Read the key
+    const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8'));
     
     let adminApp;
     if (admin.apps.length === 0) {
       adminApp = admin.initializeApp({
         projectId: config.projectId,
-        credential: admin.credential.cert(serviceAccount), // <--- Use the explicit key here
+        credential: admin.credential.cert(serviceAccount),
         databaseURL: `https://${config.projectId}-default-rtdb.firebaseio.com`
       });
     } else {
@@ -159,7 +171,7 @@ if (fs.existsSync(CONFIG_PATH) && fs.existsSync(SERVICE_ACCOUNT_PATH)) {
     console.error("Failed to initialize Firebase Admin in backend:", err);
   }
 } else {
-  console.error("Missing config or service-account-key.json file.");
+  console.info("[Firebase Admin] No service-account-key.json or firebase-applet-config.json detected. Running with Supabase/local persistent store.");
 }
 
 // Writable directory fallback: Vercel serverless has a read-only root, so /tmp is used
@@ -520,6 +532,73 @@ function cleanAdmissionDateStr(val: any): string {
   }
 
   return str;
+}
+
+function parseAdmissionDateToISO(val: any): string | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val.toISOString();
+  let str = String(val).trim();
+  if (!str) return null;
+  str = str.replace(/[٠-٩]/g, d => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(d)]);
+  if (/^\d{13}$/.test(str)) {
+    const ts = parseInt(str, 10);
+    const d = new Date(ts);
+    return !isNaN(d.getTime()) ? d.toISOString() : null;
+  }
+  if (/^\d{10}$/.test(str)) {
+    const ts = parseInt(str, 10) * 1000;
+    const d = new Date(ts);
+    return !isNaN(d.getTime()) ? d.toISOString() : null;
+  }
+  const num = Number(str);
+  if (!isNaN(num) && num > 40000 && num < 60000) {
+    const d = new Date((num - 25569) * 86400 * 1000);
+    return !isNaN(d.getTime()) ? d.toISOString() : null;
+  }
+  let cleanStr = str.replace(/\s+/g, ' ');
+  const isPM = /pm|م/i.test(cleanStr);
+  const isAM = /am|ص/i.test(cleanStr);
+  cleanStr = cleanStr.replace(/am|pm|ص|م/gi, '').trim();
+
+  // Pattern 1: YYYY-MM-DD or YYYY/MM/DD
+  const matchYMD = cleanStr.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (matchYMD) {
+    const y = parseInt(matchYMD[1], 10);
+    const m = parseInt(matchYMD[2], 10) - 1;
+    const d = parseInt(matchYMD[3], 10);
+    let h = parseInt(matchYMD[4] || '0', 10);
+    const min = parseInt(matchYMD[5] || '0', 10);
+    const sec = parseInt(matchYMD[6] || '0', 10);
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    const dateObj = new Date(Date.UTC(y, m, d, h, min, sec));
+    return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
+  }
+
+  // Pattern 2: DD-MM-YYYY or MM-DD-YYYY
+  const matchD1D2Y = cleanStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (matchD1D2Y) {
+    const n1 = parseInt(matchD1D2Y[1], 10);
+    const n2 = parseInt(matchD1D2Y[2], 10);
+    let y = parseInt(matchD1D2Y[3], 10);
+    if (y < 100) y += 2000;
+    let h = parseInt(matchD1D2Y[4] || '0', 10);
+    const min = parseInt(matchD1D2Y[5] || '0', 10);
+    const sec = parseInt(matchD1D2Y[6] || '0', 10);
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    let day = n1, month = n2 - 1;
+    if (n1 <= 12 && n2 > 12) {
+      day = n2;
+      month = n1 - 1;
+    }
+    const dateObj = new Date(Date.UTC(y, month, day, h, min, sec));
+    return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
+  }
+
+  const parsedTs = Date.parse(cleanStr);
+  if (!isNaN(parsedTs)) return new Date(parsedTs).toISOString();
+  return null;
 }
 
 function parseDateToTimestamp(val: any): number | null {
@@ -3227,7 +3306,24 @@ async function saveData() {
         }
       ];
 
-      const { error: sbErr } = await supabaseAdmin.from('rtdb_nodes').upsert(granularNodes);
+      let sbErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(granularNodes);
+        if (!error) {
+          sbErr = null;
+          break;
+        }
+        sbErr = error;
+        const errMsg = String(error.message || error.details || error);
+        const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+        if (isNetworkErr && attempt < 3) {
+          console.warn(`[Supabase Sync] Transient connection glitch (attempt ${attempt}/3: ${errMsg}). Retrying in ${attempt * 300}ms...`);
+          await new Promise(res => setTimeout(res, attempt * 300));
+        } else {
+          break;
+        }
+      }
+
       if (sbErr) {
         console.error('Supabase granular nodes upsert error:', sbErr);
       } else {
@@ -3942,7 +4038,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
 
       const rawMrn = String(row[colMrnIdx] || "").trim();
       const mrn = rawMrn.replace(/^0+/, "");
-      const admDate = cleanAdmissionDateStr(row[0]);
+      const admDate = parseAdmissionDateToISO(row[0]) || cleanAdmissionDateStr(row[0]);
       const contractor = String(row[colContractorIdx] || "").trim();
       const financial = String(row[colFinancialIdx] || "").trim();
       const physician = String(row[colPhysIdx] || "").trim();
@@ -4276,7 +4372,7 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
             financial_status: item.financial,
             total_invoice: item.totalVal,
             remaining_debt: item.remainingVal,
-            admission_date: item.d.colA ? (cleanAdmissionDateStr(item.d.colA) || new Date().toISOString()) : new Date().toISOString(),
+            admission_date: item.d.colA ? (parseAdmissionDateToISO(item.d.colA) || new Date().toISOString()) : new Date().toISOString(),
             status: 'Admitted',
             source: 'manual'
           });

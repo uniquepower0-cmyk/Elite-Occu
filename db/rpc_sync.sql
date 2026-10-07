@@ -64,8 +64,16 @@ BEGIN
     COALESCE(NULLIF(TRIM(rec->>'Specialty'), ''), 'Physician') AS specialty,
     COALESCE(
       CASE 
-        WHEN NULLIF(rec->>'AdmissionDate', '') IS NOT NULL 
-        THEN (rec->>'AdmissionDate')::TIMESTAMPTZ 
+        WHEN NULLIF(rec->>'AdmissionDate', '') IS NOT NULL THEN
+          CASE
+            -- Standard ISO: YYYY-MM-DD...
+            WHEN (rec->>'AdmissionDate') ~ '^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}' 
+              THEN (rec->>'AdmissionDate')::TIMESTAMPTZ
+            -- European/Middle-Eastern format: DD-MM-YYYY HH24:MI(:SS)
+            WHEN (rec->>'AdmissionDate') ~ '^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}' 
+              THEN to_timestamp(rec->>'AdmissionDate', 'DD-MM-YYYY HH24:MI:SS')
+            ELSE (rec->>'AdmissionDate')::TIMESTAMPTZ
+          END
         ELSE NULL 
       END,
       NOW()
