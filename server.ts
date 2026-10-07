@@ -31,6 +31,7 @@ import {
   getChangeLogDates,
   type ChangeType,
 } from './historyManager.js';
+import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 
 dotenv.config();
 
@@ -4099,7 +4100,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       const contractor = String(row[colContractorIdx] || "").trim();
       const financial = String(row[colFinancialIdx] || "").trim();
       const physician = String(row[colPhysIdx] || "").trim();
-      const specialty = String(row[colSpecIdx] || "").trim();
+      const specialty = normalizeSpecialty(String(row[colSpecIdx] || "").trim());
       const diagnosis = String(row[colDiagIdx] || "").trim();
       
       const rawTot = row[colTotalIdx];
@@ -12087,15 +12088,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         if (plan && plan.colX) {
           const specVal = (plan.colX || "").trim();
           if (specVal) {
-            specialty = specVal;
-            const specLower = specialty.toLowerCase();
-            if (specLower === "pulmonology" || specLower === "haematology") {
-              specialty = "Internal Medicine";
-            } else if (specLower === "general surgery" || specLower === "git surgery") {
-              specialty = "General Surgery";
-            } else if (specLower === "orthopedics" || specLower === "orthopedic surgery") {
-              specialty = "Orthopaedic surgery";
-            }
+            specialty = normalizeSpecialty(specVal);
           }
         }
       }
@@ -16099,18 +16092,8 @@ async function addSpecialtyOccupancySheet(
         }
       }
 
-      // Harmonize specialty name
-      let cleanSpec = (specialty || "").trim() || "Other / غير محدد";
-      const sLower = cleanSpec.toLowerCase();
-      if (sLower === "pulmonology" || sLower === "haematology" || sLower === "hematology") {
-        cleanSpec = "Internal Medicine";
-      } else if (sLower === "general surgery" || sLower === "git surgery" || sLower === "surgical") {
-        cleanSpec = "General Surgery";
-      } else if (sLower === "orthopedics" || sLower === "orthopedic surgery" || sLower === "orthopaedics") {
-        cleanSpec = "Orthopaedic surgery";
-      } else if (sLower === "pediatric cardiology") {
-        cleanSpec = "Pediatric Cardiology";
-      }
+      // Harmonize specialty name using unified normalizer
+      const cleanSpec = normalizeSpecialty(specialty);
 
       const item = {
         colA: occP.date,
@@ -16145,15 +16128,7 @@ async function addSpecialtyOccupancySheet(
       if (normRoom === "330" && (plans.some(o => normalizeRoom(o.colB) === "330A" || normalizeRoom(o.colB) === "330B"))) return;
       if (normRoom === "331" && (plans.some(o => normalizeRoom(o.colB) === "331A" || normalizeRoom(o.colB) === "331B"))) return;
 
-      let specialty = (p.colX || "").trim() || "Other / غير محدد";
-      const sLower = specialty.toLowerCase();
-      if (sLower === "pulmonology" || sLower === "haematology" || sLower === "hematology") {
-        specialty = "Internal Medicine";
-      } else if (sLower === "general surgery" || sLower === "git surgery" || sLower === "surgical") {
-        specialty = "General Surgery";
-      } else if (sLower === "orthopedics" || sLower === "orthopedic surgery" || sLower === "orthopaedics") {
-        specialty = "Orthopaedic surgery";
-      }
+      const specialty = normalizeSpecialty(p.colX);
 
       const pKey = `name:${normalizeArabicName(p.colD)}`;
       if (!uniquePlansMap.has(pKey)) {

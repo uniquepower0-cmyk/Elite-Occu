@@ -229,6 +229,75 @@ def is_patient_manually_discharged(name, mrn, manual_names, manual_mrns):
                 return True
     return False
 
+# --- SPECIALTY NORMALIZATION ---
+SPECIALTY_CANONICAL_MAP = {
+    # Internal Medicine rollup
+    "internal medicine": "Internal Medicine",
+    "internal medicine clinic": "Internal Medicine",
+    "internal medicine (im)": "Internal Medicine",
+    "internal": "Internal Medicine",
+    "im": "Internal Medicine",
+    "pulmonology": "Internal Medicine",
+    "hematology": "Internal Medicine",
+    "haematology": "Internal Medicine",
+    "endocrinology": "Internal Medicine",
+    "rheumatology": "Internal Medicine",
+    "باطنة": "Internal Medicine",
+    "الباطنة": "Internal Medicine",
+
+    # General Surgery rollup
+    "general surgery": "General Surgery",
+    "general surgery (gs)": "General Surgery",
+    "git surgery": "General Surgery",
+    "bariatric surgery": "General Surgery",
+    "pediatric surgery": "General Surgery",
+    "surgical": "General Surgery",
+    "gs": "General Surgery",
+
+    # Standalone Specialties
+    "cardiology": "Cardiology",
+    "pediatric cardiology": "Pediatric Cardiology",
+    "pediatrics": "Pediatrics",
+    "pediatric": "Pediatrics",
+    "vascular surgery": "Vascular Surgery",
+    "vascular": "Vascular Surgery",
+    "cardiothoracic surgery": "Cardiothoracic Surgery",
+    "cardiothoracic": "Cardiothoracic Surgery",
+    "urology": "Urology",
+    "orthopedic surgery": "Orthopedic Surgery",
+    "orthopedics": "Orthopedic Surgery",
+    "orthopaedics": "Orthopedic Surgery",
+    "ortho": "Orthopedic Surgery",
+    "neurosurgery": "Neurosurgery",
+    "oncology": "Oncology",
+    "neurology": "Neurology",
+    "ent": "ENT",
+    "obstetrics and gynecology": "Obstetrics and gynecology",
+    "ob/gyn": "Obstetrics and gynecology",
+    "icu": "ICU",
+    "icu.": "ICU",
+    "critical care": "ICU",
+    "anesthesia and pain therapy": "Anesthesia and pain therapy",
+    "physiotherapy": "Physiotherapy",
+    "physiotherpy": "Physiotherapy",
+    "interventional radiology": "Interventional Radiology",
+    "intervential radiology": "Interventional Radiology",
+    "dental": "Dental",
+    "maxillofacial": "Maxillofacial"
+}
+
+def normalize_specialty(raw):
+    if not raw:
+        return "Other / غير محدد"
+    clean = str(raw).strip()
+    if not clean or clean in ["0", "-", "nan", "None", "null", "undefined"]:
+        return "Other / غير محدد"
+    stripped = clean.rstrip(".").strip()
+    lower = stripped.lower()
+    if lower in ["speciality", "specialty", "external laboratory", "physician", "doctor", "other"]:
+        return "Other / غير محدد"
+    return SPECIALTY_CANONICAL_MAP.get(lower, stripped)
+
 # --- LEGACY STATE (Kept alive to prevent frontend breaking during transition) ---
 def fetch_existing_supabase_state(cairo_date_str=None):
     if not cairo_date_str:
@@ -495,7 +564,7 @@ def fetch_powerbi_and_sync():
                     "Financial Status": str(get_val(row, ["Financial Status", "Financial Class", "PaymentBy", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])),
                     "Total Invoice": clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])),
                     "Remaining Amount": clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])),
-                    "Specialty": str(get_val(row, ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"])),
+                    "Specialty": normalize_specialty(get_val(row, ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"])),
                     "Diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"])),
                     "Mobile": mob_val,
                     "LOS": str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 18"])),
@@ -943,7 +1012,7 @@ def fetch_powerbi_and_sync():
                     "mobile": mob,
                     "floor": str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Unnamed: 7"])).strip(),
                     "diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Unnamed: 14"])).strip(),
-                    "specialty": str(get_val(row, ["Speciality", "Specialty", "Unnamed: 23"])).strip()
+                    "specialty": normalize_specialty(get_val(row, ["Speciality", "Specialty", "Unnamed: 23"]))
                 }
                 dialysis_cases.append(dial_item)
 

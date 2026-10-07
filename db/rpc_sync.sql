@@ -61,7 +61,20 @@ BEGIN
       WHEN NULLIF(TRIM(rec->>'TreatingPhysicianName'), '') IN ('None', 'nan') THEN NULL
       ELSE NULLIF(TRIM(rec->>'TreatingPhysicianName'), '')
     END AS physician_name,
-    COALESCE(NULLIF(TRIM(rec->>'Specialty'), ''), 'Physician') AS specialty,
+    COALESCE(
+      (
+        SELECT ms.name_en
+        FROM public.specialty_aliases sa
+        JOIN public.medical_specialties ms ON ms.id = sa.specialty_id
+        WHERE LOWER(TRIM(sa.alias_raw)) = LOWER(TRIM(rec->>'Specialty'))
+        LIMIT 1
+      ),
+      CASE 
+        WHEN NULLIF(TRIM(rec->>'Specialty'), '') IN ('None', 'nan', 'Speciality', 'External Laboratory', '0') THEN 'Physician'
+        ELSE NULLIF(TRIM(rec->>'Specialty'), '')
+      END,
+      'Physician'
+    ) AS specialty,
     COALESCE(
       CASE 
         WHEN NULLIF(rec->>'AdmissionDate', '') IS NOT NULL THEN
