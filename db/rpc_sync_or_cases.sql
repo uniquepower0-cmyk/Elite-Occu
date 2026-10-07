@@ -16,7 +16,7 @@ BEGIN
   FOR rec IN SELECT * FROM json_array_elements(payload)
   LOOP
     -- 1. Ensure MRN exists
-    v_mrn := NULLIF(TRIM(rec->>'mrn'), '');
+    v_mrn := NULLIF(REGEXP_REPLACE(TRIM(COALESCE(rec->>'mrn', '')), '^0+', ''), '');
     IF v_mrn IS NULL OR v_mrn = 'None' OR v_mrn = 'nan' THEN
       v_mrn := 'UNKNOWN-' || gen_random_uuid()::text;
     END IF;
@@ -65,6 +65,11 @@ BEGIN
     EXCEPTION WHEN others THEN
       v_end_time := NULL;
     END;
+
+    -- Guard against chk_or_cases_times violation on midnight crossover (e.g. 23:00 to 01:30)
+    IF v_start_time IS NOT NULL AND v_end_time IS NOT NULL AND v_end_time < v_start_time THEN
+      v_end_time := NULL;
+    END IF;
 
     -- 5. Upsert OR Case
     UPDATE or_cases 

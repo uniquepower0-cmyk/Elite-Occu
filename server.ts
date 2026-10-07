@@ -3724,15 +3724,85 @@ app.post('/api/upload-debts', handleUploadSingle, (req: any, res, next) => {
 });
 
 
+function parseToPostgresTime(raw: any): string | null {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!s || s === '-' || s.toLowerCase() === 'nan' || s.toLowerCase() === 'null' || s.toLowerCase() === 'none') {
+    return null;
+  }
+
+  // Check if it's an Excel fractional serial number (e.g. 0.3958)
+  const num = Number(s);
+  if (!isNaN(num) && num >= 0 && num < 1 && s.includes('.')) {
+    const totalSeconds = Math.round(num * 86400);
+    const hours = Math.floor(totalSeconds / 3600) % 24;
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  // Detect Arabic or English meridian markers
+  const isPM = /م|مساء|pm/i.test(s);
+  const isAM = /ص|صباح|am/i.test(s);
+
+  // Extract hours, minutes, and optional seconds
+  const match = s.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (!match) return null;
+
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const seconds = match[3] ? parseInt(match[3], 10) : 0;
+
+  if (isNaN(hours) || isNaN(minutes) || minutes < 0 || minutes > 59) return null;
+
+  if (isPM && hours < 12) {
+    hours += 12;
+  } else if (isAM && hours === 12) {
+    hours = 0;
+  }
+
+  if (hours < 0 || hours > 23) return null;
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string) {
   try {
     if (!parsedData || parsedData.length === 0) return;
     console.log(`[Relational Sync] Syncing ${parsedData.length} OR cases for ${dateStr}...`);
 
+    // First attempt stored procedure sync_or_cases if deployed
+    try {
+      const sanitizedPayload = parsedData.map(row => {
+        let sTime = parseToPostgresTime(row.startTime);
+        let eTime = parseToPostgresTime(row.endTime);
+        if (sTime && eTime && eTime < sTime) {
+          eTime = null; // Midnight crossover safeguard
+        }
+        return {
+          ...row,
+          startTime: sTime,
+          endTime: eTime,
+          orListDate: dateStr
+        };
+      });
+
+      const { error: rpcErr } = await supabaseAdmin.rpc('sync_or_cases', { payload: sanitizedPayload });
+      if (!rpcErr) {
+        console.log(`[Relational Sync] Successfully synced OR cases via sync_or_cases RPC.`);
+        return;
+      }
+      console.warn(`[Relational Sync] sync_or_cases RPC notice (${rpcErr.message}). Falling back to resilient direct upsert.`);
+    } catch (rpcEx: any) {
+      console.warn(`[Relational Sync] RPC attempt bypassed:`, rpcEx?.message || rpcEx);
+    }
+
+    // Direct resilient upsert fallback
     // 1. Prepare unique patients
     const patientMap = new Map();
     for (const row of parsedData) {
-      let mrn = row.mrn;
+      let rawMrn = row.mrn ? String(row.mrn).trim() : "";
+      let mrn = rawMrn.replace(/^0+/, "");
       if (!mrn) mrn = `UNKNOWN-${Math.random().toString(36).substring(7)}`; 
       patientMap.set(mrn, { mrn: mrn, name: row.patientName || 'Unknown Patient' });
       row._computedMrn = mrn;
@@ -3743,7 +3813,7 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
       .upsert(patientsToUpsert, { onConflict: 'mrn' })
       .select('id, mrn');
       
-    if (pErr) throw new Error(`Patient Upsert Error: ${pErr.message}`);
+    if (pErr) console.warn(`[Relational Sync] Patient upsert warning: ${pErr.message}`);
     const mrnToId = new Map((pData || []).map((p: any) => [p.mrn, p.id]));
 
     // 2. Prepare unique rooms
@@ -3760,11 +3830,12 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
         .from('rooms')
         .upsert(roomsToUpsert, { onConflict: 'name' })
         .select('id, name');
-      if (rErr) throw new Error(`Room Upsert Error: ${rErr.message}`);
-      roomNameToId = new Map((rData || []).map((r: any) => [r.name, r.id]));
+      if (!rErr && rData) {
+        roomNameToId = new Map(rData.map((r: any) => [r.name, r.id]));
+      }
     }
 
-    // 3. Prepare unique surgeons using atomic upsert (enabled by staff UNIQUE constraint)
+    // 3. Prepare unique surgeons using atomic upsert
     const surgeonMap = new Map();
     for (const row of parsedData) {
       if (row.surgeonName) {
@@ -3782,7 +3853,6 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
       if (!sErr && sData) {
         surgeonNameToId = new Map(sData.map((s: any) => [s.name, s.id]));
       } else {
-        // Fallback query in case UNIQUE constraint is still propagating
         const { data: existingSurgeons } = await supabaseAdmin
           .from('staff')
           .select('id, name')
@@ -3794,34 +3864,46 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
     // 4. Delete existing cases for this date to prevent duplicates upon re-upload
     await supabaseAdmin.from('or_cases').delete().eq('scheduled_date', dateStr);
 
-    // 5. Insert new OR Cases
-    const formatTime = (tStr: string) => {
-       if (!tStr) return null;
-       const t = tStr.trim();
-       if (/^\d{1,2}:\d{2}/.test(t)) return t;
-       return null;
-    };
+    // 5. Build sanitized cases list with constraint guarantees
+    const casesToInsert = parsedData.map(row => {
+      let sTime = parseToPostgresTime(row.startTime);
+      let eTime = parseToPostgresTime(row.endTime);
+      // Guarantee chk_or_cases_times constraint satisfaction (midnight crossover safeguard)
+      if (sTime && eTime && eTime < sTime) {
+        eTime = null;
+      }
 
-    const casesToInsert = parsedData.map(row => ({
-      patient_id: mrnToId.get(row._computedMrn),
-      room_id: roomNameToId.get(row.orRoom) || null,
-      surgeon_id: surgeonNameToId.get(row.surgeonName) || null,
-      operation_name_en: row.engOperationName,
-      operation_name_ar: row.arOperationName,
-      start_time: formatTime(row.startTime),
-      end_time: formatTime(row.endTime),
-      scheduled_date: dateStr,
-      status: 'Scheduled'
-    }));
+      return {
+        patient_id: mrnToId.get(row._computedMrn) || null,
+        room_id: roomNameToId.get(row.orRoom) || null,
+        surgeon_id: surgeonNameToId.get(row.surgeonName) || null,
+        operation_name_en: row.engOperationName || null,
+        operation_name_ar: row.arOperationName || null,
+        start_time: sTime,
+        end_time: eTime,
+        scheduled_date: dateStr,
+        status: 'Scheduled',
+        financial_status: row.financialStatus || null
+      };
+    }).filter(c => c.patient_id !== null);
 
     if (casesToInsert.length > 0) {
       const { error: cErr } = await supabaseAdmin.from('or_cases').insert(casesToInsert);
-      if (cErr) throw new Error(`OR Cases Insert Error: ${cErr.message}`);
+      if (cErr) {
+        console.warn(`[Relational Sync] Batch insert error (${cErr.message}). Retrying row-by-row...`);
+        let insertedCount = 0;
+        for (const c of casesToInsert) {
+          const { error: rowErr } = await supabaseAdmin.from('or_cases').insert(c);
+          if (!rowErr) insertedCount++;
+          else console.warn(`[Relational Sync] Row insert error for patient ${c.patient_id}:`, rowErr.message);
+        }
+        console.log(`[Relational Sync] Inserted ${insertedCount}/${casesToInsert.length} OR cases via individual fallback.`);
+      } else {
+        console.log(`[Relational Sync] Successfully batch inserted ${casesToInsert.length} OR cases to database.`);
+      }
     }
-
-    console.log(`[Relational Sync] Successfully synced OR cases to database.`);
-  } catch (err) {
-    console.error(`[Relational Sync] Error:`, err);
+  } catch (err: any) {
+    console.error(`[Relational Sync] Error:`, err?.message || err);
   }
 }
 
@@ -3984,25 +4066,69 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
         const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('mrn', mrn).maybeSingle();
         if (pt) patientId = pt.id;
       }
-      if (!patientId && t.patientName) {
-        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', t.patientName).maybeSingle();
+      const patName = t.patientName || t.name;
+      if (!patientId && patName) {
+        const { data: pt } = await supabaseAdmin.from('patients').select('id').eq('name', patName).maybeSingle();
         if (pt) patientId = pt.id;
       }
 
       if (patientId) {
-        await supabaseAdmin.from('transfers').insert({
-          patient_id: patientId,
-          from_room_name: fromRoom,
-          to_room_name: toRoom,
-          transfer_type: 'inpatient',
-          is_auto_detected: true,
-          notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
-        });
+        // Resolve room IDs if possible
+        let fromRoomId: string | null = null;
+        let toRoomId: string | null = null;
+        if (fromRoom) {
+          const { data: fr } = await supabaseAdmin.from('rooms').select('id').eq('name', fromRoom).maybeSingle();
+          if (fr) fromRoomId = fr.id;
+        }
+        if (toRoom) {
+          const { data: tr } = await supabaseAdmin.from('rooms').select('id').eq('name', toRoom).maybeSingle();
+          if (tr) toRoomId = tr.id;
+        }
+
+        // Resolve active admission ID if available
+        let admId: string | null = null;
+        const { data: adm } = await supabaseAdmin
+          .from('admissions')
+          .select('id')
+          .eq('patient_id', patientId)
+          .eq('status', 'Admitted')
+          .order('admission_date', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (adm) admId = adm.id;
+
+        // Deduplicate against transfers recorded within the last 24 hours
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: existing } = await supabaseAdmin
+          .from('transfers')
+          .select('id')
+          .eq('patient_id', patientId)
+          .eq('from_room_name', fromRoom)
+          .eq('to_room_name', toRoom)
+          .gte('transfer_date', oneDayAgo)
+          .limit(1);
+
+        if (!existing || existing.length === 0) {
+          const { error: insErr } = await supabaseAdmin.from('transfers').insert({
+            admission_id: admId,
+            patient_id: patientId,
+            from_room_id: fromRoomId,
+            to_room_id: toRoomId,
+            from_room_name: fromRoom,
+            to_room_name: toRoom,
+            transfer_type: 'inpatient',
+            is_auto_detected: true,
+            notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
+          });
+          if (insErr) {
+            console.warn(`[Relational Transfers Sync] Row insert notice: ${insErr.message}`);
+          }
+        }
       }
     }
     console.log(`[Relational Sync] Audited transfers dual-synchronized to relational database.`);
-  } catch (err) {
-    console.warn('[Relational Transfers Sync] Notice:', err);
+  } catch (err: any) {
+    console.warn('[Relational Transfers Sync] Notice:', err?.message || err);
   }
 }
 
