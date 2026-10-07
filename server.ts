@@ -3002,7 +3002,27 @@ app.get('/api/db-status', async (req, res) => {
 // Login Audit Logs endpoints (powered by Supabase)
 app.get('/api/logins', async (req, res) => {
   try {
-    // 1. Fetch from Supabase audit_logs node in rtdb_nodes
+    // 1. Fetch from relational auth_audit_logs table first
+    const { data: relationalLogs, error: rErr } = await supabaseAdmin
+      .from('auth_audit_logs')
+      .select('*')
+      .order('logged_in_at', { ascending: false })
+      .limit(150);
+
+    if (!rErr && relationalLogs && relationalLogs.length > 0) {
+      const formatted = relationalLogs.map(l => ({
+        id: l.id,
+        userId: l.user_id,
+        email: l.email || '',
+        displayName: l.display_name || '',
+        timestamp: l.logged_in_at || new Date().toISOString(),
+        ipAddress: l.ip_address || '',
+        userAgent: l.user_agent || ''
+      }));
+      return res.json({ logs: formatted });
+    }
+
+    // 2. Fetch from Supabase audit_logs node in rtdb_nodes as fallback
     const { data: auditData } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('data')
@@ -3013,7 +3033,7 @@ app.get('/api/logins', async (req, res) => {
       return res.json({ logs: auditData.data });
     }
 
-    // 2. Fallback to profiles table in Supabase
+    // 3. Fallback to profiles table in Supabase
     const { data: profiles } = await supabaseAdmin
       .from('profiles')
       .select('*')
@@ -3084,6 +3104,22 @@ app.post('/api/logins', async (req, res) => {
       data: logs,
       updated_at: now
     });
+
+    // 3. Dual-write to relational auth_audit_logs table
+    try {
+      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+      const userAgent = (req.headers['user-agent'] || '').toString();
+      await supabaseAdmin.from('auth_audit_logs').insert({
+        user_id: uid,
+        email: userEmail,
+        display_name: name,
+        ip_address: clientIp || null,
+        user_agent: userAgent || null,
+        logged_in_at: now
+      });
+    } catch (auditInsertErr: any) {
+      console.warn('Notice: auth_audit_logs dual-write error (non-fatal):', auditInsertErr?.message || auditInsertErr);
+    }
 
     res.json({ success: true });
   } catch (err: any) {
