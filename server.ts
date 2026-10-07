@@ -1122,20 +1122,30 @@ function parseDateComponents(dateStr: any): { y: number; m: number; d: number } 
     if (n1 >= 2000 && n1 <= 2100 && n2 >= 1 && n2 <= 12 && n3 >= 1 && n3 <= 31) {
       return { y: n1, m: n2, d: n3 };
     }
-    // Format MM/DD/YYYY or DD/MM/YYYY
-    if (n3 >= 2000 && n3 <= 2100) {
-      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
-        return { y: n3, m: n1, d: n2 };
+    // Format MM/DD/YYYY or DD/MM/YYYY or MM/DD/YY or DD/MM/YY
+    const y = (n3 >= 0 && n3 <= 99) ? (2000 + n3) : n3;
+    if (y >= 2000 && y <= 2100) {
+      if (n1 > 12 && n2 <= 12) {
+        // Definitely DD/MM/YYYY (Day=n1, Month=n2)
+        return { y, m: n2, d: n1 };
       }
-      return { y: n3, m: n2, d: n1 };
-    }
-    // Format MM/DD/YY or DD/MM/YY
-    if (n3 >= 0 && n3 <= 99) {
-      const fullYear = 2000 + n3;
-      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
-        return { y: fullYear, m: n1, d: n2 };
+      if (n2 > 12 && n1 <= 12) {
+        // Definitely MM/DD/YYYY (Month=n1, Day=n2)
+        return { y, m: n1, d: n2 };
       }
-      return { y: fullYear, m: n2, d: n1 };
+      // Both n1 and n2 <= 12: Disambiguate using Cairo today context
+      const cairo = getCairoDateTime();
+      const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
+      if (y === cYr && n1 === cDy && n2 === cMo) {
+        // Matches Cairo today: n1 is Day, n2 is Month
+        return { y, m: cMo, d: cDy };
+      }
+      if (y === cYr && n1 === cMo && n2 === cDy) {
+        // Matches Cairo today: n1 is Month, n2 is Day
+        return { y, m: cMo, d: cDy };
+      }
+      // Hospital default standard format is DD-MM-YYYY (day first, month second)
+      return { y, m: n2, d: n1 };
     }
   }
 
@@ -1176,7 +1186,13 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
   if (referenceDate) {
     const refComp = parseDateComponents(referenceDate);
     if (refComp) {
-      return (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d);
+      if (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d) {
+        return true;
+      }
+      if (inputComp.y === refComp.y && inputComp.m === refComp.d && inputComp.d === refComp.m) {
+        return true;
+      }
+      return false;
     }
   }
 
@@ -1190,6 +1206,9 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
       const day = today.getDate();
 
       if (inputComp.y === year && inputComp.m === month && inputComp.d === day) {
+        return true;
+      }
+      if (inputComp.y === year && inputComp.m === day && inputComp.d === month) {
         return true;
       }
     } catch (e) {}
@@ -1664,16 +1683,20 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   }
 
   // 2. Extract Dialysis
-  const dialRows = extractDialysisRowsFromData(rows, startIdx);
-  if (cumulativeDialysis.length === 0) {
-    cumulativeDialysis = dialRows;
-  } else {
-    dialRows.forEach(p => {
-      if (!cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name))) {
-        cumulativeDialysis.push(p);
-      }
-    });
-  }
+  const cCairoToday = getCairoDateTime().dateStr;
+  const dialRows = extractDialysisRowsFromData(rows, startIdx).filter(p => {
+    const pDate = p.date || p.admissionDate;
+    return !pDate || isToday(pDate, cCairoToday) || isToday((pDate || "").split(" ")[0], cCairoToday);
+  });
+  cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
+    const pDate = p.date || p.admissionDate;
+    return !pDate || isToday(pDate, cCairoToday) || isToday((pDate || "").split(" ")[0], cCairoToday);
+  });
+  dialRows.forEach(p => {
+    if (!cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name))) {
+      cumulativeDialysis.push(p);
+    }
+  });
 
   const isExcludedDebtCase = (p: {
     room: string;
@@ -2429,18 +2452,48 @@ async function executeLoadData(force = false) {
       return row;
     });
   }
-  cumulativeDischarged = (cumulativeDischarged || []).map(p => {
+  const cairoLoad = getCairoDateTime();
+  const cairoLoadTodayStr = cairoLoad.dateStr;
+
+  cumulativeDischarged = (cumulativeDischarged || []).filter(p => {
+    if (!p) return false;
+    const dDate = p.dischargeDate || p.date;
+    if (dDate) {
+      return isToday(dDate, cairoLoadTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoLoadTodayStr);
+    }
+    return true;
+  }).map(p => {
     if (p && p.room) p.room = cleanRoomStr(p.room);
     return p;
   });
-  cumulativeEntries = (cumulativeEntries || []).map(p => {
+
+  const activeManualFromDischarged = (cumulativeDischarged || [])
+    .filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name))
+    .map(p => p.name)
+    .filter(Boolean);
+  manuallyDischargedNames = Array.from(new Set(activeManualFromDischarged));
+
+  cumulativeEntries = (cumulativeEntries || []).filter(p => {
+    if (!p) return false;
+    const dDate = p.date || p.rawDate;
+    if (dDate) {
+      return isToday(dDate, cairoLoadTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoLoadTodayStr);
+    }
+    return false;
+  }).map(p => {
     if (p && p.room) p.room = cleanRoomStr(p.room);
     return p;
   });
+
   cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
     if (!p) return false;
     const r = String(p.room || "").trim().toLowerCase();
-    return !r.includes("323");
+    if (r.includes("323")) return false;
+    const dDate = p.date || p.admissionDate;
+    if (dDate) {
+      return isToday(dDate, cairoLoadTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoLoadTodayStr);
+    }
+    return true;
   }).map(p => {
     if (p && p.room) p.room = cleanRoomStr(p.room);
     return p;
@@ -3583,10 +3636,18 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     // For Dialysis: Keep all dialysis cases cumulatively throughout the day
     if (!isNewSheetLikelyEmpty) {
+      cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
+        const pDate = p.date || p.admissionDate;
+        return !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
+      });
       dialRowsNew.forEach(p => {
-        const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
-        if (!alreadyExists) {
-          cumulativeDialysis.push(p);
+        const pDate = p.date || p.admissionDate;
+        const isDialToday = !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
+        if (isDialToday) {
+          const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+          if (!alreadyExists) {
+            cumulativeDialysis.push(p);
+          }
         }
       });
     }
@@ -6589,10 +6650,18 @@ async function updateHospitalState(rows: any[][]) {
 
   // For Dialysis: Keep all dialysis cases cumulatively throughout the day
   if (!isNewSheetLikelyEmpty) {
+    cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
+      const pDate = p.date || p.admissionDate;
+      return !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
+    });
     dialRowsNew.forEach(p => {
-      const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
-      if (!alreadyExists) {
-        cumulativeDialysis.push(p);
+      const pDate = p.date || p.admissionDate;
+      const isDialToday = !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
+      if (isDialToday) {
+        const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
+          cumulativeDialysis.push(p);
+        }
       }
     });
   }
@@ -6924,8 +6993,15 @@ app.get('/api/occupancy/data', async (req, res) => {
     const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
     if (isExcluded) return false;
 
-    // For auto-discharges, retain only if they match today's Cairo calendar date
-    if (!isManual && discPt.dischargeDate && !isToday(discPt.dischargeDate, cairoTodayStr) && !isToday(discPt.dischargeDate)) {
+    // Discharged patients on the dashboard must strictly belong to TODAY's Cairo calendar date!
+    // Both auto-discharges AND manual discharges from yesterday or previous days must NOT appear in today's discharged rows.
+    const dischargeDateVal = discPt.dischargeDate || discPt.date;
+    if (dischargeDateVal) {
+      if (!isToday(dischargeDateVal, cairoTodayStr) && !isToday(dischargeDateVal)) {
+        return false;
+      }
+    } else {
+      // If dischargeDate is missing entirely, drop stale record
       return false;
     }
 
@@ -6961,9 +7037,19 @@ app.get('/api/occupancy/data', async (req, res) => {
     }
   });
 
+  // Dialysis cases count strictly patients having dialysis session today in Cairo
+  const cleanDialysis = (cumulativeDialysis || []).filter(dialPt => {
+    const dialDate = dialPt.date || dialPt.admissionDate;
+    if (dialDate) {
+      return isToday(dialDate, cairoTodayStr) || isToday(dialDate) || isToday((dialDate || "").split(" ")[0], cairoTodayStr);
+    }
+    return true;
+  });
+
   const allFilteredDischarged = filterHelper(uniqueCleanDischarged);
   const autoDischargedRows = allFilteredDischarged.filter(p => p.dischargeType !== 'manual' && !isManuallyDischarged(p.name));
   const manualDischargedRows = allFilteredDischarged.filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name));
+  const activeManualNames = manualDischargedRows.map(p => p.name);
 
   if (!hospitalData) {
     return res.json({ 
@@ -6972,13 +7058,13 @@ app.get('/api/occupancy/data', async (req, res) => {
       dischargedRows: allFilteredDischarged,
       autoDischargedRows,
       manualDischargedRows,
-      manuallyDischargedNames,
+      manuallyDischargedNames: activeManualNames,
       dischargesCount: allFilteredDischarged.length,
       autoDischargesCount: autoDischargedRows.length,
       manualDischargesCount: manualDischargedRows.length,
       entryRows: filterHelper(uniqueTodayEntries),
-      dialysisRows: cumulativeDialysis,
-      dialysisCount: (cumulativeDialysis || []).length,
+      dialysisRows: cleanDialysis,
+      dialysisCount: cleanDialysis.length,
       debtRows: cumulativeDebts,
       insuredDebtRows: cumulativeInsuredDebts,
       medicalPlans: cumulativeMedicalPlans,
@@ -7005,13 +7091,13 @@ app.get('/api/occupancy/data', async (req, res) => {
     dischargedRows: allFilteredDischarged,
     autoDischargedRows,
     manualDischargedRows,
-    manuallyDischargedNames,
+    manuallyDischargedNames: activeManualNames,
     dischargesCount: allFilteredDischarged.length,
     autoDischargesCount: autoDischargedRows.length,
     manualDischargesCount: manualDischargedRows.length,
     entryRows: filterHelper(uniqueTodayEntries),
-    dialysisRows: cumulativeDialysis,
-    dialysisCount: (cumulativeDialysis || []).length,
+    dialysisRows: cleanDialysis,
+    dialysisCount: cleanDialysis.length,
     debtRows: cumulativeDebts,
     insuredDebtRows: cumulativeInsuredDebts,
     medicalPlans: cumulativeMedicalPlans,
@@ -7696,21 +7782,38 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
   }
 
   if (!reqDate || reqDate === 'current' || reqDate === 'today') {
-    const autoList = (cumulativeDischarged || []).filter(p => 
+    const cairo = getCairoDateTime();
+    const cairoTodayStr = cairo.dateStr;
+
+    const cleanDisc = (cumulativeDischarged || []).filter(p => {
+      const dDate = p.dischargeDate || p.date;
+      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate)) : false;
+    });
+    const autoList = cleanDisc.filter(p => 
       p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
     );
-    const manualList = (cumulativeDischarged || []).filter(p => 
+    const manualList = cleanDisc.filter(p => 
       p.dischargeType === 'manual' || isManuallyDischarged(p.name)
     );
+    const cleanDial = (cumulativeDialysis || []).filter(p => {
+      const dDate = p.date || p.admissionDate;
+      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoTodayStr)) : true;
+    });
+    const cleanEntries = (cumulativeEntries || []).filter(p => {
+      const dDate = p.date || p.rawDate;
+      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoTodayStr)) : false;
+    });
+    const activeManualNames = manualList.map(p => p.name);
+
     return {
       hospitalData,
       previousHospitalData,
-      cumulativeDischarged,
+      cumulativeDischarged: cleanDisc,
       automaticallyDischarged: autoList,
       manuallyDischarged: manualList,
-      manuallyDischargedNames,
-      cumulativeEntries,
-      cumulativeDialysis,
+      manuallyDischargedNames: activeManualNames,
+      cumulativeEntries: cleanEntries,
+      cumulativeDialysis: cleanDial,
       cumulativeDebts,
       cumulativeInsuredDebts,
       cumulativeMedicalPlans,
@@ -7718,7 +7821,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       cumulativeLOS,
       cumulativeTransfers,
       vipCasesText,
-      dateLabel: getCairoDateTime().dateStr,
+      dateLabel: cairo.dateStr,
       isHistorical: false
     };
   }
@@ -7993,6 +8096,17 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
   }
 }
 
+function getYesterdayCairoDateStr(): string {
+  const cairo = getCairoDateTime();
+  const [y, m, d] = cairo.dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yStr = dt.getUTCFullYear();
+  const mStr = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dStr = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yStr}-${mStr}-${dStr}`;
+}
+
 // Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
 async function checkEgyptianDailyReset() {
   if (isDailyResetting) return;
@@ -8024,6 +8138,30 @@ async function checkEgyptianDailyReset() {
     ) {
       console.log(`[Day-Rollover Reset] Detected unclosed data from previous day (${activeDate}). Current date is ${cairo.dateStr}. Archiving reference snapshot for ${activeDate} and rolling over...`);
       await performDailyRollover(activeDate);
+      return;
+    }
+
+    // 3. Catch-Up Guard: If today is a new calendar day and daily counters still hold stale records from previous days
+    // (even if lastActiveDate was stamped today by background sync), rollover yesterday and zero intraday counters!
+    const yesterdayDateStr = getYesterdayCairoDateStr();
+    const hasStaleDischarges = (cumulativeDischarged || []).some(p => {
+      const d = p.dischargeDate || p.date;
+      return d && !isToday(d, cairo.dateStr) && !isToday(d);
+    });
+    const hasStaleDialysis = (cumulativeDialysis || []).some(p => {
+      const d = p.date || p.admissionDate;
+      return d && !isToday(d, cairo.dateStr) && !isToday(d);
+    });
+
+    if (
+      (hasStaleDischarges || hasStaleDialysis) &&
+      lastEgyptianAutoResetDate !== cairo.dateStr &&
+      lastEgyptianAutoResetDate !== yesterdayDateStr
+    ) {
+      const rollTargetDate = (activeDate && activeDate < cairo.dateStr) ? activeDate : yesterdayDateStr;
+      console.log(`[Day-Rollover Catch-Up] Found stale daily records from previous day (${rollTargetDate}). Rolling over closing date ${rollTargetDate} into today ${cairo.dateStr}...`);
+      await performDailyRollover(rollTargetDate);
+      return;
     }
   } catch (err) {
     console.error('[Scheduled Reset] Error executing checkEgyptianDailyReset:', err);
@@ -15276,11 +15414,17 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'Please upload a sheet first.' });
   try {
     const activePatients = extractRawPatientsFromRows(hospitalData);
+    const cairoExitTodayStr = getCairoDateTime().dateStr;
     const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
       const isStillPresent = activePatients.some(activePt => 
         isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
       );
-      return !isStillPresent;
+      if (isStillPresent) return false;
+      const dischargeDateVal = discPt.dischargeDate || discPt.date;
+      if (dischargeDateVal && !isToday(dischargeDateVal, cairoExitTodayStr)) {
+        return false;
+      }
+      return true;
     });
 
     const uniqueCleanDischarged: any[] = [];
@@ -15314,11 +15458,19 @@ app.get('/api/reports/combined', async (req, res) => {
     const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
     
     // Clean exits
+    const cairoCombTodayStr = getCairoDateTime().dateStr;
     const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
       const isStillPresent = activePatients.some(activePt => 
         isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
       );
-      return !isStillPresent;
+      if (isStillPresent) return false;
+      if (!ds.isHistorical) {
+        const dischargeDateVal = discPt.dischargeDate || discPt.date;
+        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+          return false;
+        }
+      }
+      return true;
     });
 
     const uniqueCleanDischarged: any[] = [];

@@ -244,20 +244,30 @@ export function parseDateComponents(dateStr: any): { y: number; m: number; d: nu
     if (n1 >= 2000 && n1 <= 2100 && n2 >= 1 && n2 <= 12 && n3 >= 1 && n3 <= 31) {
       return { y: n1, m: n2, d: n3 };
     }
-    // Format MM/DD/YYYY or DD/MM/YYYY
-    if (n3 >= 2000 && n3 <= 2100) {
-      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
-        return { y: n3, m: n1, d: n2 };
+    // Format MM/DD/YYYY or DD/MM/YYYY or MM/DD/YY or DD/MM/YY
+    const y = (n3 >= 0 && n3 <= 99) ? (2000 + n3) : n3;
+    if (y >= 2000 && y <= 2100) {
+      if (n1 > 12 && n2 <= 12) {
+        // Definitely DD/MM/YYYY (Day=n1, Month=n2)
+        return { y, m: n2, d: n1 };
       }
-      return { y: n3, m: n2, d: n1 };
-    }
-    // Format MM/DD/YY or DD/MM/YY
-    if (n3 >= 0 && n3 <= 99) {
-      const fullYear = 2000 + n3;
-      if (n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
-        return { y: fullYear, m: n1, d: n2 };
+      if (n2 > 12 && n1 <= 12) {
+        // Definitely MM/DD/YYYY (Month=n1, Day=n2)
+        return { y, m: n1, d: n2 };
       }
-      return { y: fullYear, m: n2, d: n1 };
+      // Both n1 and n2 <= 12: Disambiguate using Cairo today context
+      const cairo = getCairoDateTime();
+      const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
+      if (y === cYr && n1 === cDy && n2 === cMo) {
+        // Matches Cairo today: n1 is Day, n2 is Month
+        return { y, m: cMo, d: cDy };
+      }
+      if (y === cYr && n1 === cMo && n2 === cDy) {
+        // Matches Cairo today: n1 is Month, n2 is Day
+        return { y, m: cMo, d: cDy };
+      }
+      // Hospital default standard format is DD-MM-YYYY (day first, month second)
+      return { y, m: n2, d: n1 };
     }
   }
 
@@ -286,6 +296,10 @@ export function isToday(dateStr: any, referenceDate?: string | Date | null): boo
       if (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d) {
         return true;
       }
+      if (inputComp.y === refComp.y && inputComp.m === refComp.d && inputComp.d === refComp.m) {
+        return true;
+      }
+      return false;
     }
   }
 
@@ -299,6 +313,9 @@ export function isToday(dateStr: any, referenceDate?: string | Date | null): boo
       const day = today.getDate();
 
       if (inputComp.y === year && inputComp.m === month && inputComp.d === day) {
+        return true;
+      }
+      if (inputComp.y === year && inputComp.m === day && inputComp.d === month) {
         return true;
       }
     } catch (e) {}

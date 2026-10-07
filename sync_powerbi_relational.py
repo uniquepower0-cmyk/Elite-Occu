@@ -33,6 +33,56 @@ def is_today_cairo(iso_str, today_cairo_str):
     except:
         return False
 
+def is_date_today_cairo(d_val, today_cairo_str=None):
+    if not d_val:
+        return False
+    if not today_cairo_str:
+        today_cairo_str = get_cairo_now().strftime("%Y-%m-%d")
+    try:
+        parts = today_cairo_str.split("-")
+        c_yr = int(parts[0])
+        c_mo = int(parts[1])
+        c_dy = int(parts[2])
+    except:
+        return False
+
+    s = str(d_val).strip()
+    if not s or s.lower() in ["nan", "none", "null", "nat", "undefined"]:
+        return False
+
+    # Check ISO format with time zone
+    if "t" in s.lower() or "z" in s.lower() or "+" in s:
+        try:
+            clean = s.replace("Z", "+00:00")
+            dt = datetime.datetime.fromisoformat(clean)
+            dt_cairo = dt.astimezone(CAIRO_TZ)
+            return dt_cairo.strftime("%Y-%m-%d") == today_cairo_str
+        except:
+            pass
+
+    date_part = re.split(r"[\sT]", s)[0]
+    m = re.match(r"^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$", date_part)
+    if m:
+        p1, p2, p3 = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        # Case A: YYYY-MM-DD or YYYY/MM/DD
+        if p1 > 1000:
+            return (p1 == c_yr and p2 == c_mo and p3 == c_dy)
+        # Case B: DD-MM-YYYY or MM-DD-YYYY or DD-MM-YY
+        yr = p3 if p3 > 1000 else (2000 + p3 if p3 < 100 else p3)
+        if yr != c_yr:
+            return False
+        # Disambiguate against Cairo today
+        return (p1 == c_dy and p2 == c_mo) or (p1 == c_mo and p2 == c_dy)
+
+    for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%y", "%d/%m/%y"]:
+        try:
+            parsed = datetime.datetime.strptime(date_part, fmt)
+            if parsed.year == c_yr and parsed.month == c_mo and parsed.day == c_dy:
+                return True
+        except:
+            continue
+    return False
+
 # --- CONFIGURATION & CREDENTIALS ---
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://uuvomcxbgldgtmuqtymk.supabase.co")
 SUPABASE_KEY = os.getenv(
@@ -177,7 +227,7 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     if not cairo_date_str:
         cairo_date_str = get_cairo_now().strftime("%Y-%m-%d")
     # Egress optimization: fetch only relevant state nodes rather than all state/* nodes
-    get_url = f"{SUPABASE_REST_URL}?path=in.(state/metadata,state/discharged,state/dialysis,state/transfers,state/occupancy)&select=path,data,updated_at"
+    get_url = f"{SUPABASE_REST_URL}?path=in.(state/metadata,state/discharged,state/dialysis,state/transfers,state/occupancy,state/entries)&select=path,data,updated_at"
     state_map = {}
     time_map = {}
     try:
@@ -206,16 +256,27 @@ def fetch_existing_supabase_state(cairo_date_str=None):
         raw_manual_names = []
 
     disc_node = state_map.get("state/discharged") or {}
-    disc_patients = disc_node.get("patients") if isinstance(disc_node, dict) else (disc_node if isinstance(disc_node, list) else [])
-    if not isinstance(disc_patients, list) or is_new_day or is_system_reset:
-        disc_patients = []
+    raw_disc_patients = disc_node.get("patients") if isinstance(disc_node, dict) else (disc_node if isinstance(disc_node, list) else [])
+    
+    # Discharged cases: only keep if matching TODAY in Cairo time AND not a new day / reset
+    clean_disc_patients = []
+    if not is_new_day and not is_system_reset and isinstance(raw_disc_patients, list):
+        for dp in raw_disc_patients:
+            if isinstance(dp, dict):
+                d_date = dp.get("dischargeDate") or dp.get("date") or dp.get("updatedAt")
+                if d_date:
+                    if is_date_today_cairo(d_date, cairo_date_str):
+                        clean_disc_patients.append(dp)
+                else:
+                    disc_updated = time_map.get("state/discharged")
+                    if is_today_cairo(disc_updated, cairo_date_str):
+                        clean_disc_patients.append(dp)
+    disc_patients = clean_disc_patients
 
-    # If raw_manual_names was cleared (by reset) or new day, start with empty manual set
-    manual_names_set = set(str(n).strip() for n in raw_manual_names if n) if (not is_new_day and not is_system_reset) else set()
+    # Manual names/MRNs from clean today's discharges
+    manual_names_set = set()
     manual_mrns_set = set()
-
-    # Only inspect disc_patients for manual discharges if raw_manual_names is actively populated
-    if raw_manual_names and not is_new_day and not is_system_reset:
+    if not is_new_day and not is_system_reset:
         for dp in disc_patients:
             if isinstance(dp, dict):
                 p_name = dp.get("name") or dp.get("colD")
@@ -230,11 +291,21 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     # Minimal fallback mappings
     dataset = state_map.get("state/dataset") or {}
 
-    # Dialysis cases: only keep if updated TODAY in Cairo time AND not a new day / reset
+    # Dialysis cases: only keep if individual date matches TODAY in Cairo time AND not a new day / reset
     dial = state_map.get("state/dialysis") or {}
     raw_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
     dial_updated = time_map.get("state/dialysis")
-    existing_dial = raw_dial if (raw_dial and is_today_cairo(dial_updated, cairo_date_str) and not is_new_day and not is_system_reset) else []
+    existing_dial = []
+    if raw_dial and not is_new_day and not is_system_reset:
+        for p in raw_dial:
+            if isinstance(p, dict):
+                p_date = p.get("date") or p.get("admissionDate")
+                if p_date:
+                    if is_date_today_cairo(p_date, cairo_date_str):
+                        existing_dial.append(p)
+                else:
+                    if is_today_cairo(dial_updated, cairo_date_str):
+                        existing_dial.append(p)
 
     # Transfers: only keep if updated TODAY in Cairo time AND not a new day / reset
     trans = state_map.get("state/transfers") or {}
@@ -242,11 +313,22 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     trans_updated = time_map.get("state/transfers")
     existing_trans = raw_trans if (raw_trans and is_today_cairo(trans_updated, cairo_date_str) and not is_new_day and not is_system_reset) else []
 
+    # Entries: only keep if matching TODAY in Cairo time AND not a new day / reset
+    ent_node = state_map.get("state/entries") or {}
+    raw_ent = ent_node.get("items", []) if isinstance(ent_node, dict) else (ent_node if isinstance(ent_node, list) else [])
+    existing_entries = []
+    if raw_ent and not is_new_day and not is_system_reset:
+        for p in raw_ent:
+            if isinstance(p, dict):
+                e_date = p.get("date") or p.get("rawDate") or p.get("admissionDate")
+                if is_date_today_cairo(e_date, cairo_date_str):
+                    existing_entries.append(p)
+
     return {
         "previous": occ.get("previous") or dataset.get("current"),
         "occupancy_current": occ_current,
         "discharged": disc_patients,
-        "entries": (state_map.get("state/entries") or {}).get("items", []) if not (is_new_day or is_system_reset) else [],
+        "entries": existing_entries,
         "transfers": existing_trans,
         "orList": (state_map.get("state/or_list") or {}).get("items", []),
         "dialysis": existing_dial,
@@ -307,14 +389,14 @@ def fetch_powerbi_and_sync():
             def clean_date(val):
                 if val is None or pd.isna(val): return None
                 if isinstance(val, (datetime.date, datetime.datetime, pd.Timestamp)):
-                    return val.strftime("%m/%d/%Y %H:%M")
+                    return val.strftime("%d-%m-%Y %H:%M")
                 s = str(val).strip()
                 if not s or s.lower() in ["none", "nan", "null", "nat", "no filters applied", "admissiondate", "admission date"]:
                     return None
                 try:
-                    dt = pd.to_datetime(s)
+                    dt = pd.to_datetime(s, dayfirst=True)
                     if pd.notna(dt):
-                        return dt.strftime("%m/%d/%Y %H:%M")
+                        return dt.strftime("%d-%m-%Y %H:%M")
                 except:
                     pass
                 return s
@@ -835,6 +917,10 @@ def fetch_powerbi_and_sync():
                         if candidate and str(candidate).lower() != "admissiondate":
                             adm_date = candidate
 
+                # STRICT CHECK: Dialysis cases must belong to today in Cairo
+                if adm_date and not is_date_today_cairo(adm_date, cairo_date_str):
+                    continue
+
                 mob = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
                 if not mob:
                     dm4 = clean_phone(row.get("Unnamed: 4"))
@@ -853,6 +939,75 @@ def fetch_powerbi_and_sync():
                     "specialty": str(get_val(row, ["Speciality", "Specialty", "Unnamed: 23"])).strip()
                 }
                 dialysis_cases.append(dial_item)
+
+            # ---------------------------------------------------------
+            # 4b. EXTRACT AND SYNC TODAY'S ADMISSIONS / ENTRIES
+            # ---------------------------------------------------------
+            today_entries = []
+            for row in raw_records:
+                bed_val = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
+                if bed_val.lower() in ["bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1", ""] or "no filters" in bed_val.lower():
+                    continue
+
+                b_low = bed_val.lower()
+                if (
+                    b_low in ["or", "o.r", "or1", "or2", "or3", "or4", "or5", "or6", "عمليات", "غرفة عمليات"] or
+                    b_low.startswith("or-") or b_low.startswith("or ") or b_low.startswith("or -")
+                ):
+                    continue
+
+                patient_val = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "").strip()
+                if not patient_val or patient_val.lower() in ["patient", "المريض", "name", "unknown"]:
+                    continue
+
+                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                clean_m = raw_mrn.lstrip("0") if raw_mrn else ""
+
+                if is_patient_manually_discharged(patient_val, clean_m, manual_names, manual_mrns):
+                    continue
+
+                adm_date = clean_date(get_val(row, [
+                    "AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ",
+                    "BedoCCupancy_Soussi.AdmissionDate", "No filters applied", "Unnamed: 0"
+                ]))
+                if not adm_date:
+                    first_col_key = list(row.keys())[0] if len(row) > 0 else None
+                    if first_col_key and pd.notna(row.get(first_col_key)):
+                        candidate = clean_date(row.get(first_col_key))
+                        if candidate and str(candidate).lower() != "admissiondate":
+                            adm_date = candidate
+
+                if adm_date and is_date_today_cairo(adm_date, cairo_date_str):
+                    mob = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
+                    if not mob:
+                        dm4 = clean_phone(row.get("Unnamed: 4"))
+                        if len(dm4) >= 7: mob = dm4
+
+                    entry_item = {
+                        "room": bed_val,
+                        "name": patient_val,
+                        "date": str(adm_date),
+                        "rawDate": str(adm_date),
+                        "mrn": clean_m or raw_mrn,
+                        "mobile": mob,
+                        "physician": str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
+                        "contractor": str(get_val(row, ["ContractorName", "Contractor", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip(),
+                        "floor": str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Unnamed: 7"])).strip(),
+                        "diagnosis": str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Unnamed: 14"])).strip(),
+                        "financialStatus": str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])).strip(),
+                    }
+                    if not any(is_name_match(ex.get("name"), patient_val) or (clean_m and ex.get("mrn") == clean_m) for ex in today_entries):
+                        today_entries.append(entry_item)
+
+            cumulative_entries = [
+                p for p in (existing.get("entries") or [])
+                if is_date_today_cairo(p.get("date") or p.get("rawDate"), cairo_date_str)
+            ]
+            for p in today_entries:
+                p_name = p.get("name", "").strip()
+                p_mrn = p.get("mrn", "").strip()
+                if not any(is_name_match(ex.get("name"), p_name) or (p_mrn and ex.get("mrn") == p_mrn) for ex in cumulative_entries):
+                    cumulative_entries.append(p)
 
             # ---------------------------------------------------------
             # 5. CUMULATIVE DIALYSIS & TRANSFERS WITH 11:59 PM CAIRO RESET
@@ -903,8 +1058,11 @@ def fetch_powerbi_and_sync():
                 cumulative_dialysis = []
                 cumulative_transfers = []
             else:
-                # Keep dialysis cumulative throughout the day
-                cumulative_dialysis = [p for p in (existing.get("dialysis") or []) if "323" not in str(p.get("room", ""))]
+                # Keep dialysis cumulative throughout the day (filtered strictly to today)
+                cumulative_dialysis = [
+                    p for p in (existing.get("dialysis") or [])
+                    if "323" not in str(p.get("room", "")) and (not p.get("date") or is_date_today_cairo(p.get("date"), cairo_date_str))
+                ]
                 for p in dialysis_cases:
                     if "323" in str(p.get("room", "")):
                         continue
@@ -983,6 +1141,7 @@ def fetch_powerbi_and_sync():
 
             log(f"Dialysis cases: {len(dialysis_cases)} current / {len(cumulative_dialysis)} cumulative today.")
             log(f"Transfer cases: {len(cumulative_transfers)} cumulative today.")
+            log(f"Entry cases: {len(today_entries)} current / {len(cumulative_entries)} cumulative today.")
 
             # Send the reconstructed rigid array so legacy backend parses it flawlessly
             granular_nodes = [
@@ -1012,6 +1171,16 @@ def fetch_powerbi_and_sync():
                     "updated_at": now_iso
                 },
                 {
+                    "path": "state/entries",
+                    "data": {"items": cumulative_entries},
+                    "updated_at": now_iso
+                },
+                {
+                    "path": "state/discharged",
+                    "data": {"patients": existing.get("discharged", [])},
+                    "updated_at": now_iso
+                },
+                {
                     "path": "state/metadata",
                     "data": {
                         **(existing.get("existing_metadata") or {}),
@@ -1024,7 +1193,9 @@ def fetch_powerbi_and_sync():
                             "debts": len(cash_debts),
                             "insuredDebts": len(insured_debts),
                             "dialysis": len(cumulative_dialysis),
-                            "transfers": len(cumulative_transfers)
+                            "transfers": len(cumulative_transfers),
+                            "entries": len(cumulative_entries),
+                            "discharged": len(existing.get("discharged", []))
                         }
                     },
                     "updated_at": now_iso
@@ -1033,7 +1204,7 @@ def fetch_powerbi_and_sync():
             sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
             
             if sb_response.status_code in [200, 201]:
-                log(f"Legacy JSON state, Debts, Dialysis, and Transfers successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers).")
+                log(f"Legacy JSON state, Debts, Dialysis, Entries, and Discharged successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers, {len(cumulative_entries)} entries, {len(existing.get('discharged', []))} discharged).")
                 return True
             else:
                 log(f"Supabase upsert failed with status {sb_response.status_code}: {sb_response.text}")
