@@ -2461,7 +2461,7 @@ async function executeLoadData(force = false) {
     }
 
     // 2. Discharged cases snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeDischarged || cumulativeDischarged.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
+    if ((!cumulativeDischarged || cumulativeDischarged.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeDischarged) && todaySnap.cumulativeDischarged.length > 0) {
@@ -2477,7 +2477,7 @@ async function executeLoadData(force = false) {
     }
 
     // 3. Dialysis snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeDialysis || cumulativeDialysis.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
+    if ((!cumulativeDialysis || cumulativeDialysis.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeDialysis) && todaySnap.cumulativeDialysis.length > 0) {
@@ -2490,7 +2490,7 @@ async function executeLoadData(force = false) {
     }
 
     // 4. Transfers snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeTransfers || cumulativeTransfers.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
+    if ((!cumulativeTransfers || cumulativeTransfers.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.cumulativeTransfers) && todaySnap.cumulativeTransfers.length > 0) {
@@ -2502,8 +2502,8 @@ async function executeLoadData(force = false) {
       }
     }
 
-    // OR List Snapshot: Only restore from TODAY'S snapshot if available and active (never resurrect old historical OR lists)
-    if ((!cumulativeORList || cumulativeORList.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
+    // OR List Snapshot: Only restore from TODAY'S snapshot if available and active (never resurrect old historical OR lists or reset lists)
+    if ((!cumulativeORList || cumulativeORList.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
       try {
         const todaySnap = await getORSnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
@@ -3357,21 +3357,26 @@ async function saveData() {
       try {
         const cairo = getCairoDateTime();
         const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
-        if (
-          (hospitalData && hospitalData.length > 0) ||
-          (cumulativeDischarged && cumulativeDischarged.length > 0) ||
-          (cumulativeDialysis && cumulativeDialysis.length > 0) ||
-          (cumulativeTransfers && cumulativeTransfers.length > 0) ||
-          (cumulativeEntries && cumulativeEntries.length > 0)
-        ) {
-          await takeOccupancySnapshotHelper(activeDateStr);
-          console.log(`Automatic occupancy database snapshot saved for date ${activeDateStr}.`);
+        // INVARIANT GUARD: Never overwrite an already closed & reset date's snapshot!
+        if (activeDateStr !== lastEgyptianAutoResetDate) {
+          if (
+            (hospitalData && hospitalData.length > 0) ||
+            (cumulativeDischarged && cumulativeDischarged.length > 0) ||
+            (cumulativeDialysis && cumulativeDialysis.length > 0) ||
+            (cumulativeTransfers && cumulativeTransfers.length > 0) ||
+            (cumulativeEntries && cumulativeEntries.length > 0)
+          ) {
+            await takeOccupancySnapshotHelper(activeDateStr);
+            console.log(`Automatic occupancy database snapshot saved for date ${activeDateStr}.`);
+          }
         }
         if (cumulativeORList && cumulativeORList.length > 0) {
           const rawOrDate = cumulativeORList[0]?.orListDate || '';
           const targetOrDate = normalizeToISODate(rawOrDate) || activeDateStr;
-          await takeORSnapshotHelper(targetOrDate);
-          console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
+          if (targetOrDate !== lastEgyptianAutoResetDate) {
+            await takeORSnapshotHelper(targetOrDate);
+            console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
+          }
         }
         if (hospitalData && hospitalData.length > 0) {
           syncOccupancyToRelationalSchema(hospitalData).catch(err => console.error('[Relational Occupancy Sync Error]:', err?.message || err));
@@ -8211,15 +8216,16 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
 
 // Helper to resolve OR dataset (either live or historical by date)
 async function resolveORDataset(reqDate?: string | null) {
-  if (!cumulativeORList || cumulativeORList.length === 0) {
+  const cairoToday = getCairoDateTime().dateStr;
+  const isTodayReset = (lastEgyptianAutoResetDate === cairoToday);
+
+  if ((!cumulativeORList || cumulativeORList.length === 0) && !isTodayReset) {
     try {
       await loadData();
     } catch (err) {
       console.error('[resolveORDataset] Error auto-loading state:', err);
     }
   }
-
-  const cairoToday = getCairoDateTime().dateStr;
 
   if (!reqDate || reqDate === 'current' || reqDate === 'today') {
     if (cumulativeORList && cumulativeORList.length > 0) {
@@ -8230,14 +8236,16 @@ async function resolveORDataset(reqDate?: string | null) {
         found: true
       };
     }
-    const todaySnap = await getORSnapshot(cairoToday);
-    if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
-      return {
-        orList: todaySnap.orList,
-        dateLabel: cairoToday,
-        isHistorical: false,
-        found: true
-      };
+    if (!isTodayReset) {
+      const todaySnap = await getORSnapshot(cairoToday);
+      if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
+        return {
+          orList: todaySnap.orList,
+          dateLabel: cairoToday,
+          isHistorical: false,
+          found: true
+        };
+      }
     }
     return {
       orList: [],
@@ -8279,6 +8287,29 @@ async function resolveORDataset(reqDate?: string | null) {
 
 let isDailyResetting = false;
 
+function getNextCairoDateStr(baseDateStr?: string): string {
+  const cairo = getCairoDateTime();
+  const base = baseDateStr || cairo.dateStr;
+  const [y, m, d] = base.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  const yStr = dt.getUTCFullYear();
+  const mStr = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dStr = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yStr}-${mStr}-${dStr}`;
+}
+
+function getYesterdayCairoDateStr(): string {
+  const cairo = getCairoDateTime();
+  const [y, m, d] = cairo.dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yStr = dt.getUTCFullYear();
+  const mStr = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dStr = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yStr}-${mStr}-${dStr}`;
+}
+
 // Consolidated Daily Rollover Engine at 11:59 PM (Cairo Time)
 async function performDailyRollover(closingDate: string): Promise<boolean> {
   if (isDailyResetting) return false;
@@ -8293,7 +8324,10 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
       return false;
     }
 
-    console.log(`[Daily Rollover] Starting 11:59 PM rollover for date: ${targetDate}. Current Cairo date is: ${cairo.dateStr}`);
+    // Determine the calendar date of the incoming new hospital day
+    const newDayDateStr = (targetDate === cairo.dateStr) ? getNextCairoDateStr(targetDate) : cairo.dateStr;
+
+    console.log(`[Daily Rollover] Starting rollover for closing date: ${targetDate} into new day: ${newDayDateStr}. Current Cairo time is: ${cairo.fullStr}`);
 
     // 0. Save an immutable FINAL change-log entry BEFORE clearing any daily data
     try {
@@ -8312,7 +8346,7 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
       console.error('[Daily Rollover] Failed to save daily_final changelog entry:', clErr);
     }
 
-    // 1. Snapshot occupancy, discharged cases, dialysis, entries, and transfers into history
+    // 1. Snapshot occupancy, discharged cases, dialysis, entries, and transfers into history for closing date
     if (
       (hospitalData && hospitalData.length > 0) ||
       (cumulativeTransfers && cumulativeTransfers.length > 0) ||
@@ -8322,19 +8356,19 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     ) {
       try {
         await takeOccupancySnapshotHelper(targetDate);
-        console.log(`[Daily Rollover] Occupancy history snapshot saved for date ${targetDate}.`);
+        console.log(`[Daily Rollover] Closing occupancy history snapshot saved for date ${targetDate}.`);
       } catch (snapErr) {
-        console.error(`[Daily Rollover] Failed to save occupancy snapshot for date ${targetDate}:`, snapErr);
+        console.error(`[Daily Rollover] Failed to save closing occupancy snapshot for date ${targetDate}:`, snapErr);
       }
     }
 
-    // 2. Snapshot OR list into history
+    // 2. Snapshot OR list into history for closing date
     if (cumulativeORList && cumulativeORList.length > 0) {
       try {
         await takeORSnapshotHelper(targetDate);
-        console.log(`[Daily Rollover] OR history snapshot saved for date ${targetDate}.`);
+        console.log(`[Daily Rollover] Closing OR history snapshot saved for date ${targetDate}.`);
       } catch (orErr) {
-        console.error(`[Daily Rollover] Failed to save OR snapshot for date ${targetDate}:`, orErr);
+        console.error(`[Daily Rollover] Failed to save closing OR snapshot for date ${targetDate}:`, orErr);
       }
     }
 
@@ -8374,15 +8408,37 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
       patientRoomRegistry = {};
     }
 
-    // 5. Update state timestamps
+    // 5. Update state timestamps to the NEW DAY
     lastEgyptianAutoResetDate = targetDate;
-    lastActiveDate = cairo.dateStr;
-    lastTransfersDate = cairo.dateStr;
-    uploadedAt = Date.now();
+    lastActiveDate = newDayDateStr;
+    lastTransfersDate = newDayDateStr;
+    uploadedAt = null;
 
     // 6. Persist clean state to disk and Supabase cloud database
     await saveData();
-    console.log(`[Daily Rollover] 11:59 PM rollover completed successfully for date ${targetDate}. Inpatients retained in beds, daily datasets zeroed for new day ${cairo.dateStr}.`);
+
+    // 7. Explicitly ensure state/or_list node is updated to empty in database
+    try {
+      await supabaseAdmin.from('rtdb_nodes').upsert({
+        path: 'state/or_list',
+        data: { items: [] },
+        updated_at: new Date().toISOString()
+      });
+    } catch (orClearErr) {
+      console.warn('[Daily Rollover] Notice clearing state/or_list in database:', orClearErr);
+    }
+
+    // 8. Establish clean baseline occupancy snapshot for the incoming new day immediately
+    if (hospitalData && hospitalData.length > 0) {
+      try {
+        await takeOccupancySnapshotHelper(newDayDateStr);
+        console.log(`[Daily Rollover] Baseline occupancy snapshot established immediately for new day ${newDayDateStr}.`);
+      } catch (baselineErr) {
+        console.error(`[Daily Rollover] Failed to save baseline occupancy snapshot for ${newDayDateStr}:`, baselineErr);
+      }
+    }
+
+    console.log(`[Daily Rollover] Rollover completed successfully for closing date ${targetDate}. Inpatients retained in beds, daily datasets zeroed, baseline established for new day ${newDayDateStr}.`);
     return true;
   } catch (err) {
     console.error('[Daily Rollover] Error executing performDailyRollover:', err);
@@ -8390,17 +8446,6 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
   } finally {
     isDailyResetting = false;
   }
-}
-
-function getYesterdayCairoDateStr(): string {
-  const cairo = getCairoDateTime();
-  const [y, m, d] = cairo.dateStr.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() - 1);
-  const yStr = dt.getUTCFullYear();
-  const mStr = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dStr = String(dt.getUTCDate()).padStart(2, '0');
-  return `${yStr}-${mStr}-${dStr}`;
 }
 
 // Scheduled Auto-Reset Everyday at 11:59 PM Egyptian Time (Africa/Cairo)
