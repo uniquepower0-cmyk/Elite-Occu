@@ -3435,6 +3435,24 @@ function setupServerDatabaseAutoSync() {
         if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to Relational Schema (admissions, transfers, or_cases).');
       });
 
+    // 3. Fallback Active Drift Heartbeat: Polls every 15s to guarantee sync even if WebSockets drop or miss events
+    setInterval(async () => {
+      try {
+        const { data: node } = await supabaseAdmin
+          .from('rtdb_nodes')
+          .select('updated_at')
+          .eq('path', 'state/metadata')
+          .maybeSingle();
+
+        if (node?.updated_at && (!lastKnownDatabaseUpdatedAt || String(node.updated_at) !== String(lastKnownDatabaseUpdatedAt))) {
+          console.log(`[Heartbeat Drift Detector] Newer database state detected (${node.updated_at} vs ${lastKnownDatabaseUpdatedAt}). Reloading...`);
+          triggerServerAutoFetchFromDatabase('heartbeat-drift-detector');
+        }
+      } catch (err) {
+        // Non-blocking
+      }
+    }, 15000);
+
   } catch (err) {
     console.error('[Supabase Realtime] Failed to setup realtime sync:', err);
   }
@@ -6943,7 +6961,7 @@ app.get('/api/occupancy/data', async (req, res) => {
   const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
   const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
 
-  if ((force && isStale) || (isDataMissing && lastActiveDate)) {
+  if (force || isStale || (isDataMissing && lastActiveDate)) {
     try {
       await loadData(force);
     } catch (err) {
@@ -8675,8 +8693,8 @@ app.get('/api/database/auto-sync-status', async (req, res) => {
   try {
     const forceCheck = req.query.force_check === 'true';
     const now = Date.now();
-    // Only query Supabase if explicitly forced or if no fetch has happened for >60s and no timestamp is known
-    const shouldCheckCloud = forceCheck || (!lastKnownDatabaseUpdatedAt && (now - lastServerFetchTimestamp > 60000));
+    // Check Supabase if explicitly forced or if no check has happened for >10s
+    const shouldCheckCloud = forceCheck || (now - lastServerFetchTimestamp > 10000);
 
     if (shouldCheckCloud) {
       try {
@@ -8783,6 +8801,20 @@ app.post('/api/workflows/:type', (req, res) => {
   setTimeout(() => {
     res.json({ success: true, message: `Workflow ${req.params.type} processed locally.` });
   }, 1000);
+});
+
+// Read-Through Freshness Guard for downloadable reports:
+// Guarantees all generated Excel workbooks use the latest dataset from Supabase
+app.use('/api/reports', async (req, res, next) => {
+  const isStale = (Date.now() - lastServerFetchTimestamp > 3000);
+  if (isStale) {
+    try {
+      await loadData(false);
+    } catch (err) {
+      console.warn('[Reports Freshness Guard] Failed to reload state before report generation:', err);
+    }
+  }
+  next();
 });
 
 app.get('/api/reports/unified', async (req, res) => {
