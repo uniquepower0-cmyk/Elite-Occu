@@ -441,12 +441,31 @@ export default function App() {
     }
 
     // Listen to real-time Supabase Auth state changes
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
         const u = session.user;
+        const userEmail = u.email?.toLowerCase().trim() || '';
+
+        // Verify with profiles or allowed_users
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role, display_name')
+          .eq('email', userEmail)
+          .maybeSingle();
+
+        if (profile?.role === 'unauthorized') {
+          await supabase.auth.signOut();
+          sessionStorage.removeItem('elite_auth_user');
+          setUser(null);
+          setIsAuthenticated(false);
+          setAuthError(`Access Denied: ${userEmail} is not on the authorized hospital staff list.`);
+          setLoading(false);
+          return;
+        }
+
         const loggedUser = {
           email: u.email || 'mohanad.md07@gmail.com',
-          name: (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
+          name: profile?.display_name || (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
         };
         setUser(loggedUser);
         setIsAuthenticated(true);
@@ -467,9 +486,27 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         const u = session.user;
+        const userEmail = u.email?.toLowerCase().trim() || '';
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role, display_name')
+          .eq('email', userEmail)
+          .maybeSingle();
+
+        if (profile?.role === 'unauthorized') {
+          await supabase.auth.signOut();
+          sessionStorage.removeItem('elite_auth_user');
+          setUser(null);
+          setIsAuthenticated(false);
+          setAuthError(`Access Denied: ${userEmail} is not on the authorized hospital staff list.`);
+          setLoading(false);
+          return;
+        }
+
         const loggedUser = {
           email: u.email || 'mohanad.md07@gmail.com',
-          name: (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
+          name: profile?.display_name || (u.user_metadata?.full_name as string) || (u.user_metadata?.name as string) || u.email?.split('@')[0] || 'Authorized Staff'
         };
         setUser(loggedUser);
         setIsAuthenticated(true);
