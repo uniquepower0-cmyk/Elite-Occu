@@ -32,6 +32,7 @@ import {
   type ChangeType,
 } from './historyManager.js';
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
+import { getResponsibleOfficer, formatDateForSheet } from './server/contractorOfficers.js';
 
 dotenv.config();
 
@@ -4710,7 +4711,7 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     return roomA.localeCompare(roomB);
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'الاشغال';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -4718,9 +4719,9 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 6.0);
+  addLogosToSheet(workbook, sheet, 7.0);
 
-  const headerLabels = ['#', 'تاريخ الحجز / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد'];
+  const headerLabels = ['#', 'تاريخ الحجز / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   headerRow.eachCell((cell) => {
@@ -4735,7 +4736,7 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     };
   });
 
-  sheet.autoFilter = 'A2:F2';
+  sheet.autoFilter = 'A2:G2';
 
   const separatorColor = 'FFFCE4D6'; 
   let currentGroup: string | null = null;
@@ -4758,7 +4759,7 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     else if (!isNaN(roomNum) && roomNum > 0) group = "FLOOR_" + Math.floor(roomNum / 100); 
 
     if (currentGroup !== null && group !== currentGroup) {
-      const sepRow = sheet.addRow(['', '', '', '', '', '']);
+      const sepRow = sheet.addRow(['', '', '', '', '', '', '']);
       sepRow.eachCell({ includeEmpty: true }, (cell) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: separatorColor } };
         cell.border = {
@@ -4770,7 +4771,9 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
       });
     }
 
-    const rowValues = [serial++, p.date, p.room, p.name, p.physician, p.contractor];
+    const formattedDate = formatDateForSheet(p.date);
+    const responsibleOfficer = getResponsibleOfficer(p.contractor);
+    const rowValues = [serial++, formattedDate, p.room, p.name, p.physician, p.contractor, responsibleOfficer];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -4791,7 +4794,8 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.getColumn(3).width = 15;
   sheet.getColumn(4).width = 30;
   sheet.getColumn(5).width = 30;
-  sheet.getColumn(6).width = 20;
+  sheet.getColumn(6).width = 22;
+  sheet.getColumn(7).width = 20;
 }
 
 const headerBufferCache = new Map<string, Buffer>();
@@ -4901,15 +4905,15 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'دخول', 6);
+  await applyRefinedHeader(workbook, sheet, 'دخول', 7);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Booking Date / تاريخ الحجز'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -5008,8 +5012,8 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
     
     // Add colored department separator row
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '']); // allocate row slots (6 columns)
-    sheet.mergeCells(startRow, 1, startRow, 6);
+    sheet.addRow(['', '', '', '', '', '', '']); // allocate row slots (7 columns)
+    sheet.mergeCells(startRow, 1, startRow, 7);
     const separatorCell = sheet.getCell(startRow, 1);
     const displayGroupName = group.groupName === "VIP" ? "VIP ICU" : group.groupName;
     separatorCell.value = `■  ${displayGroupName}  ■`;
@@ -5020,7 +5024,9 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
 
     // Add patients rows
     group.items.forEach((p) => {
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, p.date];
+      const formattedDate = formatDateForSheet(p.date);
+      const responsibleOfficer = getResponsibleOfficer(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5046,6 +5052,7 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
   sheet.getColumn(4).width = 35;
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
+  sheet.getColumn(7).width = 24;
 }
 
 async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
@@ -5058,15 +5065,15 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'خروج', 7);
+  await applyRefinedHeader(workbook, sheet, 'خروج', 8);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Admission Date / تاريخ الدخول', 'VIP STATUS'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Admission Date / تاريخ الدخول', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -5165,8 +5172,8 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
     
     // Add colored department separator row
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '']); // allocate row slots (7 columns)
-    sheet.mergeCells(startRow, 1, startRow, 7);
+    sheet.addRow(['', '', '', '', '', '', '', '']); // allocate row slots (8 columns)
+    sheet.mergeCells(startRow, 1, startRow, 8);
     const separatorCell = sheet.getCell(startRow, 1);
     const displayGroupName = group.groupName === "VIP" ? "VIP ICU" : group.groupName;
     separatorCell.value = `■  ${displayGroupName}  ■`;
@@ -5177,13 +5184,16 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
 
     // Add patients rows
     group.items.forEach((p) => {
+      const formattedDate = formatDateForSheet(p.date || p.admissionDate);
+      const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const rowValues = [
         serial++, 
         p.room, 
         p.name, 
         p.physician, 
         p.contractor, 
-        cleanAdmissionDateStr(p.date), 
+        responsibleOfficer,
+        formattedDate, 
         isPatientVip(p.name) ? "VIP" : ""
       ];
       const pRow = sheet.addRow(rowValues);
@@ -5210,8 +5220,9 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
   sheet.getColumn(3).width = 35;
   sheet.getColumn(4).width = 35;
   sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 25; // date
-  sheet.getColumn(7).width = 15; // VIP Status
+  sheet.getColumn(6).width = 20; // مسئول التعاقد
+  sheet.getColumn(7).width = 25; // date
+  sheet.getColumn(8).width = 15; // VIP Status
 }
 
 async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
@@ -5227,15 +5238,15 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
     return !DIALYSIS_EXCLUSIONS.some(kw => rowAsString.includes(kw));
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'حالات الغسيل الكلوي', 6);
+  await applyRefinedHeader(workbook, sheet, 'حالات الغسيل الكلوي', 7);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Booking Date / تاريخ الحجز'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -5334,8 +5345,8 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
     
     // Add colored department separator row
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '']); // allocate row slots (6 columns)
-    sheet.mergeCells(startRow, 1, startRow, 6);
+    sheet.addRow(['', '', '', '', '', '', '']); // allocate row slots (7 columns)
+    sheet.mergeCells(startRow, 1, startRow, 7);
     const separatorCell = sheet.getCell(startRow, 1);
     const displayGroupName = group.groupName === "VIP" ? "VIP ICU" : group.groupName;
     if (displayGroupName === "Floor 0") {
@@ -5350,7 +5361,9 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
 
     // Add patients rows
     group.items.forEach((p) => {
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, p.date];
+      const formattedDate = formatDateForSheet(p.date);
+      const responsibleOfficer = getResponsibleOfficer(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5376,6 +5389,7 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
   sheet.getColumn(4).width = 35;
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
+  sheet.getColumn(7).width = 20;
 }
 
 async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -5383,13 +5397,13 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:J1');
+  sheet.mergeCells('A1:K1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مديونيات الجهات والشركات / Insured Debts', 10);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات الجهات والشركات / Insured Debts', 11);
 
   const sortedDebts = [...debts];
 
@@ -5400,6 +5414,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     'Patient / اسم المريض', 
     'Physician / الطبيب المعالج',
     'Company / الشركة', 
+    'مسئول التعاقد',
     'Total Bill / إجمالي الحساب (Z)', 
     'Remaining Amount / المبلغ المتبقي', 
     'Remaining Pct / نسبة المتبقي (%)', 
@@ -5464,13 +5479,16 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
 
   const renderPatientRow = (p: any) => {
     const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const formattedDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(contractVal);
     const rowValues = [
-      p.colA ? String(p.colA).split(' ')[0] : '', 
+      formattedDate, 
       p.room || '', 
       p.mrn || '',
       p.colD || '', 
       p.physician || '',
       contractVal, 
+      responsibleOfficer,
       p.valZ, 
       p.valAB, 
       p.pct,
@@ -5509,17 +5527,17 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
-      } else if (colNumber === 8) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 9) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 10) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+      } else if (colNumber === 11) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } };
       }
 
-      if (colNumber === 7 || colNumber === 8) {
+      if (colNumber === 8 || colNumber === 9) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 9) {
+      } else if (colNumber === 10) {
         cell.numFmt = '0.0%';
       }
     });
@@ -5530,8 +5548,8 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
   // Add separator for 50% threshold if both groups exist
   if (above50.length > 0 && below50.length > 0) {
     const sepRowIdx = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '', '', '']);
-    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 10);
+    sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
     const separatorCell = sheet.getCell(sepRowIdx, 1);
     separatorCell.value = '■ متبقي أقل من 50% / Remaining Less Than 50% ■';
     separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4A148C' } };
@@ -5542,11 +5560,11 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
 
   below50.forEach(p => renderPatientRow(p));
 
-  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column I / 9)
+  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column J / 10)
   const lastRow = sheet.rowCount;
   if (lastRow >= 3) {
     sheet.addConditionalFormatting({
-      ref: `I3:I${lastRow}`,
+      ref: `J3:J${lastRow}`,
       rules: [
         {
           type: 'dataBar',
@@ -5569,6 +5587,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     { width: 34 }, // Patient Name
     { width: 28 }, // Physician
     { width: 26 }, // Company
+    { width: 20 }, // مسئول التعاقد
     { width: 18 }, // Total Bill
     { width: 20 }, // Remaining Amount
     { width: 18 }, // Remaining Pct
@@ -5677,15 +5696,15 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
   // Sort groups alphabetically by company name
   groupedItems.sort((a, b) => a.groupName.localeCompare(b.groupName));
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'المرضى المؤمنين (غير النقديين)', 8);
+  await applyRefinedHeader(workbook, sheet, 'المرضى المؤمنين (غير النقديين)', 9);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Booking Date / تاريخ الحجز', 'Financial Status / الحالة المالية', 'VIP STATUS'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'Financial Status / الحالة المالية', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -5715,8 +5734,8 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
     const rColors = companyColors[index % companyColors.length];
     
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '']); 
-    sheet.mergeCells(startRow, 1, startRow, 8);
+    sheet.addRow(['', '', '', '', '', '', '', '', '']); 
+    sheet.mergeCells(startRow, 1, startRow, 9);
     const separatorCell = sheet.getCell(startRow, 1);
     separatorCell.value = `■  ${group.groupName}  ■`;
     separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColors.badge } };
@@ -5725,13 +5744,16 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
     sheet.getRow(startRow).height = 26;
 
     group.items.forEach((p) => {
+      const formattedDate = formatDateForSheet(p.date);
+      const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const rowValues = [
         serial++, 
         p.room, 
         p.name, 
         p.physician, 
         p.contractor, 
-        p.date, 
+        responsibleOfficer,
+        formattedDate, 
         p.financialStatus,
         isPatientVip(p.name) ? "VIP" : ""
       ];
@@ -5750,7 +5772,7 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
         
         if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
-        } else if (colNumber === 8) {
+        } else if (colNumber === 9) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } }; 
         }
       });
@@ -5763,8 +5785,9 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
   sheet.getColumn(4).width = 28; 
   sheet.getColumn(5).width = 25; 
   sheet.getColumn(6).width = 20; 
-  sheet.getColumn(7).width = 22; 
-  sheet.getColumn(8).width = 15; 
+  sheet.getColumn(7).width = 20; 
+  sheet.getColumn(8).width = 22; 
+  sheet.getColumn(9).width = 15; 
 }
 
 async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -5772,13 +5795,13 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:J1');
+  sheet.mergeCells('A1:K1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مديونيات المرضى (نقدي) / Cash Debts', 10);
+  await applyRefinedHeader(workbook, sheet, 'مديونيات المرضى (نقدي) / Cash Debts', 11);
 
   const sortedDebts = [...debts];
 
@@ -5789,6 +5812,7 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     'Patient / اسم المريض', 
     'Physician / الطبيب المعالج',
     'Contract / التعاقد', 
+    'مسئول التعاقد',
     'Total Bill / إجمالي الحساب (Z)', 
     'Remaining Amount / المبلغ المتبقي', 
     'Remaining Pct / نسبة المتبقي (%)', 
@@ -5855,13 +5879,16 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
 
   const renderPatientRow = (p: any) => {
     const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const formattedDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(contractVal);
     const rowValues = [
-      p.colA ? String(p.colA).split(' ')[0] : '', 
+      formattedDate, 
       p.room || '', 
       p.mrn || '',
       p.colD || '', 
       p.physician || '',
       contractVal, 
+      responsibleOfficer,
       p.valZ, 
       p.valAB, 
       p.pct,
@@ -5901,17 +5928,17 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
-      } else if (colNumber === 8) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 9) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 10) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF1F4E79' } };
+      } else if (colNumber === 11) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } };
       }
 
-      if (colNumber === 7 || colNumber === 8) {
+      if (colNumber === 8 || colNumber === 9) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 9) {
+      } else if (colNumber === 10) {
         cell.numFmt = '0.0%';
       }
     });
@@ -5923,8 +5950,8 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   // 2. Add separator (representing 50% threshold)
   if (above50.length > 0 && below50.length > 0) {
     const sepRowIdx = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '', '', '']);
-    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 10);
+    sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
     const separatorCell = sheet.getCell(sepRowIdx, 1);
     separatorCell.value = '■ متبقي أقل من 50% / Remaining Less Than 50% ■';
     separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD32F2F' } }; // Rich crimson red badge
@@ -5936,11 +5963,11 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   // 3. Add patients with less than 50% remaining (< 50%)
   below50.forEach(p => renderPatientRow(p));
 
-  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column I / 9)
+  // Apply dataBar conditional formatting to 'Remaining Pct / نسبة المتبقي (%)' column (Column J / 10)
   const lastRow = sheet.rowCount;
   if (lastRow >= 3) {
     sheet.addConditionalFormatting({
-      ref: `I3:I${lastRow}`,
+      ref: `J3:J${lastRow}`,
       rules: [
         {
           type: 'dataBar',
@@ -5963,6 +5990,7 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     { width: 34 }, // Patient Name
     { width: 28 }, // Physician
     { width: 26 }, // Contract
+    { width: 20 }, // مسئول التعاقد
     { width: 18 }, // Total Bill
     { width: 20 }, // Remaining Amount
     { width: 18 }, // Remaining Pct
@@ -5975,13 +6003,13 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
     views: [{ rightToLeft: false }]
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'سجل تحويلات المرضى بين الغرف', 8);
+  await applyRefinedHeader(workbook, sheet, 'سجل تحويلات المرضى بين الغرف', 9);
 
   const headerLabels = [
     '# / م',
@@ -5991,7 +6019,8 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
     'الغرفة الحالية / Current Room',
     'تاريخ التحويل / Transfer Date',
     'الطبيب المعالج / Physician',
-    'الجهة والتعاقد / Contractor'
+    'الجهة والتعاقد / Contractor',
+    'مسئول التعاقد'
   ];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 28;
@@ -6018,6 +6047,9 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
       : (t.initialRoom || t.fromRoom || '-');
 
     const currRoom = t.currentRoom || t.toRoom || '-';
+    const rawDate = t.lastTransferDate || t.date || '';
+    const formattedDate = formatDateForSheet(rawDate);
+    const responsibleOfficer = getResponsibleOfficer(t.contractor);
 
     const rowValues = [
       serial++,
@@ -6025,9 +6057,10 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
       journeyStr,
       prevRoom,
       currRoom,
-      t.lastTransferDate || t.date || '-',
+      formattedDate || '-',
       t.physician || '-',
-      t.contractor || '-'
+      t.contractor || '-',
+      responsibleOfficer
     ];
 
     const row = sheet.addRow(rowValues);
@@ -6066,7 +6099,8 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
     { width: 18 },
     { width: 22 },
     { width: 26 },
-    { width: 24 }
+    { width: 24 },
+    { width: 20 }
   ];
 }
 
@@ -6083,7 +6117,8 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
     'To Room / Current',
     'Transfer Date',
     'Physician',
-    'Contractor'
+    'Contractor',
+    'مسئول التعاقد'
   ];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 24;
@@ -6104,6 +6139,9 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
       : (t.initialRoom || t.fromRoom || '-');
 
     const currRoom = t.currentRoom || t.toRoom || '-';
+    const rawDate = t.lastTransferDate || t.date || '';
+    const formattedDate = formatDateForSheet(rawDate);
+    const responsibleOfficer = getResponsibleOfficer(t.contractor);
 
     const row = sheet.addRow([
       serial++,
@@ -6111,9 +6149,10 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
       journeyStr,
       prevRoom,
       currRoom,
-      t.lastTransferDate || t.date || '-',
+      formattedDate || '-',
       t.physician || '-',
-      t.contractor || '-'
+      t.contractor || '-',
+      responsibleOfficer
     ]);
     row.alignment = { horizontal: 'center', vertical: 'middle' };
   });
@@ -6126,7 +6165,8 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
     { width: 16 },
     { width: 20 },
     { width: 24 },
-    { width: 22 }
+    { width: 22 },
+    { width: 20 }
   ];
 }
 
@@ -6137,15 +6177,15 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, `تطورات الحالات المنومة - ${sheetName}`, 8);
+  await applyRefinedHeader(workbook, sheet, `تطورات الحالات المنومة - ${sheetName}`, 9);
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ التحديث الطبي', 'الخطة الطبية (SBAR)'];
+  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ التحديث الطبي', 'الخطة الطبية (SBAR)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 35;
   headerRow.eachCell((cell) => {
@@ -6159,8 +6199,10 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
 
   plans.forEach((p, index) => {
     const sbarText = p.colAH || p.colAI || p.planText || p.notes || p.handover || p.progressNotes || p.colI || "خطة علاجية تحت المتابعة السريرية";
-    const updateDate = p.colAG || cleanAdmissionDateStr(p.colA) || "-";
-    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, updateDate, sbarText];
+    const updateDate = formatDateForSheet(p.colAG || p.colA) || "-";
+    const admissionDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(p.colM);
+    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, p.colM, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     const rowBgColor = (index % 2 === 1) ? bgColor : 'FFFFFFFF';
 
@@ -6172,7 +6214,7 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
         left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
         right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
       };
-      if (colNumber === 8) {
+      if (colNumber === 9) {
         cell.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
@@ -6188,7 +6230,8 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
   sheet.getColumn(7).width = 20;
-  sheet.getColumn(8).width = 80;
+  sheet.getColumn(8).width = 20;
+  sheet.getColumn(9).width = 80;
 }
 
 async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
@@ -6235,7 +6278,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
 
   const customBg = getCustomHeaderBgInfo();
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = ''; // Let standard text box overlay be the sole visual representor
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -6258,7 +6301,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
       });
       sheet.addImage(bgId, {
         tl: { col: 0, row: 0 } as any,
-        br: { col: 7, row: 1 } as any,
+        br: { col: 8, row: 1 } as any,
         editAs: 'oneCell'
       });
     } catch (err) {
@@ -6268,7 +6311,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
 
   // No logo added on this sheet header anymore per user request
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -6340,8 +6383,8 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
     
     // Add colored department separator row
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '']); // allocate row slots (7 columns)
-    sheet.mergeCells(startRow, 1, startRow, 7);
+    sheet.addRow(['', '', '', '', '', '', '', '']); // allocate row slots (8 columns)
+    sheet.mergeCells(startRow, 1, startRow, 8);
     const separatorCell = sheet.getCell(startRow, 1);
     const displayGroupName = group.groupName === "VIP" ? "VIP ICU" : group.groupName;
     separatorCell.value = `■  ${displayGroupName}  ■`;
@@ -6352,7 +6395,9 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
 
     // Add patients rows inside this department
     group.items.forEach((p) => {
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, p.date, isPatientVip(p.name) ? "VIP" : ""];
+      const formattedDate = formatDateForSheet(p.date);
+      const responsibleOfficer = getResponsibleOfficer(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate, isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -6370,7 +6415,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
         // Custom styling for serial index, Patient column and Room column to make it look prominent
         if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
-        } else if (colNumber === 7) {
+        } else if (colNumber === 8) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } }; // Red for VIP
         }
       });
@@ -6382,8 +6427,9 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
   sheet.getColumn(3).width = 32; // patient name
   sheet.getColumn(4).width = 28; // physician
   sheet.getColumn(5).width = 25; // contract
-  sheet.getColumn(6).width = 20; // date
-  sheet.getColumn(7).width = 15; // VIP Status
+  sheet.getColumn(6).width = 20; // مسئول التعاقد
+  sheet.getColumn(7).width = 20; // date
+  sheet.getColumn(8).width = 15; // VIP Status
 }
 
 function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
@@ -6414,7 +6460,7 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
     return a.room.localeCompare(b.room);
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'دخول';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -6422,9 +6468,9 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 6.0);
+  addLogosToSheet(workbook, sheet, 7.0);
 
-  const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الحجز'];
+  const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ الحجز'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   const headerHeaderColor = 'FFF4B084'; 
@@ -6440,7 +6486,7 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
     };
   });
 
-  sheet.autoFilter = 'A2:F2';
+  sheet.autoFilter = 'A2:G2';
 
   let currentGroup: string | null = null;
   let serial = 1;
@@ -6454,13 +6500,15 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
     else group = "ROOMS";
 
     if (currentGroup !== null && group !== currentGroup) {
-      const sepRow = sheet.addRow(['', '', '', '', '', '']);
+      const sepRow = sheet.addRow(['', '', '', '', '', '', '']);
       sepRow.eachCell({ includeEmpty: true }, (cell) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } };
       });
     }
 
-    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, p.date];
+    const formattedDate = formatDateForSheet(p.date);
+    const responsibleOfficer = getResponsibleOfficer(p.contractor);
+    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -6471,11 +6519,11 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
-      if (colNumber === 6) { 
-         if(p.date.includes("الخروج")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; 
-         else if(p.date.includes("اليوم")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } }; 
-         else if(p.date.includes("ملاحظه") || p.date.includes("ملاحظة")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } }; 
-         if(p.date.includes("عمليات") && !p.date.includes("اليوم")) cell.font = { name: 'Calibri', size: 11, color: { argb: 'FFFF0000'}, bold: true };
+      if (colNumber === 7) { 
+         if(String(p.date).includes("الخروج")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; 
+         else if(String(p.date).includes("اليوم")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } }; 
+         else if(String(p.date).includes("ملاحظه") || String(p.date).includes("ملاحظة")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } }; 
+         if(String(p.date).includes("عمليات") && !String(p.date).includes("اليوم")) cell.font = { name: 'Calibri', size: 11, color: { argb: 'FFFF0000'}, bold: true };
       }
       if (colNumber === 1 || colNumber === 2) cell.font = { bold: true };
     });
@@ -6488,6 +6536,7 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
   sheet.getColumn(4).width = 40;
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
+  sheet.getColumn(7).width = 20;
 }
 
 function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
@@ -6521,17 +6570,17 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
     return a.room.localeCompare(b.room);
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'خروج';
   titleCell.font = { name: 'Calibri', size: 36, bold: true };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 6.0);
+  addLogosToSheet(workbook, sheet, 7.0);
 
   const headerRow = sheet.getRow(2);
-  headerRow.values = ['', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الدخول'];
+  headerRow.values = ['', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ الدخول'];
   headerRow.eachCell((cell) => {
     cell.font = { name: 'Calibri', size: 10, bold: true };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4B084' } }; 
@@ -6545,7 +6594,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
   });
 
   sheet.columns = [
-    { width: 4 }, { width: 14 }, { width: 35 }, { width: 35 }, { width: 22 }, { width: 25 }
+    { width: 4 }, { width: 14 }, { width: 35 }, { width: 35 }, { width: 22 }, { width: 20 }, { width: 25 }
   ];
 
   let currentRowIdx = 3;
@@ -6575,6 +6624,8 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
       if (currentRowIdx > 3) currentRowIdx++; 
       currentGroup = group;
     }
+    const formattedDate = formatDateForSheet(patient.date || patient.admissionDate || "");
+    const responsibleOfficer = getResponsibleOfficer(patient.contractor);
     const row = sheet.getRow(currentRowIdx);
     row.values = [
       serialNum++, 
@@ -6582,7 +6633,8 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
       patient.name, 
       patient.physician, 
       patient.contractor, 
-      cleanAdmissionDateStr(patient.date || patient.admissionDate || "")
+      responsibleOfficer,
+      formattedDate
     ];
     row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       cell.font = { name: 'Calibri', size: 10, bold: true };
@@ -6618,7 +6670,7 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
     return a.room.localeCompare(b.room);
   });
 
-  sheet.mergeCells('A1:F1');
+  sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'حالات الغسيل الكلوي';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -6626,9 +6678,9 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 6.0);
+  addLogosToSheet(workbook, sheet, 7.0);
 
-  const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الحجز'];
+  const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ الحجز'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   const headerHeaderColor = 'FFE2EFDA'; // Light green for dialysis
@@ -6644,12 +6696,14 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
     };
   });
 
-  sheet.autoFilter = 'A2:F2';
+  sheet.autoFilter = 'A2:G2';
 
   let serial = 1;
 
   processedData.forEach((p) => {
-    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, p.date];
+    const formattedDate = formatDateForSheet(p.date);
+    const responsibleOfficer = getResponsibleOfficer(p.contractor);
+    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -6670,6 +6724,7 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
   sheet.getColumn(4).width = 40;
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
+  sheet.getColumn(7).width = 20;
 }
 
 function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -6677,7 +6732,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:I1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'مديونيات الجهات والشركات';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -6685,7 +6740,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 9.0);
+  addLogosToSheet(workbook, sheet, 10.0);
 
   const sortedDebts = [...debts].sort((a, b) => {
     const valA = parseFloat(String(a.colAB).replace(/[^0-9.-]+/g, "")) || 0;
@@ -6693,7 +6748,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     return valB - valA;
   });
 
-  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
+  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'مسئول التعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   headerRow.eachCell((cell) => {
@@ -6713,14 +6768,17 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
     const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const formattedDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(contractVal);
 
     const rowValues = [
-      p.colA ? String(p.colA).split(' ')[0] : '', 
+      formattedDate, 
       p.room || '', 
-      p.mrn || '',
+      p.mrn || '', 
       p.colD || '', 
-      p.physician || '',
+      p.physician || '', 
       contractVal, 
+      responsibleOfficer,
       valZ, 
       valAB, 
       pct
@@ -6739,9 +6797,9 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
-      if (colNumber === 7 || colNumber === 8) {
+      if (colNumber === 8 || colNumber === 9) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 9) {
+      } else if (colNumber === 10) {
         cell.numFmt = '0.0%';
       }
     });
@@ -6753,9 +6811,10 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   sheet.getColumn(4).width = 34;
   sheet.getColumn(5).width = 28;
   sheet.getColumn(6).width = 26;
-  sheet.getColumn(7).width = 18;
-  sheet.getColumn(8).width = 20;
-  sheet.getColumn(9).width = 18;
+  sheet.getColumn(7).width = 20;
+  sheet.getColumn(8).width = 18;
+  sheet.getColumn(9).width = 20;
+  sheet.getColumn(10).width = 18;
 }
 
 function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
@@ -6763,7 +6822,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:I1');
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'المديونيات (نقدي)';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -6771,7 +6830,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 9.0);
+  addLogosToSheet(workbook, sheet, 10.0);
 
   // Sort debts by column AB (index 27/p.colAB) descending
   const sortedDebts = [...debts].sort((a, b) => {
@@ -6780,7 +6839,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     return valB - valA;
   });
 
-  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
+  const headerLabels = ['تاريخ الدخول', 'رقم الغرفة', 'كود المريض (MRN)', 'اسم المريض', 'الطبيب المعالج', 'الجهة والتعاقد', 'مسئول التعاقد', 'إجمالي الحساب (Z)', 'المبلغ المتبقي', 'نسبة المتبقي (%)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 20;
   headerRow.eachCell((cell) => {
@@ -6800,14 +6859,17 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
     const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const formattedDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(contractVal);
 
     const rowValues = [
-      p.colA ? String(p.colA).split(' ')[0] : '', 
+      formattedDate, 
       p.room || '', 
-      p.mrn || '',
+      p.mrn || '', 
       p.colD || '', 
-      p.physician || '',
+      p.physician || '', 
       contractVal, 
+      responsibleOfficer,
       valZ, 
       valAB, 
       pct
@@ -6826,9 +6888,9 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
-      if (colNumber === 7 || colNumber === 8) {
+      if (colNumber === 8 || colNumber === 9) {
         cell.numFmt = '#,##0.00';
-      } else if (colNumber === 9) {
+      } else if (colNumber === 10) {
         cell.numFmt = '0.0%';
       }
     });
@@ -6840,9 +6902,10 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   sheet.getColumn(4).width = 34;
   sheet.getColumn(5).width = 28;
   sheet.getColumn(6).width = 26;
-  sheet.getColumn(7).width = 18;
-  sheet.getColumn(8).width = 20;
-  sheet.getColumn(9).width = 18;
+  sheet.getColumn(7).width = 20;
+  sheet.getColumn(8).width = 18;
+  sheet.getColumn(9).width = 20;
+  sheet.getColumn(10).width = 18;
 }
 
 function getActiveVipCount(): number {
@@ -9194,14 +9257,14 @@ app.get('/api/reports/unified', async (req, res) => {
       });
 
       // Title row
-      sheet.mergeCells('A1:G1');
+      sheet.mergeCells('A1:H1');
       const titleCell = sheet.getCell('A1');
       titleCell.value = config.title;
       titleCell.font = { size: 16, bold: true, name: 'Calibri' };
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
       // Headers
-      const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ الحجز', 'الحالة'];
+      const headerLabels = ['#', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ الحجز', 'الحالة'];
       const headerRow = sheet.addRow(headerLabels);
       headerRow.height = 25;
       headerRow.eachCell((cell) => {
@@ -9243,8 +9306,8 @@ app.get('/api/reports/unified', async (req, res) => {
 
         if (room && !patient) {
           // Grouping Row
-          const groupRow = sheet.addRow(['', room, '', '', '', '', '']);
-          sheet.mergeCells(`B${groupRow.number}:G${groupRow.number}`);
+          const groupRow = sheet.addRow(['', room, '', '', '', '', '', '']);
+          sheet.mergeCells(`B${groupRow.number}:H${groupRow.number}`);
           const groupCell = groupRow.getCell(2);
           groupCell.fill = {
             type: 'pattern',
@@ -9256,13 +9319,16 @@ app.get('/api/reports/unified', async (req, res) => {
           groupRow.height = 20;
         } else if (patient) {
           // Patient Row
+          const formattedDate = formatDateForSheet(date);
+          const responsibleOfficer = getResponsibleOfficer(contractor);
           const pValues = [
             rowCount++,
             room,      // Bed
             patient,   // Patient
             physician, // Physician
             contractor,// Contractor
-            date,      // Date
+            responsibleOfficer,
+            formattedDate, // Date
             ''         // Status
           ];
           const pRow = sheet.addRow(pValues);
@@ -9274,11 +9340,6 @@ app.get('/api/reports/unified', async (req, res) => {
               right: { style: 'thin' }
             };
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
-            // Ensure type is text unless it's the index
-            const colIndex = cell.fullAddress.col;
-            if (colIndex > 1) {
-              // Values are already strings, no need to manually set read-only cell.type
-            }
           });
         }
       });
@@ -9290,7 +9351,8 @@ app.get('/api/reports/unified', async (req, res) => {
       sheet.getColumn(4).width = 30;
       sheet.getColumn(5).width = 25;
       sheet.getColumn(6).width = 20;
-      sheet.getColumn(7).width = 15;
+      sheet.getColumn(7).width = 20;
+      sheet.getColumn(8).width = 15;
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -9891,7 +9953,7 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
     views: [{ rightToLeft: false }] 
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = `تطورات الحالات المنومة - ${sheetName}`;
   titleCell.font = { size: 22, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -9899,9 +9961,9 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 8.0);
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'تاريخ التحديث الطبي', 'الخطة الطبية (SBAR)'];
+  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'تاريخ التحديث الطبي', 'الخطة الطبية (SBAR)'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 35;
   headerRow.eachCell((cell) => {
@@ -9916,8 +9978,10 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
   plans.forEach((p, index) => {
     // SBAR data from source with robust clinical fallback
     const sbarText = p.colAH || p.colAI || p.planText || p.notes || p.handover || p.progressNotes || p.colI || "خطة علاجية تحت المتابعة السريرية";
-    const updateDate = p.colAG || cleanAdmissionDateStr(p.colA) || "-";
-    const rowValues = [index + 1, cleanAdmissionDateStr(p.colA), p.colB, p.colD, p.colW, p.colM, updateDate, sbarText];
+    const updateDate = formatDateForSheet(p.colAG || p.colA) || "-";
+    const admissionDate = formatDateForSheet(p.colA);
+    const responsibleOfficer = getResponsibleOfficer(p.colM);
+    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, p.colM, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     
     // Alternating background logic: White then Header Color
@@ -9931,7 +9995,7 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
         left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
         right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
       };
-      if (colNumber === 8) {
+      if (colNumber === 9) {
         cell.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
@@ -9947,7 +10011,8 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
   sheet.getColumn(5).width = 25;
   sheet.getColumn(6).width = 20;
   sheet.getColumn(7).width = 20;
-  sheet.getColumn(8).width = 80;
+  sheet.getColumn(8).width = 20;
+  sheet.getColumn(9).width = 80;
 }
 
 app.post('/api/reports/medical_plans_formatted', async (req, res) => {
@@ -10249,7 +10314,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
   });
 
   const customBg = getCustomHeaderBgInfo();
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -10272,7 +10337,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
       });
       sheet.addImage(bgId, {
         tl: { col: 0, row: 0 } as any,
-        br: { col: 8, row: 1 } as any,
+        br: { col: 9, row: 1 } as any,
         editAs: 'oneCell'
       });
     } catch (err) {
@@ -10280,7 +10345,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
     }
   }
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'درجة الإقامة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'درجة الإقامة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -10331,8 +10396,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
     const rColors = getGroupColors(group.groupName);
     
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '']); 
-    sheet.mergeCells(startRow, 1, startRow, 8);
+    sheet.addRow(['', '', '', '', '', '', '', '', '']); 
+    sheet.mergeCells(startRow, 1, startRow, 9);
     const separatorCell = sheet.getCell(startRow, 1);
     separatorCell.value = `■  ${group.groupName}  ■`;
     separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColors.badge } };
@@ -10342,7 +10407,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
 
     group.items.forEach((p) => {
       const category = getAccommodationCategory(p.room);
-      const rowValues = [serial++, p.room, category, p.name, p.physician, p.contractor, p.date, isPatientVip(p.name) ? "VIP" : ""];
+      const rowValues = [serial++, p.room, category, p.name, p.physician, p.contractor, getResponsibleOfficer(p.contractor), formatDateForSheet(p.date), isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -10376,7 +10441,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
             cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: colorHex } };
           }
         }
-        if (colNumber === 8) {
+        if (colNumber === 9) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } };
         }
       });
@@ -10390,7 +10455,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
   sheet.getColumn(5).width = 28;
   sheet.getColumn(6).width = 25;
   sheet.getColumn(7).width = 20;
-  sheet.getColumn(8).width = 15;
+  sheet.getColumn(8).width = 20;
+  sheet.getColumn(9).width = 15;
 }
 
 async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: any[][]) {
@@ -11989,7 +12055,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
   });
 
   const customBg = getCustomHeaderBgInfo();
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -12012,7 +12078,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       });
       sheet.addImage(bgId, {
         tl: { col: 0, row: 0 } as any,
-        br: { col: 7, row: 1 } as any,
+        br: { col: 8, row: 1 } as any,
         editAs: 'oneCell'
       });
     } catch (err) {
@@ -12020,7 +12086,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
     }
   }
 
-  const headerRaw = ['# / الرقم', 'Room / الغرفة', 'Accommodation Degree / درجة الإقامة', 'Patient / اسم المريض', 'Contract / التعاقد', 'Speciality / التخصص', 'Date of Admission / تاريخ الدخول'];
+  const headerRaw = ['# / الرقم', 'Room / الغرفة', 'Accommodation Degree / درجة الإقامة', 'Patient / اسم المريض', 'Contract / التعاقد', 'مسئول التعاقد', 'Speciality / التخصص', 'Date of Admission / تاريخ الدخول'];
   const headerRow = sheet.addRow(headerRaw);
   headerRow.height = 25;
   headerRow.eachCell(cell => {
@@ -12060,8 +12126,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
     const colors = zoneColors[zoneName] || { badge: 'FF455A64', row: 'FFF5F7F8' };
     
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '']);
-    sheet.mergeCells(startRow, 1, startRow, 7);
+    sheet.addRow(['', '', '', '', '', '', '', '']);
+    sheet.mergeCells(startRow, 1, startRow, 8);
     const separatorCell = sheet.getCell(startRow, 1);
     
     separatorCell.value = `■  ${zoneName} (Early Discharge Cases: ${list.length})  ■`;
@@ -12093,7 +12159,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         }
       }
 
-      const pRow = sheet.addRow([serial++, p.room, category, p.name, p.contractor, specialty, p.date]);
+      const pRow = sheet.addRow([serial++, p.room, category, p.name, p.contractor, getResponsibleOfficer(p.contractor), specialty, formatDateForSheet(p.date)]);
       pRow.height = 24;
       pRow.eachCell((cell, colIndex) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
@@ -12134,8 +12200,9 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
   sheet.getColumn(3).width = 30;
   sheet.getColumn(4).width = 35;
   sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 25;
+  sheet.getColumn(6).width = 20;
   sheet.getColumn(7).width = 25;
+  sheet.getColumn(8).width = 25;
 }
 
 app.get('/api/reports/early_discharge_cases', async (req, res) => {
@@ -12192,7 +12259,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
     return roomA.localeCompare(roomB);
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'بيان بالحالات المنومة و المرافقين';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -12200,9 +12267,9 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 8.0);
+  addLogosToSheet(workbook, sheet, 9.0);
 
-  const headerLabels = ['#', 'تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'المرافق', 'VIP STATUS'];
+  const headerLabels = ['#', 'تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'المرافق', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -12231,7 +12298,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
     else if (roomStr.includes("VIP")) group = "VIP";
 
     if (currentGroup !== null && group !== currentGroup) {
-      const sepRow = sheet.addRow(['', '', '', '', '', '', '', '']);
+      const sepRow = sheet.addRow(['', '', '', '', '', '', '', '', '']);
       sepRow.eachCell({ includeEmpty: true }, (cell) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: separatorColor } };
         cell.border = {
@@ -12241,7 +12308,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
     }
 
     const isClosedUnit = COMPANION_EXCLUDED_DEPTS.some(dept => roomStr.includes(dept)) || roomStr === "OR" || roomStr.includes(" OR ") || roomStr.startsWith("OR ") || roomStr.endsWith(" OR");
-    const rowValues = [serial++, p.colA, p.colB, p.colD, p.colW, p.colM, isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
+    const rowValues = [serial++, formatDateForSheet(p.colA), p.colB, p.colD, p.colW, p.colM, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = {
@@ -12249,7 +12316,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
-      if (colNumber === 8) {
+      if (colNumber === 9) {
         if (cell.value === "VIP") {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE8D6' } }; // Soft light VIP amber background
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD84315' } }; // Dark red/amber for VIP
@@ -12267,8 +12334,9 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
   sheet.getColumn(4).width = 30;
   sheet.getColumn(5).width = 30;
   sheet.getColumn(6).width = 20;
-  sheet.getColumn(7).width = 25;
-  sheet.getColumn(8).width = 15;
+  sheet.getColumn(7).width = 20;
+  sheet.getColumn(8).width = 25;
+  sheet.getColumn(9).width = 15;
 }
 
 async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
@@ -12329,15 +12397,15 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
     return roomA.localeCompare(roomB);
   });
 
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'بيان المرافقين', 8);
+  await applyRefinedHeader(workbook, sheet, 'بيان المرافقين', 9);
 
-  const headerLabels = ['#', 'تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'المرافق', 'VIP STATUS'];
+  const headerLabels = ['#', 'تاريخ الحجز', 'رقم الغرفة', 'اسم المريض', 'الطبيب المعالج', 'التعاقد', 'مسئول التعاقد', 'المرافق', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -12403,8 +12471,8 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
 
     if (group !== currentGroup) {
       const sepRowIdx = sheet.rowCount + 1;
-      sheet.addRow(['', '', '', '', '', '', '', '']);
-      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 8);
+      sheet.addRow(['', '', '', '', '', '', '', '', '']);
+      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 9);
       const separatorCell = sheet.getCell(sepRowIdx, 1);
       const displayGroupName = group === "VIP" ? "VIP ICU" : group;
       separatorCell.value = `■  ${displayGroupName}  ■`;
@@ -12417,11 +12485,12 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
     const isClosedUnit = isClosedUnitByDept;
     const rowValues = [
       serial++, 
-      p.colA, 
+      formatDateForSheet(p.colA), 
       p.colB, 
       p.colD, 
       p.colW, 
       p.colM, 
+      getResponsibleOfficer(p.colM),
       isClosedUnit ? "" : p.colI,
       isPatientVip(p.colD) ? "VIP" : ""
     ];
@@ -12440,7 +12509,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       if (colNumber === 3 || colNumber === 4) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
-      } else if (colNumber === 8) {
+      } else if (colNumber === 9) {
         if (cell.value === "VIP") {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE8D6' } }; // Soft light VIP amber background
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD84315' } }; // Elegant dark amber/red text
@@ -12453,7 +12522,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
   });
 
   sheet.columns = [
-    { width: 8 }, { width: 18 }, { width: 15 }, { width: 30 }, { width: 30 }, { width: 20 }, { width: 25 }, { width: 15 }
+    { width: 8 }, { width: 18 }, { width: 15 }, { width: 30 }, { width: 30 }, { width: 20 }, { width: 20 }, { width: 25 }, { width: 15 }
   ];
 }
 
@@ -12542,13 +12611,13 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     return roomA.localeCompare(roomB);
   });
 
-  sheet.mergeCells('A1:K1');
+  sheet.mergeCells('A1:L1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'مرضى متجاوزي متوسط الإقامة / Patients Exceeding Benchmark ALOS', 11);
+  await applyRefinedHeader(workbook, sheet, 'مرضى متجاوزي متوسط الإقامة / Patients Exceeding Benchmark ALOS', 12);
 
   // Top Executive Summary KPI block
   const totalExceeding = sortedData.length;
@@ -12558,14 +12627,14 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
 
   const kpiHeaderRow = sheet.addRow([
     'الحالات المتجاوزة / Exceeding Cases', '', '',
-    'متوسط التجاوز / Avg Excess Stay', '',
+    'متوسط التجاوز / Avg Excess Stay', '', '',
     'أقصى تجاوز / Max Excess Stay', '', '',
     'حالات حرجة (+7 أيام) / Critical (+7 Days)', '', ''
   ]);
   sheet.mergeCells(`A${kpiHeaderRow.number}:C${kpiHeaderRow.number}`);
-  sheet.mergeCells(`D${kpiHeaderRow.number}:E${kpiHeaderRow.number}`);
-  sheet.mergeCells(`F${kpiHeaderRow.number}:H${kpiHeaderRow.number}`);
-  sheet.mergeCells(`I${kpiHeaderRow.number}:K${kpiHeaderRow.number}`);
+  sheet.mergeCells(`D${kpiHeaderRow.number}:F${kpiHeaderRow.number}`);
+  sheet.mergeCells(`G${kpiHeaderRow.number}:I${kpiHeaderRow.number}`);
+  sheet.mergeCells(`J${kpiHeaderRow.number}:L${kpiHeaderRow.number}`);
   kpiHeaderRow.height = 24;
   kpiHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } };
@@ -12576,23 +12645,23 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
 
   const kpiValRow = sheet.addRow([
     `${totalExceeding} Cases`, '', '',
-    `+${avgExcess} Days`, '',
+    `+${avgExcess} Days`, '', '',
     `+${maxExcess} Days`, '', '',
     `${criticalCases} Critical Cases`, '', ''
   ]);
   sheet.mergeCells(`A${kpiValRow.number}:C${kpiValRow.number}`);
-  sheet.mergeCells(`D${kpiValRow.number}:E${kpiValRow.number}`);
-  sheet.mergeCells(`F${kpiValRow.number}:H${kpiValRow.number}`);
-  sheet.mergeCells(`I${kpiValRow.number}:K${kpiValRow.number}`);
+  sheet.mergeCells(`D${kpiValRow.number}:F${kpiValRow.number}`);
+  sheet.mergeCells(`G${kpiValRow.number}:I${kpiValRow.number}`);
+  sheet.mergeCells(`J${kpiValRow.number}:L${kpiValRow.number}`);
   kpiValRow.height = 24;
   kpiValRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber <= 3 ? 'FFEBEE' : colNumber <= 5 ? 'FFF3E0' : colNumber <= 8 ? 'FFEBEE' : 'FFCDD2' } };
-    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: colNumber <= 3 ? 'FFC62828' : colNumber <= 5 ? 'FFE65100' : colNumber <= 8 ? 'FFC62828' : 'FFB71C1C' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber <= 3 ? 'FFEBEE' : colNumber <= 6 ? 'FFF3E0' : colNumber <= 9 ? 'FFEBEE' : 'FFCDD2' } };
+    cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: colNumber <= 3 ? 'FFC62828' : colNumber <= 6 ? 'FFE65100' : colNumber <= 9 ? 'FFC62828' : 'FFB71C1C' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
     cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
   });
 
-  const blankRow = sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+  const blankRow = sheet.addRow(['', '', '', '', '', '', '', '', '', '', '', '']);
   blankRow.height = 10;
 
   const headerLabels = [
@@ -12604,6 +12673,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     'الطبيب المعالج / Treating Physician',
     'التخصص / Specialty',
     'الجهة والتعاقد / Contractor', 
+    'مسئول التعاقد',
     'المدة الفعلية / Actual LOS', 
     'المعيار / Benchmark ALOS',
     'أيام التجاوز / Excess Days'
@@ -12658,8 +12728,8 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
 
     if (group !== currentGroup) {
       const sepRowIdx = sheet.rowCount + 1;
-      sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
-      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
+      sheet.addRow(['', '', '', '', '', '', '', '', '', '', '', '']);
+      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 12);
       const separatorCell = sheet.getCell(sepRowIdx, 1);
       
       const displayGroupName = group === "VIP" ? "VIP ICU" : group;
@@ -12673,13 +12743,14 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     const excessDays = p.los - p.alos;
     const rowValues = [
       serial++, 
-      p.date, 
+      formatDateForSheet(p.date), 
       p.room, 
       p.mrn,
       p.name, 
       p.physician || "-",
       p.specialty || "-",
       p.contractor || "-", 
+      getResponsibleOfficer(p.contractor),
       `${p.los} Days`, 
       `${p.alos} Days`,
       `+${excessDays.toFixed(0)} Days (${((excessDays / (p.alos || 1)) * 100).toFixed(0)}% Over)`
@@ -12700,10 +12771,10 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
-      if (colNumber === 9) {
+      if (colNumber === 10) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
       }
-      if (colNumber === 11) {
+      if (colNumber === 12) {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } };
       }
@@ -12712,7 +12783,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
   });
 
   sheet.columns = [
-    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 18 }, { width: 18 }, { width: 26 }
+    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 26 }
   ];
 }
 
@@ -12726,8 +12797,8 @@ async function buildRefinedORSheetTab(
     views: [{ rightToLeft: false }]
   });
 
-  // Merge top title cell across 12 columns
-  sheet.mergeCells('A1:L1');
+  // Merge top title cell across 13 columns
+  sheet.mergeCells('A1:M1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -12735,7 +12806,7 @@ async function buildRefinedORSheetTab(
 
   const displayDate = formatDateToDDMMYYYY(listDate);
   const headerTitleText = displayDate ? `لستة العمليات ليوم ${displayDate} (${tabName})` : `لستة العمليات الجراحية (${tabName})`;
-  await applyRefinedHeader(workbook, sheet, headerTitleText, 12);
+  await applyRefinedHeader(workbook, sheet, headerTitleText, 13);
 
   const headerLabels = [
     '#', 
@@ -12749,6 +12820,7 @@ async function buildRefinedORSheetTab(
     'الجراح / Surgeon Name',
     'الأجهزة والتاور / Equipment',
     'الجهة / Contractor',
+    'مسئول التعاقد',
     'Status / حالة المريض'
   ];
 
@@ -12773,8 +12845,8 @@ async function buildRefinedORSheetTab(
 
     const gColors = group.groupColors;
     const sepRowIdx = sheet.rowCount + 1;
-    sheet.addRow(Array(12).fill(''));
-    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 12);
+    sheet.addRow(Array(13).fill(''));
+    sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 13);
     const separatorCell = sheet.getCell(sepRowIdx, 1);
     
     separatorCell.value = `■  ${group.groupTitle}  (عدد الحالات: ${group.items.length})  ■`;
@@ -12796,6 +12868,7 @@ async function buildRefinedORSheetTab(
         p.surgeonName, 
         p.column2, 
         p.contractorName,
+        getResponsibleOfficer(p.contractorName),
         p.dischargeStatus || 'Not Admitted / غير منوم'
       ];
       
@@ -12815,7 +12888,7 @@ async function buildRefinedORSheetTab(
         if (colNumber === 5 || colNumber === 9) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
         }
-        if (colNumber === 12) {
+        if (colNumber === 13) {
           // Highlight discharged in soft red, admitted in soft green, etc
           if (String(p.dischargeStatus).includes('Discharged')) {
             cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFA10D0D' } };
@@ -12839,6 +12912,7 @@ async function buildRefinedORSheetTab(
     { width: 22 },  // Surgeon Name
     { width: 16 },  // Equipment
     { width: 22 },  // Contractor
+    { width: 20 },  // مسئول التعاقد
     { width: 24 }   // Status
   ];
 }
@@ -13629,13 +13703,13 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
   const headerTitleText = `Over-Listed OR Cases`;
 
   // Merge top title cell across columns
-  sheet.mergeCells('A1:H1');
+  sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, headerTitleText, 8);
+  await applyRefinedHeader(workbook, sheet, headerTitleText, 9);
 
   const headerLabels = [
     '#', 
@@ -13645,6 +13719,7 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
     'الرقم الطبي / MRN',
     'الطبيب المعالج / Treating Physician',
     'الجهة المتعاقدة / Contractor',
+    'مسئول التعاقد',
     'تاريخ الدخول / Admission Date'
   ];
 
@@ -13673,7 +13748,8 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
       p.mrn || '',
       p.physician || '',
       p.contractor || '',
-      p.admissionDate || ''
+      getResponsibleOfficer(p.contractor),
+      formatDateForSheet(p.admissionDate)
     ];
 
     const pRow = sheet.addRow(rowValues);
@@ -13697,7 +13773,8 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
   sheet.getColumn(5).width = 18; 
   sheet.getColumn(6).width = 30; 
   sheet.getColumn(7).width = 25; 
-  sheet.getColumn(8).width = 25; 
+  sheet.getColumn(8).width = 20; 
+  sheet.getColumn(9).width = 25; 
 }
 
 async function addRefinedORReconciliationSheet(
@@ -13712,14 +13789,14 @@ async function addRefinedORReconciliationSheet(
 
   const headerTitleText = `Formal TOTAL OR List`;
 
-  // Merge top title cell across 9 columns (A to I)
-  sheet.mergeCells('A1:I1');
+  // Merge top title cell across 10 columns (A to J)
+  sheet.mergeCells('A1:J1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, headerTitleText, 9);
+  await applyRefinedHeader(workbook, sheet, headerTitleText, 10);
 
   const headerLabels = [
     '#', 
@@ -13729,6 +13806,7 @@ async function addRefinedORReconciliationSheet(
     'الرقم الطبي / MRN',
     'الطبيب المعالج / Treating Physician',
     'الجهة المتعاقدة / Contractor',
+    'مسئول التعاقد',
     'تاريخ الدخول / Admission Date',
     'الحالة بمطابقة اللستة / Status'
   ];
@@ -13800,7 +13878,8 @@ async function addRefinedORReconciliationSheet(
       displayMRN,
       p.surgeonName || p.physician || '',
       displayContractor,
-      displayAdmissionDate || p.admissionDate || '',
+      getResponsibleOfficer(displayContractor),
+      formatDateForSheet(displayAdmissionDate || p.admissionDate),
       finalStatusText
     ];
 
@@ -13817,7 +13896,7 @@ async function addRefinedORReconciliationSheet(
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
 
-      if (colNumber === 9) {
+      if (colNumber === 10) {
         if (p.isDischarged) {
           cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFA10D0D' } }; 
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } }; 
@@ -13842,7 +13921,8 @@ async function addRefinedORReconciliationSheet(
       p.mrn || '',
       p.physician || '',
       p.contractor || '',
-      p.admissionDate || '',
+      getResponsibleOfficer(p.contractor),
+      formatDateForSheet(p.admissionDate),
       p.isDischarged 
         ? 'Over List - Discharged / خارج اللستة - تم الخروج'
         : 'Over List - Currently Admitted / خارج اللستة - منوم حالياً'
@@ -13861,7 +13941,7 @@ async function addRefinedORReconciliationSheet(
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
 
-      if (colNumber === 9) {
+      if (colNumber === 10) {
         if (p.isDischarged) {
           cell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFC2185B' } }; // Pink color
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4EC' } }; 
@@ -13880,8 +13960,9 @@ async function addRefinedORReconciliationSheet(
   sheet.getColumn(5).width = 18; 
   sheet.getColumn(6).width = 30; 
   sheet.getColumn(7).width = 25; 
-  sheet.getColumn(8).width = 25; 
-  sheet.getColumn(9).width = 30; 
+  sheet.getColumn(8).width = 20; 
+  sheet.getColumn(9).width = 25; 
+  sheet.getColumn(10).width = 30; 
 }
 
 app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
@@ -15148,13 +15229,13 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
   });
 
   // 4. Header title and high-resolution banner
-  sheet.mergeCells('A1:K1');
+  sheet.mergeCells('A1:L1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'بيان مدد الإقامة للمنومين / Inpatient Length of Stay (LOS)', 11);
+  await applyRefinedHeader(workbook, sheet, 'بيان مدد الإقامة للمنومين / Inpatient Length of Stay (LOS)', 12);
 
   // 5. Executive Summary KPI block
   const totalInpatients = sortedData.length;
@@ -15173,13 +15254,14 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     'متوسط المعيار / Target ALOS', '',
     'تجاوزوا المعيار / Exceeding ALOS', '',
     'نسبة التجاوز / Excess Rate', '',
-    'أطول إقامة / Max Stay'
+    'أطول إقامة / Max Stay', ''
   ]);
   sheet.mergeCells(`A${kpiHeaderRow.number}:B${kpiHeaderRow.number}`);
   sheet.mergeCells(`C${kpiHeaderRow.number}:D${kpiHeaderRow.number}`);
   sheet.mergeCells(`E${kpiHeaderRow.number}:F${kpiHeaderRow.number}`);
   sheet.mergeCells(`G${kpiHeaderRow.number}:H${kpiHeaderRow.number}`);
   sheet.mergeCells(`I${kpiHeaderRow.number}:J${kpiHeaderRow.number}`);
+  sheet.mergeCells(`K${kpiHeaderRow.number}:L${kpiHeaderRow.number}`);
   kpiHeaderRow.height = 24;
   kpiHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF004D40' } };
@@ -15194,13 +15276,14 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     `${avgTargetALOS} Days`, '',
     `${exceedingCount} Cases`, '',
     `${excessRate}`, '',
-    `${maxStay} Days`
+    `${maxStay} Days`, ''
   ]);
   sheet.mergeCells(`A${kpiValRow.number}:B${kpiValRow.number}`);
   sheet.mergeCells(`C${kpiValRow.number}:D${kpiValRow.number}`);
   sheet.mergeCells(`E${kpiValRow.number}:F${kpiValRow.number}`);
   sheet.mergeCells(`G${kpiValRow.number}:H${kpiValRow.number}`);
   sheet.mergeCells(`I${kpiValRow.number}:J${kpiValRow.number}`);
+  sheet.mergeCells(`K${kpiValRow.number}:L${kpiValRow.number}`);
   kpiValRow.height = 24;
   kpiValRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     const isExceedingCol = colNumber >= 7 && colNumber <= 10;
@@ -15210,7 +15293,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
   });
 
-  const blankRow = sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
+  const blankRow = sheet.addRow(Array(12).fill(''));
   blankRow.height = 10;
 
   // 6. Bilingual Table Headers
@@ -15223,6 +15306,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     'الطبيب المعالج / Treating Physician',
     'التخصص / Specialty',
     'الجهة والتعاقد / Contractor', 
+    'مسئول التعاقد',
     'مدة الإقامة الحالية / Current LOS', 
     'المعيار المستهدف / Target ALOS', 
     'حالة الإقامة والتجاوز / Stay Status & Variance'
@@ -15277,8 +15361,8 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
 
     if (group !== currentGroup) {
       const sepRowIdx = sheet.rowCount + 1;
-      sheet.addRow(['', '', '', '', '', '', '', '', '', '', '']);
-      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 11);
+      sheet.addRow(Array(12).fill(''));
+      sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 12);
       const separatorCell = sheet.getCell(sepRowIdx, 1);
       
       const displayGroupName = group === "VIP" ? "VIP ICU" : group;
@@ -15317,13 +15401,14 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
 
     const rowValues = [
       serial++, 
-      p.date, 
+      formatDateForSheet(p.date), 
       p.room, 
       p.mrn,
       p.name, 
       p.physician || "-",
       p.specialty || "-",
       p.contractor || "-", 
+      getResponsibleOfficer(p.contractor),
       `${p.los} Days`, 
       p.alos > 0 ? `${p.alos} Days` : "-",
       statusText
@@ -15332,7 +15417,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     const pRow = sheet.addRow(rowValues);
     pRow.height = 24;
     pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber === 11 ? statusBg : rColors.row } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colNumber === 12 ? statusBg : rColors.row } };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
         bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
@@ -15340,14 +15425,14 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11, color: { argb: colNumber === 11 ? statusTextColor : 'FF000000' } };
+      cell.font = { name: 'Calibri', size: 11, color: { argb: colNumber === 12 ? statusTextColor : 'FF000000' } };
       if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
-      if (colNumber === 9 && p.alos > 0 && p.los > p.alos) {
+      if (colNumber === 10 && p.alos > 0 && p.los > p.alos) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
       }
-      if (colNumber === 11) {
+      if (colNumber === 12) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: statusTextColor } };
       }
     });
@@ -15355,7 +15440,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
   });
 
   sheet.columns = [
-    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 18 }, { width: 18 }, { width: 28 }
+    { width: 6 }, { width: 18 }, { width: 14 }, { width: 16 }, { width: 32 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 28 }
   ];
 }
 
@@ -15450,7 +15535,7 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   });
 
   // 3. Header Setup
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'Inpatient Occupancy Summary / ملخص إشغال الأقسام الداخلية';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -15458,9 +15543,9 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 8.0);
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم السرير / الغرفة', 'اسم المريض', 'التعاقد', 'الطبيب المعالج / Treating Physician', 'ملاحظات'];
+  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم السرير / الغرفة', 'اسم المريض', 'التعاقد', 'مسئول التعاقد', 'الطبيب المعالج / Treating Physician', 'ملاحظات'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -15536,8 +15621,8 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     totalRoomsCount += count;
 
     // Group Header Row
-    const groupHeader = sheet.addRow([`${group.name} - (Total Beds: ${count}, Occupied: ${groupOccupied} - ${perc}%)`, '', '', '', '', '', '']);
-    sheet.mergeCells(`A${groupHeader.number}:G${groupHeader.number}`);
+    const groupHeader = sheet.addRow([`${group.name} - (Total Beds: ${count}, Occupied: ${groupOccupied} - ${perc}%)`, '', '', '', '', '', '', '']);
+    sheet.mergeCells(`A${groupHeader.number}:H${groupHeader.number}`);
     groupHeader.eachCell({ includeEmpty: true }, (cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: group.color } };
       cell.font = { bold: true, size: 12 };
@@ -15547,7 +15632,7 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
     // Patient rows inside group (Only occupied)
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, gr.date, gr.room, gr.name, gr.contract, gr.physician, gr.notes]);
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, gr.contract, getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
       pRow.eachCell((cell) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
@@ -15565,8 +15650,8 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
   // 5. Final Summary Row
   const totalPerc = totalRoomsCount > 0 ? ((totalOccupiedCount / totalRoomsCount) * 100).toFixed(1) : "0";
-  const summaryRow = sheet.addRow([`TOTAL INPATIENT - (Total Beds: ${totalRoomsCount}, Total Occupied: ${totalOccupiedCount} - ${totalPerc}%)`, '', '', '', '', '', '']);
-  sheet.mergeCells(`A${summaryRow.number}:G${summaryRow.number}`);
+  const summaryRow = sheet.addRow([`TOTAL INPATIENT - (Total Beds: ${totalRoomsCount}, Total Occupied: ${totalOccupiedCount} - ${totalPerc}%)`, '', '', '', '', '', '', '']);
+  sheet.mergeCells(`A${summaryRow.number}:H${summaryRow.number}`);
   summaryRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
     cell.font = { bold: true, size: 14, color: { argb: 'FFC00000' } };
@@ -15579,8 +15664,9 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.getColumn(3).width = 15;
   sheet.getColumn(4).width = 30;
   sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 30;
+  sheet.getColumn(6).width = 20;
   sheet.getColumn(7).width = 30;
+  sheet.getColumn(8).width = 30;
 }
 
 function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
@@ -15662,7 +15748,7 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     });
   });
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = 'Closed Units Occupancy Summary / ملخص إشغال الوحدات المغلقة';
   titleCell.font = { size: 24, bold: true, name: 'Calibri', color: { argb: 'FF000000' } };
@@ -15670,9 +15756,9 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  addLogosToSheet(workbook, sheet, 7.0);
+  addLogosToSheet(workbook, sheet, 8.0);
 
-  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم السرير / الغرفة', 'اسم المريض', 'التعاقد', 'الطبيب المعالج / Treating Physician', 'ملاحظات'];
+  const headerLabels = ['#', 'تاريخ الدخول / Admission Date', 'رقم السرير / الغرفة', 'اسم المريض', 'التعاقد', 'مسئول التعاقد', 'الطبيب المعالج / Treating Physician', 'ملاحظات'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -15719,8 +15805,8 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     totalOccupiedCount += groupOccupied;
     totalRoomsCount += count;
 
-    const groupHeader = sheet.addRow([`${group.name} - (Total Beds: ${count}, Occupied: ${groupOccupied} - ${perc}%)`, '', '', '', '', '', '']);
-    sheet.mergeCells(`A${groupHeader.number}:G${groupHeader.number}`);
+    const groupHeader = sheet.addRow([`${group.name} - (Total Beds: ${count}, Occupied: ${groupOccupied} - ${perc}%)`, '', '', '', '', '', '', '']);
+    sheet.mergeCells(`A${groupHeader.number}:H${groupHeader.number}`);
     groupHeader.eachCell({ includeEmpty: true }, (cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: group.color } };
       cell.font = { bold: true, size: 12 };
@@ -15729,7 +15815,7 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     });
 
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, gr.date, gr.room, gr.name, gr.contract, gr.physician, gr.notes]);
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, gr.contract, getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
       pRow.eachCell((cell) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
@@ -15746,8 +15832,8 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   });
 
   const totalPerc = totalRoomsCount > 0 ? ((totalOccupiedCount / totalRoomsCount) * 100).toFixed(1) : "0";
-  const summaryRow = sheet.addRow([`TOTAL CLOSED UNITS - (Total Beds: ${totalRoomsCount}, Total Occupied: ${totalOccupiedCount} - ${totalPerc}%)`, '', '', '', '', '', '']);
-  sheet.mergeCells(`A${summaryRow.number}:G${summaryRow.number}`);
+  const summaryRow = sheet.addRow([`TOTAL CLOSED UNITS - (Total Beds: ${totalRoomsCount}, Total Occupied: ${totalOccupiedCount} - ${totalPerc}%)`, '', '', '', '', '', '', '']);
+  sheet.mergeCells(`A${summaryRow.number}:H${summaryRow.number}`);
   summaryRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
     cell.font = { bold: true, size: 14, color: { argb: 'FFC00000' } };
@@ -15760,8 +15846,9 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
   sheet.getColumn(3).width = 15;
   sheet.getColumn(4).width = 30;
   sheet.getColumn(5).width = 25;
-  sheet.getColumn(6).width = 30;
+  sheet.getColumn(6).width = 20;
   sheet.getColumn(7).width = 30;
+  sheet.getColumn(8).width = 30;
 }
 
 app.get('/api/reports/closed_units_summary', async (req, res) => {
@@ -15998,13 +16085,13 @@ async function addSpecialtyOccupancySheet(
     views: [{ rightToLeft: false }]
   });
 
-  sheet.mergeCells('A1:K1');
+  sheet.mergeCells('A1:L1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'الحالات المنومة طبقاً للتخصص الطبي / Inpatients By Medical Specialty', 11);
+  await applyRefinedHeader(workbook, sheet, 'الحالات المنومة طبقاً للتخصص الطبي / Inpatients By Medical Specialty', 12);
 
   // Group by Specialty
   const groups: { [key: string]: any[] } = {};
@@ -16166,7 +16253,7 @@ async function addSpecialtyOccupancySheet(
   // -------------------------------------------------------------------------
   // Executive Summary Table (Top KPI block)
   // -------------------------------------------------------------------------
-  const sumHeaderRow = sheet.addRow(['#', 'Specialty / التخصص الطبي', 'Inpatients / عدد المنومين', 'Occupancy Share / نسبة الإشغال', 'Avg LOS / متوسط الإقامة', '', '', '', '', '', '']);
+  const sumHeaderRow = sheet.addRow(['#', 'Specialty / التخصص الطبي', 'Inpatients / عدد المنومين', 'Occupancy Share / نسبة الإشغال', 'Avg LOS / متوسط الإقامة', '', '', '', '', '', '', '']);
   sheet.mergeCells(`B${sumHeaderRow.number}:C${sumHeaderRow.number}`);
   sheet.mergeCells(`D${sumHeaderRow.number}:E${sumHeaderRow.number}`);
   sumHeaderRow.height = 24;
@@ -16184,7 +16271,7 @@ async function addSpecialtyOccupancySheet(
     const validLos = gRows.map(r => parseFloat(String(r.los).replace(/[^0-9.-]+/g, ""))).filter(n => !isNaN(n) && n > 0);
     const avgLos = validLos.length > 0 ? (validLos.reduce((a, b) => a + b, 0) / validLos.length).toFixed(1) + " days" : "-";
 
-    const sRow = sheet.addRow([sumSerial++, spec, '', (gRows.length) + ' cases', '', (share * 100).toFixed(1) + '%', avgLos, '', '', '', '']);
+    const sRow = sheet.addRow([sumSerial++, spec, '', (gRows.length) + ' cases', '', (share * 100).toFixed(1) + '%', avgLos, '', '', '', '', '']);
     sheet.mergeCells(`B${sRow.number}:C${sRow.number}`);
     sheet.mergeCells(`D${sRow.number}:E${sRow.number}`);
     sRow.height = 20;
@@ -16199,7 +16286,7 @@ async function addSpecialtyOccupancySheet(
   });
 
   // Total summary row
-  const totRow = sheet.addRow(['', 'TOTAL ACTIVE INPATIENTS / إجمالي المنومين', '', `${totalPatients} cases`, '', '100.0%', '', '', '', '', '']);
+  const totRow = sheet.addRow(['', 'TOTAL ACTIVE INPATIENTS / إجمالي المنومين', '', `${totalPatients} cases`, '', '100.0%', '', '', '', '', '', '']);
   sheet.mergeCells(`B${totRow.number}:C${totRow.number}`);
   sheet.mergeCells(`D${totRow.number}:E${totRow.number}`);
   totRow.height = 22;
@@ -16225,6 +16312,7 @@ async function addSpecialtyOccupancySheet(
     'التخصص / Specialty', 
     'التشخيص / Diagnosis', 
     'الجهة والتعاقد / Contractor', 
+    'مسئول التعاقد',
     'مدة الإقامة / LOS', 
     'المستهدف / Target ALOS'
   ];
@@ -16244,8 +16332,8 @@ async function addSpecialtyOccupancySheet(
     const pctShare = totalPatients > 0 ? ((groupRows.length / totalPatients) * 100).toFixed(1) : "0.0";
     
     // Group Header Row
-    const groupHeader = sheet.addRow([`■  ${specialty}  —  (${groupRows.length} Cases / ${pctShare}%)  ■`, '', '', '', '', '', '', '', '', '', '']);
-    sheet.mergeCells(`A${groupHeader.number}:K${groupHeader.number}`);
+    const groupHeader = sheet.addRow([`■  ${specialty}  —  (${groupRows.length} Cases / ${pctShare}%)  ■`, '', '', '', '', '', '', '', '', '', '', '']);
+    sheet.mergeCells(`A${groupHeader.number}:L${groupHeader.number}`);
     groupHeader.height = 26;
     groupHeader.eachCell({ includeEmpty: true }, (cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF81C784' } }; // Soft light green badge
@@ -16257,7 +16345,7 @@ async function addSpecialtyOccupancySheet(
     groupRows.forEach(p => {
       const rowValues = [
         globalSerial++, 
-        cleanAdmissionDateStr(p.colA), 
+        formatDateForSheet(p.colA), 
         p.colB || '', 
         p.mrn || '', 
         p.colD || '', 
@@ -16265,6 +16353,7 @@ async function addSpecialtyOccupancySheet(
         p.specialty || specialty, 
         p.diagnosis || '', 
         p.colM || '', 
+        getResponsibleOfficer(p.colM),
         p.los !== undefined && p.los !== null ? p.los : '', 
         p.alos !== undefined && p.alos !== null ? p.alos : ''
       ];
@@ -16286,7 +16375,7 @@ async function addSpecialtyOccupancySheet(
           cell.font = { bold: true, name: 'Calibri', size: 10 }; // Bold patient name
         } else if (colNumber === 8) {
           cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true }; // Diagnosis left-aligned
-        } else if (colNumber === 10) {
+        } else if (colNumber === 11) {
           cell.font = { bold: true, color: { argb: 'FF1565C0' } }; // Blue for LOS
         }
       });
@@ -16305,6 +16394,7 @@ async function addSpecialtyOccupancySheet(
     { width: 22 }, // Specialty
     { width: 38 }, // Diagnosis
     { width: 26 }, // Contractor
+    { width: 20 }, // مسئول التعاقد
     { width: 14 }, // LOS
     { width: 14 }  // Target ALOS
   ];
