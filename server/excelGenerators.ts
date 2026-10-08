@@ -12,7 +12,8 @@ import {
   getAccommodationCategory,
   isNameMatch,
   isWholeNameMatch,
-  isPrivateCreditCase
+  isPrivateCreditCase,
+  isToday
 } from './nameUtils';
 import { KEYWORDS_TO_EXCLUDE, GLOBAL_EXCLUSIONS } from './occupancyLogic';
 import {
@@ -822,7 +823,13 @@ export async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, trans
   });
 
   let serial = 1;
-  (transfers || []).forEach((t) => {
+  const todayOnlyTransfers = (transfers || []).filter(t => {
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+    if (!rawDate) return false;
+    return isToday(rawDate) || isToday(String(rawDate).split(' ')[0]);
+  });
+
+  todayOnlyTransfers.forEach((t) => {
     const rowValues = [
       serial++,
       t.name || '',
@@ -830,7 +837,7 @@ export async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, trans
       t.initialRoom || t.fromRoom || '',
       t.currentRoom || t.toRoom || '',
       t.physician || '',
-      formatDateForSheet(t.lastTransferDate || t.date)
+      formatDateForSheet(t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : ''))
     ];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {

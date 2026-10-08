@@ -3710,14 +3710,28 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     const extractRowsFromData = (sourceData: any[][], skip: number) => {
       if (!sourceData || sourceData.length <= skip) return [];
-      return sourceData.slice(skip).map(row => ({
-        room: String(row[1] || "").trim(), // Col B Room
-        name: String(row[3] || "").trim(), // Col D Patient Name
-        physician: String(row[22] || "").trim(), // Col W Treating Physician
-        contractor: String(row[12] || "").trim(), // Col M Contractor name
-        date: cleanAdmissionDateStr(row[0]), // Col A Admission date
-        rawDate: String(row[0] || "").trim(), // Col A raw string
-      })).filter(p => {
+      return sourceData.slice(skip).map(row => {
+        const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+        if (isUnified) {
+          return {
+            room: String(row[1] || "").trim(), // Col B Room
+            name: String(row[3] || "").trim(), // Col D Patient Name
+            physician: String(row[22] || "").trim(), // Col W Treating Physician
+            contractor: String(row[12] || "").trim(), // Col M Contractor name
+            date: cleanAdmissionDateStr(row[0]), // Col A Admission date
+            rawDate: String(row[0] || "").trim(), // Col A raw string
+          };
+        } else {
+          return {
+            room: cleanRoomStr(String(row[0] || "").trim()),
+            name: String(row[1] || "").trim(),
+            physician: String(row[2] || "").trim(),
+            contractor: String(row[3] || "").trim(),
+            date: cleanAdmissionDateStr(row[4]),
+            rawDate: String(row[4] || "").trim(),
+          };
+        }
+      }).filter(p => {
         if (!p.room || !p.name) return false;
         const rowAsString = Object.values(p).join(" ").toLowerCase();
         const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
@@ -3745,10 +3759,50 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     const dialRowsNew = extractDialysisRowsFromData(rows, startIdx);
 
-    // Determine previous patient baseline: use active hospitalData or previousHospitalData
-    const baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
-
     const cairo = getCairoDateTime();
+
+    // Determine previous patient baseline: use active hospitalData or previousHospitalData with database snapshot fallback
+    let baselineData = (hospitalData && hospitalData.length > 1) ? hospitalData : ((previousHospitalData && previousHospitalData.length > 1) ? previousHospitalData : null);
+    if (!baselineData) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairo.dateStr);
+        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
+          baselineData = todaySnap.hospitalData;
+          console.log(`[Upload] Established previous baseline from today's snapshot (${cairo.dateStr})`);
+        } else {
+          const availDates = await getAvailableDates('occupancy');
+          if (availDates && availDates.length > 0) {
+            const dateKey = typeof availDates[0] === 'string' ? availDates[0] : (availDates[0] as any).date;
+            const recentSnap = await getOccupancySnapshot(dateKey);
+            if (recentSnap && recentSnap.hospitalData && Array.isArray(recentSnap.hospitalData) && recentSnap.hospitalData.length > 1) {
+              baselineData = recentSnap.hospitalData;
+              console.log(`[Upload] Established previous baseline from recent snapshot (${dateKey})`);
+            }
+          }
+        }
+      } catch (snapFallbackErr) {
+        console.warn('[Upload] Notice: Failed to query baseline snapshot fallback:', snapFallbackErr);
+      }
+    }
+
+    // Seed patient room registry from baseline if currently empty to ensure transfer detection
+    if (baselineData && Object.keys(patientRoomRegistry).length === 0) {
+      const basePatients = extractRawPatientsFromRows(baselineData);
+      basePatients.forEach(p => {
+        if (p.name && p.room) {
+          const regKey = p.mrn ? `mrn:${p.mrn}` : p.name.trim();
+          patientRoomRegistry[regKey] = {
+            name: p.name.trim(),
+            mrn: p.mrn || "",
+            lastRoom: cleanRoomStr(p.room),
+            physician: p.physician || "",
+            contractor: p.contractor || "",
+            date: p.date || p.rawDate || ""
+          };
+        }
+      });
+    }
+
     // Prioritize lastActiveDate if today/newer so same-day uploads NEVER trigger a false new day reset
     const activePrevDate = (lastActiveDate && lastActiveDate >= cairo.dateStr)
       ? lastActiveDate
@@ -3826,20 +3880,40 @@ async function handleUnifiedUpload(req: any, res: any) {
     
     // Track and record patient room transfers
     const deduplicatedPatients = extractRawPatientsFromRows(rows);
-    processPatientTransfers(deduplicatedPatients);
+    processPatientTransfers(deduplicatedPatients, cairo.dateStr);
 
     // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
-    if (!isNewSheetLikelyEmpty || !hospitalData) {
-        hospitalData = rows;
+    if (isNewSheetLikelyEmpty && !hospitalData) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairo.dateStr);
+        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
+          hospitalData = todaySnap.hospitalData;
+          console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
+        }
+      } catch (_) {}
+    } else if (!isNewSheetLikelyEmpty || !hospitalData) {
+      hospitalData = rows;
     }
 
     // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
     extractSubsheetsFromHospitalData(rows);
 
     uploadedAt = Date.now();
-    lastActiveDate = getCairoDateTime().dateStr;
+    lastActiveDate = cairo.dateStr;
     setSaveChangeType('upload');
     await saveData();
+
+    // Compute occupancy stats fallback from active occupancy data
+    const postUploadOccRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+    const postUploadBodyRows = postUploadOccRows.length > 3 ? postUploadOccRows.slice(3) : [];
+    const totalOccupancy = postUploadBodyRows.length;
+
+    // Filter today's transfers for response
+    const todayTransfers = (cumulativeTransfers || []).filter(t => {
+      const tDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : null);
+      if (!tDate) return false;
+      return isToday(tDate, cairo.dateStr) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairo.dateStr);
+    });
 
     res.json({ 
       success: true, 
@@ -3849,7 +3923,12 @@ async function handleUnifiedUpload(req: any, res: any) {
       medicalPlansCount: cumulativeMedicalPlans.length,
       companionStatusCount: cumulativeCompanionStatus.length,
       losCount: cumulativeLOS.length,
-      countOccupancy: newRows.length,
+      countOccupancy: newRows.length || totalOccupancy,
+      totalOccupancy,
+      entriesCount: (cumulativeEntries || []).length,
+      dischargesCount: (cumulativeDischarged || []).length,
+      dialysisCount: (cumulativeDialysis || []).length,
+      transfersCount: todayTransfers.length,
       sheet: bestSheetName 
     });
   } catch (error: any) {
@@ -6034,7 +6113,17 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
   });
 
   let serial = 1;
-  (transfers || []).forEach((t, idx) => {
+  const cairo = getCairoDateTime();
+  const cairoTodayStr = cairo.dateStr;
+
+  // Ensure transfers other than the day's transfers are not included (matching other sheets)
+  const todayOnlyTransfers = (transfers || []).filter(t => {
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+    if (!rawDate) return false;
+    return isToday(rawDate, cairoTodayStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairoTodayStr);
+  });
+
+  todayOnlyTransfers.forEach((t, idx) => {
     const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
       ? t.journey.join('  ➔  ')
       : `${t.initialRoom || t.fromRoom || ''}  ➔  ${t.currentRoom || t.toRoom || ''}`;
@@ -6044,7 +6133,7 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
       : (t.initialRoom || t.fromRoom || '-');
 
     const currRoom = t.currentRoom || t.toRoom || '-';
-    const rawDate = t.lastTransferDate || t.date || '';
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
     const cleanedContractor = cleanContractorForDisplay(t.contractor);
@@ -6129,7 +6218,17 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
   });
 
   let serial = 1;
-  (transfers || []).forEach(t => {
+  const cairo = getCairoDateTime();
+  const cairoTodayStr = cairo.dateStr;
+
+  // Ensure transfers other than the day's transfers are not included (matching other sheets)
+  const todayOnlyTransfers = (transfers || []).filter(t => {
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+    if (!rawDate) return false;
+    return isToday(rawDate, cairoTodayStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairoTodayStr);
+  });
+
+  todayOnlyTransfers.forEach(t => {
     const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
       ? t.journey.join(' -> ')
       : `${t.initialRoom || t.fromRoom || ''} -> ${t.currentRoom || t.toRoom || ''}`;
@@ -6139,7 +6238,7 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
       : (t.initialRoom || t.fromRoom || '-');
 
     const currRoom = t.currentRoom || t.toRoom || '-';
-    const rawDate = t.lastTransferDate || t.date || '';
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
     const cleanedContractor = cleanContractorForDisplay(t.contractor);
@@ -7462,6 +7561,13 @@ app.get('/api/occupancy/data', async (req, res) => {
   const manualDischargedRows = allFilteredDischarged.filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name));
   const activeManualNames = manualDischargedRows.map(p => p.name);
 
+  // Transfers strictly belonging to today's Cairo calendar date (matching entry/exit/dialysis)
+  const cleanTransfers = (cumulativeTransfers || []).filter(t => {
+    const tDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : null);
+    if (!tDate) return false;
+    return isToday(tDate, cairoTodayStr) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairoTodayStr);
+  });
+
   if (!hospitalData) {
     return res.json({ 
       rows: [], 
@@ -7490,8 +7596,8 @@ app.get('/api/occupancy/data', async (req, res) => {
       orListCount: (cumulativeORList || []).length,
       orList: enrichedOrList,
       overList: [],
-      transfers: cumulativeTransfers,
-      transfersCount: (cumulativeTransfers || []).length,
+      transfers: cleanTransfers,
+      transfersCount: cleanTransfers.length,
       lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
     });
   }
@@ -7523,8 +7629,8 @@ app.get('/api/occupancy/data', async (req, res) => {
     orListCount: (cumulativeORList || []).length,
     orList: enrichedOrList,
     overList: getOverListPatients(hospitalData, cumulativeORList),
-    transfers: cumulativeTransfers,
-    transfersCount: (cumulativeTransfers || []).length,
+    transfers: cleanTransfers,
+    transfersCount: cleanTransfers.length,
     lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
   });
 });
@@ -8216,6 +8322,13 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     });
     const activeManualNames = manualList.map(p => p.name);
 
+    // Transfers strictly belonging to today's Cairo calendar date
+    const cleanTransfers = (cumulativeTransfers || []).filter(t => {
+      const tDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : null);
+      if (!tDate) return false;
+      return isToday(tDate, cairoTodayStr) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairoTodayStr);
+    });
+
     return {
       hospitalData,
       previousHospitalData,
@@ -8230,7 +8343,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       cumulativeMedicalPlans,
       cumulativeCompanionStatus,
       cumulativeLOS,
-      cumulativeTransfers,
+      cumulativeTransfers: cleanTransfers,
       vipCasesText,
       dateLabel: cairo.dateStr,
       isHistorical: false
@@ -8279,6 +8392,12 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     const manualList = (cumulativeDischarged || []).filter(p => 
       p.dischargeType === 'manual' || isManuallyDischarged(p.name)
     );
+    const cleanTransfersToday = (cumulativeTransfers || []).filter(t => {
+      const tDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : null);
+      if (!tDate) return false;
+      return isToday(tDate, cairoToday) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairoToday);
+    });
+
     return {
       hospitalData,
       previousHospitalData,
@@ -8293,7 +8412,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       cumulativeMedicalPlans,
       cumulativeCompanionStatus,
       cumulativeLOS,
-      cumulativeTransfers,
+      cumulativeTransfers: cleanTransfersToday,
       vipCasesText,
       dateLabel: cleanDate,
       isHistorical: false,
@@ -9523,10 +9642,17 @@ app.get('/api/transfers', (req, res) => {
   if (cleaned) {
     saveData().catch(e => console.error('Save error after transfers sanitization:', e));
   }
+  const cairo = getCairoDateTime();
+  const todayOnlyTransfers = (cumulativeTransfers || []).filter(t => {
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+    if (!rawDate) return false;
+    return isToday(rawDate, cairo.dateStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairo.dateStr);
+  });
+
   res.json({
     success: true,
-    transfers: cumulativeTransfers,
-    count: (cumulativeTransfers || []).length
+    transfers: todayOnlyTransfers,
+    count: todayOnlyTransfers.length
   });
 });
 
@@ -9739,9 +9865,11 @@ app.post('/api/transfers/sync-from-occupancy', async (req, res) => {
 
 app.get('/api/reports/transfers_formatted', async (req, res) => {
   try {
+    const reqDate = req.query.date ? String(req.query.date).trim() : null;
+    const ds = await resolveOccupancyDataset(reqDate);
     const workbook = new ExcelJS.Workbook();
-    await addRefinedTransfersSheet(workbook, cumulativeTransfers || []);
-    const filename = `Transferred_Patients_Refined_Report_${getCairoDateTime().dateStr}.xlsx`;
+    await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers || []);
+    const filename = `Transferred_Patients_Refined_Report_${ds.dateLabel}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     await workbook.xlsx.write(res);
