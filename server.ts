@@ -32,7 +32,7 @@ import {
   type ChangeType,
 } from './historyManager.js';
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
-import { getResponsibleOfficer, formatDateForSheet } from './server/contractorOfficers.js';
+import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
 
 dotenv.config();
 
@@ -4773,7 +4773,8 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
-    const rowValues = [serial++, formattedDate, p.room, p.name, p.physician, p.contractor, responsibleOfficer];
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
+    const rowValues = [serial++, formattedDate, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -4783,8 +4784,8 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
         right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11 };
-      if (colNumber === 1 || colNumber === 3) cell.font = { bold: true };
+      const isBold = (colNumber >= 3 && colNumber <= 7);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
     });
     currentGroup = group;
   });
@@ -5026,7 +5027,8 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5038,10 +5040,8 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colNumber >= 2 && colNumber <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
       });
     });
   });
@@ -5186,12 +5186,13 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date || p.admissionDate);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const rowValues = [
         serial++, 
         p.room, 
         p.name, 
         p.physician, 
-        p.contractor, 
+        cleanedContractor, 
         responsibleOfficer,
         formattedDate, 
         isPatientVip(p.name) ? "VIP" : ""
@@ -5207,10 +5208,8 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colNumber >= 2 && colNumber <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
       });
     });
   });
@@ -5363,7 +5362,8 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5375,10 +5375,8 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colNumber >= 2 && colNumber <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
       });
     });
   });
@@ -5413,7 +5411,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     'MRN / كود المريض',
     'Patient / اسم المريض', 
     'Physician / الطبيب المعالج',
-    'Company / الشركة', 
+    'Company / التعاقد', 
     'مسئول التعاقد',
     'Total Bill / إجمالي الحساب (Z)', 
     'Remaining Amount / المبلغ المتبقي', 
@@ -5478,9 +5476,10 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
   });
 
   const renderPatientRow = (p: any) => {
-    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const rawContract = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const contractVal = cleanContractorForDisplay(rawContract);
     const formattedDate = formatDateForSheet(p.colA);
-    const responsibleOfficer = getResponsibleOfficer(contractVal);
+    const responsibleOfficer = getResponsibleOfficer(rawContract);
     const rowValues = [
       formattedDate, 
       p.room || '', 
@@ -5525,8 +5524,8 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
-        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      if (colNumber === 2 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 7) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       } else if (colNumber === 9) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 10) {
@@ -5746,12 +5745,13 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const rowValues = [
         serial++, 
         p.room, 
         p.name, 
         p.physician, 
-        p.contractor, 
+        cleanedContractor, 
         responsibleOfficer,
         formattedDate, 
         isPatientVip(p.name) ? "VIP" : ""
@@ -5767,11 +5767,9 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        } else if (colNumber === 8) {
+        const isBold = (colNumber >= 2 && colNumber <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
+        if (colNumber === 8) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } }; 
         }
       });
@@ -5876,9 +5874,10 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   });
 
   const renderPatientRow = (p: any) => {
-    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const rawContract = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const contractVal = cleanContractorForDisplay(rawContract);
     const formattedDate = formatDateForSheet(p.colA);
-    const responsibleOfficer = getResponsibleOfficer(contractVal);
+    const responsibleOfficer = getResponsibleOfficer(rawContract);
     const rowValues = [
       formattedDate, 
       p.room || '', 
@@ -5924,8 +5923,8 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
-        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      if (colNumber === 2 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 7) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       } else if (colNumber === 9) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC00000' } };
       } else if (colNumber === 10) {
@@ -6048,6 +6047,7 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
     const rawDate = t.lastTransferDate || t.date || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
+    const cleanedContractor = cleanContractorForDisplay(t.contractor);
 
     const rowValues = [
       serial++,
@@ -6057,7 +6057,7 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
       currRoom,
       formattedDate || '-',
       t.physician || '-',
-      t.contractor || '-',
+      cleanedContractor || '-',
       responsibleOfficer
     ];
 
@@ -6082,9 +6082,11 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
       } else if (colNumber === 3) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF0070BA' } };
       } else if (colNumber === 4) {
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF555555' } };
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF555555' } };
       } else if (colNumber === 5) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF2E7D32' } };
+      } else if (colNumber === 7 || colNumber === 8 || colNumber === 9) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       }
     });
   });
@@ -6140,6 +6142,7 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
     const rawDate = t.lastTransferDate || t.date || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
+    const cleanedContractor = cleanContractorForDisplay(t.contractor);
 
     const row = sheet.addRow([
       serial++,
@@ -6149,10 +6152,14 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
       currRoom,
       formattedDate || '-',
       t.physician || '-',
-      t.contractor || '-',
+      cleanedContractor || '-',
       responsibleOfficer
     ]);
     row.alignment = { horizontal: 'center', vertical: 'middle' };
+    row.eachCell((cell, colNumber) => {
+      const isBold = (colNumber === 2 || colNumber === 3 || colNumber === 4 || colNumber === 5 || colNumber === 7 || colNumber === 8 || colNumber === 9);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
+    });
   });
 
   sheet.columns = [
@@ -6200,7 +6207,8 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
     const updateDate = formatDateForSheet(p.colAG || p.colA) || "-";
     const admissionDate = formatDateForSheet(p.colA);
     const responsibleOfficer = getResponsibleOfficer(p.colM);
-    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, p.colM, responsibleOfficer, updateDate, sbarText];
+    const cleanedContractor = cleanContractorForDisplay(p.colM);
+    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     const rowBgColor = (index % 2 === 1) ? bgColor : 'FFFFFFFF';
 
@@ -6217,7 +6225,8 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       }
-      cell.font = { name: 'Calibri', size: 11 };
+      const isBold = (colNumber >= 3 && colNumber <= 7);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
     });
   });
 
@@ -6395,7 +6404,8 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate, isPatientVip(p.name) ? "VIP" : ""];
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
+      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate, isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -6408,12 +6418,9 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        
-        // Custom styling for serial index, Patient column and Room column to make it look prominent
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        } else if (colNumber === 8) {
+        const isBold = (colNumber >= 2 && colNumber <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
+        if (colNumber === 8) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } }; // Red for VIP
         }
       });
@@ -6506,7 +6513,8 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
 
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
-    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
+    const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -6516,14 +6524,14 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
         right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11 };
+      const isBold = (colNumber >= 2 && colNumber <= 6);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
       if (colNumber === 7) { 
          if(String(p.date).includes("الخروج")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; 
          else if(String(p.date).includes("اليوم")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } }; 
          else if(String(p.date).includes("ملاحظه") || String(p.date).includes("ملاحظة")) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } }; 
          if(String(p.date).includes("عمليات") && !String(p.date).includes("اليوم")) cell.font = { name: 'Calibri', size: 11, color: { argb: 'FFFF0000'}, bold: true };
       }
-      if (colNumber === 1 || colNumber === 2) cell.font = { bold: true };
     });
     currentGroup = group;
   });
@@ -6624,18 +6632,20 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
     }
     const formattedDate = formatDateForSheet(patient.date || patient.admissionDate || "");
     const responsibleOfficer = getResponsibleOfficer(patient.contractor);
+    const cleanedContractor = cleanContractorForDisplay(patient.contractor);
     const row = sheet.getRow(currentRowIdx);
     row.values = [
       serialNum++, 
       patient.room, 
       patient.name, 
       patient.physician, 
-      patient.contractor, 
+      cleanedContractor, 
       responsibleOfficer,
       formattedDate
     ];
     row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      cell.font = { name: 'Calibri', size: 10, bold: true };
+      const isBold = (colNumber >= 2 && colNumber <= 6);
+      cell.font = { name: 'Calibri', size: 10, bold: isBold };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFBFBFBF' } },
@@ -6644,7 +6654,6 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
         right: { style: 'thin', color: { argb: 'FFBFBFBF' } }
       };
     });
-    row.getCell(1).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF000000' } };
     currentRowIdx++;
   });
 }
@@ -6701,7 +6710,8 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
   processedData.forEach((p) => {
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
-    const rowValues = [serial++, p.room, p.name, p.physician, p.contractor, responsibleOfficer, formattedDate];
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
+    const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -6711,8 +6721,8 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
         right: { style: 'thin', color: { argb: 'FFB2B2B2' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11 };
-      if (colNumber === 1 || colNumber === 2) cell.font = { bold: true };
+      const isBold = (colNumber >= 2 && colNumber <= 6);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
     });
   });
 
@@ -6765,9 +6775,10 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
-    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const rawContract = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : (p.colF || 'Insured'));
+    const contractVal = cleanContractorForDisplay(rawContract);
     const formattedDate = formatDateForSheet(p.colA);
-    const responsibleOfficer = getResponsibleOfficer(contractVal);
+    const responsibleOfficer = getResponsibleOfficer(rawContract);
 
     const rowValues = [
       formattedDate, 
@@ -6792,7 +6803,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
 
-      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
+      if (colNumber === 2 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 7) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
       if (colNumber === 8 || colNumber === 9) {
@@ -6856,9 +6867,10 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const valAB = parseFloat(String(p.colAB).replace(/[^0-9.-]+/g, "")) || 0;
     const valZ = parseFloat(String(p.colZ).replace(/[^0-9.-]+/g, "")) || 0;
     const pct = valZ > 0 ? (valAB / valZ) : 0;
-    const contractVal = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const rawContract = (p.contractor && p.contractor.trim() !== "") ? p.contractor.trim() : ((p.colM && p.colM.trim() !== "") ? p.colM.trim() : 'Cash');
+    const contractVal = cleanContractorForDisplay(rawContract);
     const formattedDate = formatDateForSheet(p.colA);
-    const responsibleOfficer = getResponsibleOfficer(contractVal);
+    const responsibleOfficer = getResponsibleOfficer(rawContract);
 
     const rowValues = [
       formattedDate, 
@@ -6883,7 +6895,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11 };
 
-      if (colNumber === 2 || colNumber === 3 || colNumber === 4) {
+      if (colNumber === 2 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 7) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
       if (colNumber === 8 || colNumber === 9) {
@@ -9319,18 +9331,19 @@ app.get('/api/reports/unified', async (req, res) => {
           // Patient Row
           const formattedDate = formatDateForSheet(date);
           const responsibleOfficer = getResponsibleOfficer(contractor);
+          const cleanedContractor = cleanContractorForDisplay(contractor);
           const pValues = [
             rowCount++,
             room,      // Bed
             patient,   // Patient
             physician, // Physician
-            contractor,// Contractor
+            cleanedContractor,// Contractor
             responsibleOfficer,
             formattedDate, // Date
             ''         // Status
           ];
           const pRow = sheet.addRow(pValues);
-          pRow.eachCell(cell => {
+          pRow.eachCell((cell, colNumber) => {
             cell.border = {
               top: { style: 'thin' },
               left: { style: 'thin' },
@@ -9338,6 +9351,8 @@ app.get('/api/reports/unified', async (req, res) => {
               right: { style: 'thin' }
             };
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            const isBold = (colNumber >= 2 && colNumber <= 6);
+            cell.font = { name: 'Calibri', size: 11, bold: isBold };
           });
         }
       });
@@ -9979,7 +9994,8 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
     const updateDate = formatDateForSheet(p.colAG || p.colA) || "-";
     const admissionDate = formatDateForSheet(p.colA);
     const responsibleOfficer = getResponsibleOfficer(p.colM);
-    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, p.colM, responsibleOfficer, updateDate, sbarText];
+    const cleanedContractor = cleanContractorForDisplay(p.colM);
+    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     
     // Alternating background logic: White then Header Color
@@ -9998,7 +10014,8 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
       } else {
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       }
-      cell.font = { name: 'Calibri', size: 11 };
+      const isBold = (colNumber >= 3 && colNumber <= 7);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
     });
   });
 
@@ -10405,7 +10422,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
 
     group.items.forEach((p) => {
       const category = getAccommodationCategory(p.room);
-      const rowValues = [serial++, p.room, category, p.name, p.physician, p.contractor, getResponsibleOfficer(p.contractor), formatDateForSheet(p.date), isPatientVip(p.name) ? "VIP" : ""];
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
+      const rowValues = [serial++, p.room, category, p.name, p.physician, cleanedContractor, getResponsibleOfficer(p.contractor), formatDateForSheet(p.date), isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -10417,11 +10435,8 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        
-        if (colNumber === 1 || colNumber === 2 || colNumber === 3 || colNumber === 4) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colNumber >= 2 && colNumber <= 7);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
         if (colNumber === 3) {
           const catColors: { [key: string]: string } = {
             "Day Case": "FF5C5A7F",
@@ -10663,7 +10678,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
       list.forEach((room) => {
         const pRow = sheet.addRow([serial++, room, catName]);
         pRow.height = 24;
-        pRow.eachCell(cell => {
+        pRow.eachCell((cell, colNumber) => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
           cell.alignment = { horizontal: 'center', vertical: 'middle' };
           cell.border = {
@@ -10672,7 +10687,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
             left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
             right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
           };
-          cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+          cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: colNumber === 2 };
         });
       });
     }
@@ -10942,7 +10957,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: colNumber === 2 };
         if (colNumber === 2 || colNumber === 3) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
         }
@@ -12157,7 +12172,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
         }
       }
 
-      const pRow = sheet.addRow([serial++, p.room, category, p.name, p.contractor, getResponsibleOfficer(p.contractor), specialty, formatDateForSheet(p.date)]);
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
+      const pRow = sheet.addRow([serial++, p.room, category, p.name, cleanedContractor, getResponsibleOfficer(p.contractor), specialty, formatDateForSheet(p.date)]);
       pRow.height = 24;
       pRow.eachCell((cell, colIndex) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
@@ -12168,10 +12184,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
           left: { style: 'thin', color: { argb: 'FFD2D7D9' } },
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        if (colIndex === 1 || colIndex === 2 || colIndex === 3 || colIndex === 4) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colIndex >= 2 && colIndex <= 6);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
         if (colIndex === 3) {
           const catColors: { [key: string]: string } = {
             "Day Case": "FF5C5A7F",
@@ -12306,14 +12320,16 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
     }
 
     const isClosedUnit = COMPANION_EXCLUDED_DEPTS.some(dept => roomStr.includes(dept)) || roomStr === "OR" || roomStr.includes(" OR ") || roomStr.startsWith("OR ") || roomStr.endsWith(" OR");
-    const rowValues = [serial++, formatDateForSheet(p.colA), p.colB, p.colD, p.colW, p.colM, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
+    const cleanedContractor = cleanContractorForDisplay(p.colM);
+    const rowValues = [serial++, formatDateForSheet(p.colA), p.colB, p.colD, p.colW, cleanedContractor, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = {
         top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11 };
+      const isBold = (colNumber >= 3 && colNumber <= 7);
+      cell.font = { name: 'Calibri', size: 11, bold: isBold };
       if (colNumber === 9) {
         if (cell.value === "VIP") {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE8D6' } }; // Soft light VIP amber background
@@ -12481,13 +12497,14 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
     }
 
     const isClosedUnit = isClosedUnitByDept;
+    const cleanedContractor = cleanContractorForDisplay(p.colM);
     const rowValues = [
       serial++, 
       formatDateForSheet(p.colA), 
       p.colB, 
       p.colD, 
       p.colW, 
-      p.colM, 
+      cleanedContractor, 
       getResponsibleOfficer(p.colM),
       isClosedUnit ? "" : p.colI,
       isPatientVip(p.colD) ? "VIP" : ""
@@ -12504,10 +12521,9 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
         right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 3 || colNumber === 4) {
-        cell.font = { bold: true, name: 'Calibri', size: 11 };
-      } else if (colNumber === 9) {
+      const isBold = (colNumber >= 3 && colNumber <= 7);
+      cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
+      if (colNumber === 9) {
         if (cell.value === "VIP") {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE8D6' } }; // Soft light VIP amber background
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD84315' } }; // Elegant dark amber/red text
@@ -12739,6 +12755,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     }
 
     const excessDays = p.los - p.alos;
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++, 
       formatDateForSheet(p.date), 
@@ -12747,7 +12764,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       p.name, 
       p.physician || "-",
       p.specialty || "-",
-      p.contractor || "-", 
+      cleanedContractor || "-", 
       getResponsibleOfficer(p.contractor),
       `${p.los} Days`, 
       `${p.alos} Days`,
@@ -12766,8 +12783,8 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
-        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      if (colNumber === 3 || colNumber === 5 || colNumber === 6 || colNumber === 8 || colNumber === 9) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       }
       if (colNumber === 10) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
@@ -12854,6 +12871,7 @@ async function buildRefinedORSheetTab(
     sheet.getRow(sepRowIdx).height = 26;
 
     group.items.forEach((p) => {
+      const cleanedContractor = cleanContractorForDisplay(p.contractorName);
       const rowValues = [
         serial++, 
         p.orRoom, 
@@ -12865,7 +12883,7 @@ async function buildRefinedORSheetTab(
         p.engOperationName, 
         p.surgeonName, 
         p.column2, 
-        p.contractorName,
+        cleanedContractor,
         getResponsibleOfficer(p.contractorName),
         p.dischargeStatus || 'Not Admitted / غير منوم'
       ];
@@ -12881,11 +12899,8 @@ async function buildRefinedORSheetTab(
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
-        
-        if (colNumber === 5 || colNumber === 9) {
-          cell.font = { bold: true, name: 'Calibri', size: 11 };
-        }
+        const isBold = (colNumber === 2 || colNumber === 5 || colNumber === 9 || colNumber === 11 || colNumber === 12);
+        cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' }, bold: isBold };
         if (colNumber === 13) {
           // Highlight discharged in soft red, admitted in soft green, etc
           if (String(p.dischargeStatus).includes('Discharged')) {
@@ -13119,7 +13134,7 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       
-      if (colNumber === 4 || colNumber === 6) {
+      if (colNumber === 3 || colNumber === 4 || colNumber === 6) {
         cell.font = { bold: true, name: 'Calibri', size: 11 };
       }
       if (colNumber === 7) {
@@ -13738,6 +13753,7 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
   let serial = 1;
 
   overListPatients.forEach((p) => {
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++,
       p.patientRoom || 'N/A',
@@ -13745,15 +13761,16 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
       p.patientName,
       p.mrn || '',
       p.physician || '',
-      p.contractor || '',
+      cleanedContractor || '',
       getResponsibleOfficer(p.contractor),
       formatDateForSheet(p.admissionDate)
     ];
 
     const pRow = sheet.addRow(rowValues);
     pRow.height = 24;
-    pRow.eachCell((cell) => {
-      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' } };
+    pRow.eachCell((cell, colNumber) => {
+      const isBold = (colNumber === 2 || colNumber === 3 || colNumber === 4 || colNumber === 6 || colNumber === 7 || colNumber === 8);
+      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' }, bold: isBold };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
@@ -13868,6 +13885,7 @@ async function addRefinedORReconciliationSheet(
       ? (p.dischargedFromRoom ? `On List - Discharged (Room ${p.dischargedFromRoom}) / في اللستة - تم الخروج (غرفة ${p.dischargedFromRoom})` : 'On List - Discharged / في اللستة - تم الخروج')
       : (isAdmitted ? 'On List - Currently Admitted / في اللستة - منوم حالياً' : 'On List - Not Admitted / في اللستة - غير منوم');
 
+    const cleanedContractor = cleanContractorForDisplay(displayContractor);
     const rowValues = [
       serial++,
       displayPatientRoom,
@@ -13875,7 +13893,7 @@ async function addRefinedORReconciliationSheet(
       p.patientName,
       displayMRN,
       p.surgeonName || p.physician || '',
-      displayContractor,
+      cleanedContractor,
       getResponsibleOfficer(displayContractor),
       formatDateForSheet(displayAdmissionDate || p.admissionDate),
       finalStatusText
@@ -13885,7 +13903,8 @@ async function addRefinedORReconciliationSheet(
     pRow.height = 24;
 
     pRow.eachCell((cell, colNumber) => {
-      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' } };
+      const isBold = (colNumber === 2 || colNumber === 3 || colNumber === 4 || colNumber === 6 || colNumber === 7 || colNumber === 8);
+      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' }, bold: isBold };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
@@ -13911,6 +13930,7 @@ async function addRefinedORReconciliationSheet(
 
   // 2. Process all detected Over List cases
   overList.forEach((p) => {
+    const cleanedOverContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++,
       p.patientRoom || 'N/A',
@@ -13918,7 +13938,7 @@ async function addRefinedORReconciliationSheet(
       p.patientName,
       p.mrn || '',
       p.physician || '',
-      p.contractor || '',
+      cleanedOverContractor || '',
       getResponsibleOfficer(p.contractor),
       formatDateForSheet(p.admissionDate),
       p.isDischarged 
@@ -13930,7 +13950,8 @@ async function addRefinedORReconciliationSheet(
     pRow.height = 24;
 
     pRow.eachCell((cell, colNumber) => {
-      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' } };
+      const isBold = (colNumber === 2 || colNumber === 3 || colNumber === 4 || colNumber === 6 || colNumber === 7 || colNumber === 8);
+      cell.font = { size: 10, name: 'Calibri', color: { argb: 'FF333333' }, bold: isBold };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
@@ -15032,8 +15053,8 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
         cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF000000' } };
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
 
-        // Make patient name, suggested room pop a bit
-        if (colNum === 3 || colNum === 6) {
+        // Make OR room, patient name, suggested room, and surgeon pop
+        if (colNum === 2 || colNum === 3 || colNum === 6 || colNum === 8) {
           cell.font = { bold: true, name: 'Calibri', size: 10, color: { argb: 'FF0F172A' } };
         }
         
@@ -15397,6 +15418,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
       statusTextColor = 'FFE65100';
     }
 
+    const cleanedContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++, 
       formatDateForSheet(p.date), 
@@ -15405,7 +15427,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
       p.name, 
       p.physician || "-",
       p.specialty || "-",
-      p.contractor || "-", 
+      cleanedContractor || "-", 
       getResponsibleOfficer(p.contractor),
       `${p.los} Days`, 
       p.alos > 0 ? `${p.alos} Days` : "-",
@@ -15424,8 +15446,8 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
       };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11, color: { argb: colNumber === 12 ? statusTextColor : 'FF000000' } };
-      if (colNumber === 3 || colNumber === 4 || colNumber === 5) {
-        cell.font = { bold: true, name: 'Calibri', size: 11 };
+      if (colNumber === 3 || colNumber === 5 || colNumber === 6 || colNumber === 8 || colNumber === 9) {
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: colNumber === 12 ? statusTextColor : 'FF000000' } };
       }
       if (colNumber === 10 && p.alos > 0 && p.los > p.alos) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
@@ -15630,14 +15652,14 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
     // Patient rows inside group (Only occupied)
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, gr.contract, getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
-      pRow.eachCell((cell) => {
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
+      pRow.eachCell((cell, colNumber) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
         };
         cell.alignment = { horizontal: pRow.getCell(3) === cell ? 'center' : 'right', vertical: 'middle' };
-        cell.font = { name: 'Calibri', size: 11 };
-        if (cell.value && gr.name && cell === pRow.getCell(4)) {
+        cell.font = { name: 'Calibri', size: 11, bold: false };
+        if (colNumber >= 3 && colNumber <= 7) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
         }
       });
@@ -15813,14 +15835,14 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     });
 
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, gr.contract, getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
-      pRow.eachCell((cell) => {
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
+      pRow.eachCell((cell, colNumber) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
         };
         cell.alignment = { horizontal: pRow.getCell(3) === cell ? 'center' : 'right', vertical: 'middle' };
-        cell.font = { name: 'Calibri', size: 11 };
-        if (cell.value && gr.name && cell === pRow.getCell(4)) {
+        cell.font = { name: 'Calibri', size: 11, bold: false };
+        if (colNumber >= 3 && colNumber <= 7) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
         }
       });
@@ -16350,7 +16372,7 @@ async function addSpecialtyOccupancySheet(
         p.physician || '', 
         p.specialty || specialty, 
         p.diagnosis || '', 
-        p.colM || '', 
+        cleanContractorForDisplay(p.colM || ''), 
         getResponsibleOfficer(p.colM),
         p.los !== undefined && p.los !== null ? p.los : '', 
         p.alos !== undefined && p.alos !== null ? p.alos : ''
@@ -16365,12 +16387,12 @@ async function addSpecialtyOccupancySheet(
           right: { style: 'thin', color: { argb: 'FFD2D7D9' } }
         };
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.font = { name: 'Calibri', size: 10 };
+        cell.font = { name: 'Calibri', size: 10, bold: false };
 
-        if (colNumber === 3 || colNumber === 4) {
-          cell.font = { bold: true, name: 'Calibri', size: 10 };
-        } else if (colNumber === 5) {
-          cell.font = { bold: true, name: 'Calibri', size: 10 }; // Bold patient name
+        if (colNumber === 2) {
+          cell.font = { bold: false, name: 'Calibri', size: 10 };
+        } else if (colNumber === 3 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 9 || colNumber === 10) {
+          cell.font = { bold: true, name: 'Calibri', size: 10 }; // Bold Room, MRN, Patient Name, Physician, Contractor, Officer
         } else if (colNumber === 8) {
           cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true }; // Diagnosis left-aligned
         } else if (colNumber === 11) {

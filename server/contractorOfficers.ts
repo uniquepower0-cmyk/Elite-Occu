@@ -46,6 +46,30 @@ export function normalizeContractorText(text: any): string {
 }
 
 /**
+ * Sanitizes contractor names for sheet display by removing noise words:
+ * - Removes the English word "main" (case-insensitive)
+ * - Removes Arabic "شركة" and "شركه"
+ */
+export function cleanContractorForDisplay(text: any): string {
+  if (text === undefined || text === null) return '';
+  let s = String(text).trim();
+  if (!s || s === '-' || s === 'null' || s === 'undefined') return '';
+
+  // Remove "main" (case-insensitive whole word)
+  s = s.replace(/\bmain\b/gi, '');
+
+  // Remove "شركة" and "شركه"
+  s = s.replace(/(^|[\s\(\[\-\_\/\.\,\:\*\#])(شركة|شركه)([\s\)\]\-\_\/\.\,\:\*\#]|$)/g, '$1 $3');
+  s = s.replace(/(شركة|شركه)/g, '');
+
+  // Clean empty parentheses, brackets, duplicate spaces
+  s = s.replace(/\(\s*\)/g, '');
+  s = s.replace(/\[\s*\]/g, '');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+/**
  * Detects if a contractor string or financial status represents a cash / self-paying patient
  */
 export function isCashContractor(text: any): boolean {
