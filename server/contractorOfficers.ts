@@ -24,7 +24,10 @@ export const OFFICERS: Record<string, OfficerInfo> = {
   abu_el_wafa: { name: 'ابو الوفا', phone: '+20 12 08477032' },
   nadine: { name: 'نادين', phone: '+20 15 57666514' },
   ziad: { name: 'زياد', phone: '+20 12 07544537' },
+  patient_accounts: { name: 'حسابات المرضى', phone: '' },
 };
+
+export const CASH_OFFICER_NAME = 'حسابات المرضى';
 
 /**
  * Normalizes text for robust Arabic & Latin search matching
@@ -43,30 +46,69 @@ export function normalizeContractorText(text: any): string {
 }
 
 /**
- * Determines the designated contracting officer ("مسئول التعاقد") for a given contractor name
+ * Detects if a contractor string or financial status represents a cash / self-paying patient
  */
-export function getResponsibleOfficer(contractor: string | null | undefined): string {
+export function isCashContractor(text: any): boolean {
+  if (text === undefined || text === null) return false;
+  const raw = String(text).trim();
+  if (!raw || raw === '-' || raw === 'null' || raw === 'undefined') return false;
+
+  const norm = normalizeContractorText(raw);
+  if (!norm) return false;
+
+  // Direct cash words anywhere in string (e.g. "نقابة اطباء Cash", "خصم نادي سبورتنج كاش", "Home Care - Cash", "كاش", "نقدي")
+  if (
+    norm.includes('cash') ||
+    norm.includes('كاش') ||
+    norm.includes('نقدي') ||
+    norm.includes('نقدى') ||
+    /\bنقد\b/.test(norm) ||
+    norm.includes('حسابات المرضى') ||
+    norm.includes('حسابات مرضي')
+  ) {
+    return true;
+  }
+
+  // Generic self-paying / individuals terms
+  if (
+    norm === 'individuals' ||
+    norm === 'self' ||
+    norm === 'افراد' ||
+    norm === 'أفراد' ||
+    norm === 'شخصي' ||
+    norm === 'شخصى' ||
+    norm === 'عميل' ||
+    norm === 'بدون جهة' ||
+    norm === 'بدون جهه' ||
+    norm === 'عقد الرياض el rayad' ||
+    norm === 'contractorname'
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Determines the designated contracting officer ("مسئول التعاقد") for a given contractor name.
+ * For all cash / self-paying patients, returns "حسابات المرضى".
+ */
+export function getResponsibleOfficer(contractor: string | null | undefined, financialStatus?: string | null | undefined): string {
+  // If financial status explicitly indicates cash, officer is always Patient Accounts
+  if (financialStatus && isCashContractor(financialStatus)) {
+    return CASH_OFFICER_NAME;
+  }
+
   if (!contractor) return '-';
   const raw = String(contractor).trim();
-  if (!raw) return '-';
+  if (!raw || raw === '-' || raw === 'null' || raw === 'undefined') return '-';
 
   const norm = normalizeContractorText(raw);
   if (!norm) return '-';
 
-  // Check self-paying / cash / generic values
-  if (
-    norm === 'cash' ||
-    norm === 'كاش' ||
-    norm === 'نقدي' ||
-    norm === 'نقدي' ||
-    norm === 'individuals' ||
-    norm === 'self' ||
-    norm === 'عقد الرياض el rayad' ||
-    norm === 'home care cash' ||
-    norm === 'nicu cash' ||
-    norm === 'contractorname'
-  ) {
-    return '-';
+  // Any cash patient / self-paying / generic values are handled by Patient Accounts ("حسابات المرضى")
+  if (isCashContractor(norm)) {
+    return CASH_OFFICER_NAME;
   }
 
   // 1. High-priority exact brand disambiguations

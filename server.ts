@@ -5696,15 +5696,15 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
   // Sort groups alphabetically by company name
   groupedItems.sort((a, b) => a.groupName.localeCompare(b.groupName));
 
-  sheet.mergeCells('A1:I1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(1).height = 90;
 
-  await applyRefinedHeader(workbook, sheet, 'المرضى المؤمنين (غير النقديين)', 9);
+  await applyRefinedHeader(workbook, sheet, 'المرضى المؤمنين (غير النقديين)', 8);
 
-  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'Financial Status / الحالة المالية', 'VIP STATUS'];
+  const headerLabels = ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS'];
   const headerRow = sheet.addRow(headerLabels);
   headerRow.height = 25;
   headerRow.eachCell((cell) => {
@@ -5734,8 +5734,8 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
     const rColors = companyColors[index % companyColors.length];
     
     const startRow = sheet.rowCount + 1;
-    sheet.addRow(['', '', '', '', '', '', '', '', '']); 
-    sheet.mergeCells(startRow, 1, startRow, 9);
+    sheet.addRow(['', '', '', '', '', '', '', '']); 
+    sheet.mergeCells(startRow, 1, startRow, 8);
     const separatorCell = sheet.getCell(startRow, 1);
     separatorCell.value = `■  ${group.groupName}  ■`;
     separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColors.badge } };
@@ -5754,7 +5754,6 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
         p.contractor, 
         responsibleOfficer,
         formattedDate, 
-        p.financialStatus,
         isPatientVip(p.name) ? "VIP" : ""
       ];
       const pRow = sheet.addRow(rowValues);
@@ -5772,7 +5771,7 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
         
         if (colNumber === 1 || colNumber === 2 || colNumber === 3) {
           cell.font = { bold: true, name: 'Calibri', size: 11 };
-        } else if (colNumber === 9) {
+        } else if (colNumber === 8) {
           cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFD32F2F' } }; 
         }
       });
@@ -5786,8 +5785,7 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
   sheet.getColumn(5).width = 25; 
   sheet.getColumn(6).width = 20; 
   sheet.getColumn(7).width = 20; 
-  sheet.getColumn(8).width = 22; 
-  sheet.getColumn(9).width = 15; 
+  sheet.getColumn(8).width = 15; 
 }
 
 async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
