@@ -1036,24 +1036,28 @@ export async function generateExitJpeg(
  * 5. General Debts Sheet (Cash Debts)
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
  */
-export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1380;
+export async function generateDebtsJpeg(
+  debts: any[],
+  dateLabel: string,
+  mrnLookupInput?: MrnResolver | Map<string, string> | any
+): Promise<{ buffer: Buffer; count: number; positiveRemaining: number }> {
+  const width = 1420;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 38;
 
   const cols = [
-    { label: '# / م', width: 50 },
-    { label: 'تاريخ الدخول / Admission Date', width: 120 },
-    { label: 'الغرفة / Room', width: 90 },
-    { label: 'كود المريض / MRN', width: 100 },
-    { label: 'اسم المريض / Patient Name', width: 230 },
-    { label: 'الطبيب المعالج / Physician', width: 190 },
-    { label: 'الجهة والتعاقد / Contractor', width: 170 },
-    { label: 'مسئول التعاقد', width: 120 },
-    { label: 'إجمالي الحساب / Total Bill (Z)', width: 110 },
-    { label: 'المبلغ المتبقي / Remaining Amount', width: 110 },
-    { label: 'نسبة المتبقي / Remaining Pct (%)', width: 90 },
+    { label: '# / م', width: 45 },
+    { label: 'Admission / الدخول', width: 120 },
+    { label: 'Room / الغرفة', width: 90 },
+    { label: 'MRN / الملف', width: 95 },
+    { label: 'Patient / اسم المريض', width: 230 },
+    { label: 'Physician / الطبيب', width: 190 },
+    { label: 'Contract / التعاقد', width: 180 },
+    { label: 'مسئول التعاقد', width: 130 },
+    { label: 'Total / الفاتورة', width: 120 },
+    { label: 'Remaining / المتبقي', width: 130 },
+    { label: 'Pct / النسبة', width: 90 },
   ];
 
   const totalTableHeight = tableHeaderHeight + Math.max((debts || []).length, 1) * rowHeight + 30;
@@ -1064,32 +1068,77 @@ export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promis
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrCellId = `cp_debthdr_${idx}`;
     tableSvgContent += `
+      <clipPath id="${hdrCellId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrCellId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
 
   let currentY = tableHeaderHeight;
   let serial = 1;
+  let totalPositiveRemaining = 0;
 
   (debts || []).forEach((p) => {
-    const contractorVal = p.contractor || p.colM || '';
-    const cleanedContractor = cleanContractorForDisplay(contractorVal);
+    const rawContract = p.contractor || p.colM || p.colF || 'Cash';
+    const cleanedContractor = cleanContractorForDisplay(rawContract);
+
+    // Patient Name: check colD, name, patientName, patient, or MRN lookup
+    let patientName = String(p.name || p.colD || p.patientName || p.patient || '').trim();
+    let mrnVal = String(p.mrn || p.id || p.colC || '').trim();
+    if (!patientName && mrnVal && mrnLookupInput?.getPatientByMrn) {
+      const fromMrn = mrnLookupInput.getPatientByMrn(mrnVal);
+      if (fromMrn?.name) patientName = fromMrn.name;
+    }
+    if ((!mrnVal || mrnVal.startsWith('transfer-') || mrnVal === '—') && patientName && mrnLookupInput?.resolve) {
+      const resolved = mrnLookupInput.resolve(patientName);
+      if (resolved && resolved !== '—') mrnVal = resolved;
+    }
+
+    // Physician
+    let physicianVal = String(p.physician || p.doctor || p.colW || '').trim();
+    if (!physicianVal && mrnVal && mrnLookupInput?.getPatientByMrn) {
+      const fromMrn = mrnLookupInput.getPatientByMrn(mrnVal);
+      if (fromMrn?.physician) physicianVal = fromMrn.physician;
+    }
+
+    // Total Bill (colZ)
+    const valZ = typeof p.valZ === 'number'
+      ? p.valZ
+      : (typeof p.totalInvoice === 'number'
+        ? p.totalInvoice
+        : (parseFloat(String(p.colZ || p.totalBill || p.total || '0').replace(/[^0-9.-]+/g, '')) || 0));
+
+    // Remaining Amount (colAB)
+    const valAB = typeof p.valAB === 'number'
+      ? p.valAB
+      : (typeof p.remainingAmount === 'number'
+        ? p.remainingAmount
+        : (parseFloat(String(p.colAB || p.remaining || p.amount || '0').replace(/[^0-9.-]+/g, '')) || 0));
+
+    if (valAB > 0) {
+      totalPositiveRemaining += valAB;
+    }
+
+    const pctStr = valZ > 0 ? ((valAB / valZ) * 100).toFixed(1) + '%' : (p.remainingPct ? `${p.remainingPct}%` : '0%');
+    const valZDisplay = valZ > 0 ? valZ.toFixed(2) : String(p.colZ || p.totalBill || '0');
+    const valABDisplay = valAB !== 0 ? valAB.toFixed(2) : String(p.colAB || p.remainingAmount || '0');
+
     const rowValues = [
       String(serial++),
-      formatDateForSheet(p.date || p.admissionDate || ''),
-      p.room || '',
-      p.mrn || p.id || '',
-      p.name || '',
-      p.physician || '',
+      formatDateForSheet(p.date || p.admissionDate || p.colA || ''),
+      p.room || p.bed || p.colB || '',
+      mrnVal || '—',
+      patientName,
+      physicianVal,
       cleanedContractor,
-      getResponsibleOfficer(contractorVal),
-      String(p.totalBill || p.total || '0'),
-      String(p.remainingAmount || p.amount || '0'),
-      p.remainingPct ? `${p.remainingPct}%` : '0%',
+      getResponsibleOfficer(rawContract),
+      valZDisplay,
+      valABDisplay,
+      pctStr,
     ];
 
     let cellX = 0;
@@ -1113,7 +1162,7 @@ export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promis
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('مديونيات المرضى (نقدي) / Cash Debts', width, headerHeight);
   const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
-  return { buffer, count: (debts || []).length };
+  return { buffer, count: (debts || []).length, positiveRemaining: totalPositiveRemaining };
 }
 
 /**

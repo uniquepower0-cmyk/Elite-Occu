@@ -16371,12 +16371,13 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
     if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel);
+      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel, mrnLookups);
       if (debtsRes.count > 0) {
+        const formattedPosRem = debtsRes.positiveRemaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         items.push({
           fileBuffer: debtsRes.buffer,
           fileName: '05_Debts.jpg',
-          caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${debtsRes.count}`
+          caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${debtsRes.count}\nover all positive remaining is : ${formattedPosRem}`
         });
       }
     }
