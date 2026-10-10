@@ -16272,9 +16272,9 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
 
-    // 1. Occupancy Sheet
-    if (occupancyRows && occupancyRows.length > 0) {
-      const occBuf = await sheetGen.generateOccupancyJpeg(occupancyRows, dateLabel);
+    // 1. Occupancy Sheet (Colored Structured Grid)
+    if (ds.hospitalData && ds.hospitalData.length > 0) {
+      const occBuf = await sheetGen.generateOccupancyJpeg(ds.hospitalData, dateLabel, isPatientVip);
       items.push({
         fileBuffer: occBuf,
         fileName: '01_Occupancy.jpg',
