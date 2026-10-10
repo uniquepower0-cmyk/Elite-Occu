@@ -16302,83 +16302,95 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
 
-    // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes dialysis cases
+    // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes OR, home care, dialysis, well baby
     if (ds.hospitalData && ds.hospitalData.length > 0) {
-      const occBuf = await sheetGen.generateOccupancyJpeg(
+      const occRes = await sheetGen.generateOccupancyJpeg(
         ds.hospitalData,
         dateLabel,
         isPatientVip,
         ds.cumulativeDialysis || []
       );
-      items.push({
-        fileBuffer: occBuf,
-        fileName: '01_Occupancy.jpg',
-        caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${activePatients.length}`
-      });
+      if (occRes.count > 0) {
+        items.push({
+          fileBuffer: occRes.buffer,
+          fileName: '01_Occupancy.jpg',
+          caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${occRes.count}`
+        });
+      }
     }
 
-    // 2. Admissions Sheet - strictly excludes dialysis cases
+    // 2. Admissions Sheet - strictly excludes non-inpatient cases (OR, Cath Lab, HomeCare, Well Baby, Dialysis)
     if (uniqueTodayEntries && uniqueTodayEntries.length > 0) {
-      const entriesBuf = await sheetGen.generateEntriesJpeg(
+      const entriesRes = await sheetGen.generateEntriesJpeg(
         uniqueTodayEntries,
         dateLabel,
         mrnLookups,
         ds.cumulativeDialysis || []
       );
-      items.push({
-        fileBuffer: entriesBuf,
-        fileName: '02_Admissions.jpg',
-        caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${uniqueTodayEntries.length}`
-      });
+      if (entriesRes.count > 0) {
+        items.push({
+          fileBuffer: entriesRes.buffer,
+          fileName: '02_Admissions.jpg',
+          caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${entriesRes.count}`
+        });
+      }
     }
 
     // 3. Dialysis Sheet - includes ALL dialysis cases exclusively with MRN and responsible officers
     if (ds.cumulativeDialysis && ds.cumulativeDialysis.length > 0) {
-      const diaBuf = await sheetGen.generateDialysisJpeg(
+      const diaRes = await sheetGen.generateDialysisJpeg(
         ds.cumulativeDialysis,
         dateLabel,
         mrnLookups
       );
-      items.push({
-        fileBuffer: diaBuf,
-        fileName: '03_Dialysis.jpg',
-        caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${ds.cumulativeDialysis.length}`
-      });
+      if (diaRes.count > 0) {
+        items.push({
+          fileBuffer: diaRes.buffer,
+          fileName: '03_Dialysis.jpg',
+          caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${diaRes.count}`
+        });
+      }
     }
 
     // 4. Exit / Discharges Sheet - strictly excludes dialysis cases
     if (uniqueCleanDischarged && uniqueCleanDischarged.length > 0) {
-      const exitBuf = await sheetGen.generateExitJpeg(
+      const exitRes = await sheetGen.generateExitJpeg(
         uniqueCleanDischarged,
         dateLabel,
         mrnLookups,
         ds.cumulativeDialysis || []
       );
-      items.push({
-        fileBuffer: exitBuf,
-        fileName: '04_Discharges.jpg',
-        caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${uniqueCleanDischarged.length}`
-      });
+      if (exitRes.count > 0) {
+        items.push({
+          fileBuffer: exitRes.buffer,
+          fileName: '04_Discharges.jpg',
+          caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${exitRes.count}`
+        });
+      }
     }
 
     // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
     if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-      const debtsBuf = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel);
-      items.push({
-        fileBuffer: debtsBuf,
-        fileName: '05_Debts.jpg',
-        caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${ds.cumulativeDebts.length}`
-      });
+      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel);
+      if (debtsRes.count > 0) {
+        items.push({
+          fileBuffer: debtsRes.buffer,
+          fileName: '05_Debts.jpg',
+          caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${debtsRes.count}`
+        });
+      }
     }
 
     // 6. Patient Transfers Sheet (if any)
     if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-      const transBuf = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel, mrnLookups);
-      items.push({
-        fileBuffer: transBuf,
-        fileName: '06_Transfers.jpg',
-        caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${ds.cumulativeTransfers.length}`
-      });
+      const transRes = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel, mrnLookups);
+      if (transRes.count > 0) {
+        items.push({
+          fileBuffer: transRes.buffer,
+          fileName: '06_Transfers.jpg',
+          caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${transRes.count}`
+        });
+      }
     }
 
     if (items.length === 0) {

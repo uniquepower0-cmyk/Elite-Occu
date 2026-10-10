@@ -20,6 +20,13 @@ function escapeXml(unsafe: any): string {
   });
 }
 
+function truncateText(str: any, maxChars: number): string {
+  if (!str) return '';
+  const s = String(str).trim();
+  if (s.length <= maxChars) return s;
+  return s.slice(0, maxChars - 1).trim() + '…';
+}
+
 function getHeaderBgPath(): string | null {
   const candidates = [
     path.resolve(process.cwd(), 'header_bg.webp'),
@@ -258,7 +265,16 @@ export class MrnResolver {
   public add(name: string, mrn: string, details?: { physician?: string; contractor?: string; room?: string }) {
     const rawName = String(name || '').trim();
     const cleanMrn = String(mrn || '').trim();
-    if (!cleanMrn || cleanMrn === '—' || cleanMrn === '-' || cleanMrn.toLowerCase() === 'undefined' || cleanMrn.toLowerCase() === 'null') {
+    if (
+      !cleanMrn ||
+      cleanMrn === '—' ||
+      cleanMrn === '-' ||
+      cleanMrn.toLowerCase() === 'undefined' ||
+      cleanMrn.toLowerCase() === 'null' ||
+      cleanMrn.startsWith('transfer-') ||
+      cleanMrn.toLowerCase().includes('transfer') ||
+      cleanMrn.length > 20
+    ) {
       return;
     }
     if (!rawName) return;
@@ -284,7 +300,15 @@ export class MrnResolver {
 
   public resolve(patientName: string, directMrn?: string): string {
     const direct = String(directMrn || '').trim();
-    if (direct && direct !== '—' && direct !== '-' && direct.toLowerCase() !== 'undefined' && direct.toLowerCase() !== 'null') {
+    if (
+      direct &&
+      direct !== '—' &&
+      direct !== '-' &&
+      direct.toLowerCase() !== 'undefined' &&
+      direct.toLowerCase() !== 'null' &&
+      !direct.startsWith('transfer-') &&
+      !direct.toLowerCase().includes('transfer')
+    ) {
       return direct;
     }
     const rawName = String(patientName || '').trim();
@@ -362,7 +386,8 @@ export function buildMrnLookup(
       nameLower === 'المريض' ||
       mrnLower === 'mrn' ||
       nameLower.includes('patient') ||
-      room.toLowerCase().includes('bed#')
+      room.toLowerCase().includes('bed#') ||
+      mrn.startsWith('transfer-')
     ) {
       return;
     }
@@ -375,13 +400,13 @@ export function buildMrnLookup(
     (list || []).forEach((item: any) => {
       if (!item) return;
       const name = String(item.name || item.patient || item.patientName || item.colD || '').trim();
-      const mrn = String(item.mrn || item.id || item.patientId || item.barcode || item.colC || item.code || '').trim();
+      const rawCandidate = String(item.mrn || item.patientId || item.barcode || item.colC || item.code || (item.id && !String(item.id).startsWith('transfer-') ? item.id : '') || '').trim();
       const physician = String(item.physician || item.doctor || item.colW || '').trim();
       const contractor = String(item.contractor || item.payment || item.colM || '').trim();
       const room = String(item.room || item.bed || item.colB || '').trim();
 
-      if (name && mrn) {
-        resolver.add(name, mrn, { room, physician, contractor });
+      if (name && rawCandidate && !rawCandidate.startsWith('transfer-') && !rawCandidate.toLowerCase().includes('transfer')) {
+        resolver.add(name, rawCandidate, { room, physician, contractor });
       }
     });
   });
@@ -399,7 +424,7 @@ export async function generateOccupancyJpeg(
   dateLabel: string,
   isVipFn?: (name: string) => boolean,
   dialysisCases: any[] = []
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; count: number }> {
   const width = 1320;
   const headerHeight = 180;
   const rowHeight = 32;
@@ -629,10 +654,14 @@ export async function generateOccupancyJpeg(
         const isVipCell = idx === 8 && Boolean(val);
         const textColor = isVipCell ? '#D32F2F' : '#000000';
         const isBold = idx >= 1 && idx <= 6;
+        const cellId = `cp_occ_${serial}_${idx}`;
+        const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+        const displayVal = truncateText(val, maxChars);
 
         tableSvgContent += `
+          <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
           <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
-          <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold || isVipCell ? 'bold' : 'normal'}" fill="${textColor}" text-anchor="middle">${escapeXml(val)}</text>
+          <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold || isVipCell ? 'bold' : 'normal'}" fill="${textColor}" text-anchor="middle">${escapeXml(displayVal)}</text>
         `;
         cellX += colDef.width;
       });
@@ -643,7 +672,8 @@ export async function generateOccupancyJpeg(
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('الإشغال', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: processedData.length };
 }
 
 /**
@@ -656,7 +686,7 @@ export async function generateEntriesJpeg(
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; count: number }> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
@@ -673,18 +703,13 @@ export async function generateEntriesJpeg(
     { label: 'Booking Date / تاريخ الحجز', width: 130 },
   ];
 
+  // Strictly exclude non-inpatient admissions: OR/Cath Lab, HomeCare, Dialysis, Well Baby
   const processedData = (entryPatients || []).filter((p) => {
-    const roomStr = p.room || p.colB || '';
-    if (/\b(or|or-1|or-2|or-3|or-4|or-5|or-6|or-7|or-8|or-9|or-10|or-11|or-12|or-13|or-14|or-15)\b/i.test(roomStr)) return false;
-    // Exclude dialysis cases from Admissions
-    if (isDialysisRoom(roomStr)) return false;
-    const nameVal = String(p.name || p.colD || '').trim();
-    if (dialysisCases && dialysisCases.some((dp) => 
-      isNameMatch(dp.name, nameVal) ||
-      (dp.mrn && p.mrn && dp.mrn === p.mrn) ||
-      (/^\d+$/.test(dp.name) && dp.name === p.mrn)
-    )) return false;
-    return true;
+    const roomStr = String(p.room || p.colB || '').trim();
+    const nameStr = String(p.name || p.colD || '').trim();
+    const contractorStr = String(p.contractor || p.colM || '').trim();
+    const physicianStr = String(p.physician || p.colW || '').trim();
+    return !isOccupancyExcluded(roomStr, nameStr, contractorStr, physicianStr, dialysisCases);
   });
 
   const totalTableHeight = tableHeaderHeight + Math.max(processedData.length, 1) * rowHeight + 30;
@@ -741,9 +766,14 @@ export async function generateEntriesJpeg(
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
       const isBold = idx >= 1 && idx <= 6;
+      const cellId = `cp_ent_${serial}_${idx}`;
+      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+      const displayVal = truncateText(val, maxChars);
+
       tableSvgContent += `
+        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(val)}</text>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -752,7 +782,8 @@ export async function generateEntriesJpeg(
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('دخول', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: processedData.length };
 }
 
 /**
@@ -763,7 +794,7 @@ export async function generateDialysisJpeg(
   dialysisPatients: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; count: number }> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
@@ -869,9 +900,14 @@ export async function generateDialysisJpeg(
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
       const isBold = idx >= 1 && idx <= 6;
+      const cellId = `cp_dia_${serial}_${idx}`;
+      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+      const displayVal = truncateText(val, maxChars);
+
       tableSvgContent += `
+        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(val)}</text>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -880,7 +916,8 @@ export async function generateDialysisJpeg(
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('غسيل كلوى', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: resolvedList.length };
 }
 
 /**
@@ -893,7 +930,7 @@ export async function generateExitJpeg(
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; count: number }> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
@@ -975,9 +1012,14 @@ export async function generateExitJpeg(
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
       const isBold = idx >= 1 && idx <= 6;
+      const cellId = `cp_exit_${serial}_${idx}`;
+      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+      const displayVal = truncateText(val, maxChars);
+
       tableSvgContent += `
+        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(val)}</text>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -986,14 +1028,15 @@ export async function generateExitJpeg(
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('خروج', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: processedData.length };
 }
 
 /**
  * 5. General Debts Sheet (Cash Debts)
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
  */
-export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promise<Buffer> {
+export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promise<{ buffer: Buffer; count: number }> {
   const width = 1380;
   const headerHeight = 180;
   const rowHeight = 32;
@@ -1053,9 +1096,14 @@ export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promis
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
       const isBold = idx >= 2 && idx <= 6;
+      const cellId = `cp_debt_${serial}_${idx}`;
+      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+      const displayVal = truncateText(val, maxChars);
+
       tableSvgContent += `
+        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(val)}</text>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -1064,7 +1112,8 @@ export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promis
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('مديونيات المرضى (نقدي) / Cash Debts', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: (debts || []).length };
 }
 
 /**
@@ -1075,7 +1124,7 @@ export async function generateTransfersJpeg(
   transfers: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
-): Promise<Buffer> {
+): Promise<{ buffer: Buffer; count: number }> {
   const width = 1240;
   const headerHeight = 180;
   const rowHeight = 30;
@@ -1114,7 +1163,13 @@ export async function generateTransfersJpeg(
   (transfers || []).forEach((t) => {
     const contractorVal = t.contractor || '';
     const patientName = String(t.name || t.patientName || '').trim();
-    const directMrn = String(t.mrn || t.id || t.patientId || t.barcode || '').trim();
+
+    // Sanitize candidate MRN: Never use transfer UUID / internal ID as MRN
+    let directMrn = '';
+    const cand = String(t.mrn || t.patientId || t.barcode || '').trim();
+    if (cand && !cand.startsWith('transfer-') && !cand.toLowerCase().includes('transfer') && !cand.includes('-') && cand !== '—' && cand !== '-') {
+      directMrn = cand;
+    }
 
     let resolvedMrn = directMrn;
     if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
@@ -1127,6 +1182,9 @@ export async function generateTransfersJpeg(
       } else {
         resolvedMrn = '—';
       }
+    }
+    if (resolvedMrn.startsWith('transfer-') || resolvedMrn.toLowerCase().includes('transfer')) {
+      resolvedMrn = '—';
     }
 
     const rowValues = [
@@ -1144,9 +1202,14 @@ export async function generateTransfersJpeg(
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
       const isBold = idx >= 1 && idx <= 5;
+      const cellId = `cp_trans_${serial}_${idx}`;
+      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+      const displayVal = truncateText(val, maxChars);
+
       tableSvgContent += `
+        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(val)}</text>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -1155,5 +1218,6 @@ export async function generateTransfersJpeg(
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('التحويلات', width, headerHeight);
-  return assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
+  return { buffer, count: (transfers || []).length };
 }
