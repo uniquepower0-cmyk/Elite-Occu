@@ -12,6 +12,10 @@ export interface WorkflowCardProps {
   onSecondaryAction?: () => void;
   secondaryIcon?: React.ReactElement;
   secondaryDisabled?: boolean;
+  tertiaryActionLabel?: string;
+  onTertiaryAction?: () => void;
+  tertiaryIcon?: React.ReactElement;
+  tertiaryDisabled?: boolean;
 }
 
 export function WorkflowCard({ 
@@ -24,7 +28,11 @@ export function WorkflowCard({
   secondaryActionLabel,
   onSecondaryAction,
   secondaryIcon,
-  secondaryDisabled
+  secondaryDisabled,
+  tertiaryActionLabel,
+  onTertiaryAction,
+  tertiaryIcon,
+  tertiaryDisabled
 }: WorkflowCardProps) {
   return (
     <div className={`bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/45 shadow-sm flex flex-col hover:border-teal-500/40 hover:shadow-md transition-all group ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -53,6 +61,17 @@ export function WorkflowCard({
           >
             {secondaryIcon || <ArrowRightLeft className="w-3.5 h-3.5 text-emerald-100" />}
             {secondaryActionLabel}
+          </button>
+        )}
+
+        {tertiaryActionLabel && onTertiaryAction && (
+          <button 
+            onClick={onTertiaryAction}
+            disabled={tertiaryDisabled || disabled}
+            className="w-full py-2.5 px-4 bg-[#0a463c] text-white rounded-xl font-bold text-[10px] tracking-wider flex items-center justify-center gap-2 hover:bg-[#07362e] transition-all active:scale-95 shadow-md shadow-teal-950/15 disabled:bg-slate-300"
+          >
+            {tertiaryIcon || <ArrowRightLeft className="w-3.5 h-3.5 text-teal-200" />}
+            {tertiaryActionLabel}
           </button>
         )}
       </div>

@@ -1639,6 +1639,28 @@ export default function App() {
     }
   };
 
+  const handleSendCombinedExcelToWhatsApp = async () => {
+    setProcessing('Sending Combined Excel Report to WhatsApp');
+    try {
+      const res = await fetch('/api/whatsapp/send-combined-excel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        alert(`✓ Successfully dispatched the combined Excel file (${data.fileName || 'Excel file'}) to WhatsApp group(s)!`);
+      } else {
+        alert(`⚠️ WhatsApp Send Error: ${data.error || 'Failed to dispatch combined Excel report'}`);
+      }
+    } catch (err: any) {
+      console.error('WhatsApp Error:', err);
+      alert(`Failed to send combined Excel sheet to WhatsApp: ${err.message || String(err)}`);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
   const downloadRefinedCompanionSheetReport = async () => {
     setProcessing('Downloading Refined Companion Status');
     try {
@@ -4853,6 +4875,10 @@ export default function App() {
                           onSecondaryAction={handleSendRefinedCombinedToWhatsApp}
                           secondaryIcon={<Send className="w-3.5 h-3.5 text-white" />}
                           secondaryDisabled={!!processing}
+                          tertiaryActionLabel={processing === 'Sending Combined Excel Report to WhatsApp' ? 'Sending Excel...' : 'Send Combined Excel to WhatsApp'}
+                          onTertiaryAction={handleSendCombinedExcelToWhatsApp}
+                          tertiaryIcon={<FileSpreadsheet className="w-3.5 h-3.5 text-white" />}
+                          tertiaryDisabled={!!processing}
                         />
                         <WorkflowCard 
                           title="Refined Companion Sheet"

@@ -7,12 +7,14 @@ export interface SendImageOptions {
   fileBuffer: Buffer;
   fileName: string;
   caption?: string;
+  mimeType?: string;
 }
 
 export interface SendBatchItem {
   fileBuffer: Buffer;
   fileName: string;
   caption?: string;
+  mimeType?: string;
 }
 
 export interface SendBatchResult {
@@ -60,11 +62,18 @@ export class GreenApiService {
 
     const url = `https://api.green-api.com/waInstance${this.instanceId}/sendFileByUpload/${this.apiToken}`;
 
+    const mimeType = options.mimeType || (
+      options.fileName.endsWith('.xlsx') ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' :
+      options.fileName.endsWith('.png') ? 'image/png' :
+      options.fileName.endsWith('.pdf') ? 'application/pdf' :
+      'image/jpeg'
+    );
+
     const formData = new FormData();
     formData.append('chatId', options.chatId);
     formData.append(
       'file',
-      new Blob([new Uint8Array(options.fileBuffer)], { type: 'image/jpeg' }),
+      new Blob([new Uint8Array(options.fileBuffer)], { type: mimeType }),
       options.fileName
     );
     if (options.caption) {
@@ -119,6 +128,7 @@ export class GreenApiService {
           fileBuffer: item.fileBuffer,
           fileName: item.fileName,
           caption: item.caption,
+          mimeType: item.mimeType,
         });
         result.sentCount++;
         result.messageIds.push(uploadRes.idMessage);

@@ -16403,6 +16403,97 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
   }
 });
 
+// Endpoint sending the exact downloadable Combined Excel Sheet (.xlsx) to WhatsApp groups without any changes
+app.post('/api/whatsapp/send-combined-excel', async (req, res) => {
+  try {
+    if (!greenApiService.isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Green API is not configured on the server. Please configure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS in .env'
+      });
+    }
+
+    const reqDate = req.query.date || req.body?.date ? String(req.query.date || req.body?.date).trim() : null;
+    const ds = await resolveOccupancyDataset(reqDate);
+    if (!ds.hospitalData || ds.hospitalData.length === 0) {
+      return res.status(400).json({ success: false, error: `No occupancy data available for date: ${reqDate || 'current'}.` });
+    }
+
+    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
+    const cairoCombTodayStr = getCairoDateTime().dateStr;
+    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = activePatients.some(activePt => 
+        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+      );
+      if (isStillPresent) return false;
+      if (!ds.isHistorical) {
+        const dischargeDateVal = discPt.dischargeDate || discPt.date;
+        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const uniqueCleanDischarged: any[] = [];
+    cleanDischarged.forEach(p => {
+      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+        uniqueCleanDischarged.push(p);
+      }
+    });
+
+    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
+    const uniqueTodayEntries: any[] = [];
+    todayEntries.forEach(p => {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
+        uniqueTodayEntries.push(p);
+      }
+    });
+
+    // Build the exact same workbook as the download button without any changes
+    const workbook = new ExcelJS.Workbook();
+    await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
+    await addRefinedEntrySheet(workbook, uniqueTodayEntries);
+    await addRefinedDialysisSheet(workbook, ds.cumulativeDialysis);
+    await addRefinedExitSheet(workbook, uniqueCleanDischarged);
+    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+      await addRefinedDebtsSheet(workbook, ds.cumulativeDebts);
+    }
+    if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
+      await addRefinedInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
+    }
+    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+      await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers);
+    }
+
+    const excelBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    const dateLabel = ds.dateLabel || cairoCombTodayStr;
+    const fileName = `Combined_Hospital_Refined_Report_${dateLabel}.xlsx`;
+    const caption = `📊 ملف التقرير المجمع للمستشفى (${dateLabel})\nالمستشفى: Elite Hospital\nالملف: ${fileName}`;
+
+    console.log(`[WhatsApp Combined Excel] Broadcasting ${fileName} (${excelBuffer.length} bytes) to WhatsApp...`);
+    const results = await greenApiService.broadcastBatch([{
+      fileBuffer: excelBuffer,
+      fileName,
+      caption,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }]);
+
+    const hasFailure = results.some(r => !r.success);
+    const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+
+    return res.json({
+      success: !hasFailure,
+      sentCount: totalSent,
+      fileName,
+      results
+    });
+  } catch (error: any) {
+    console.error('[WhatsApp Combined Excel Error]:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal error broadcasting combined Excel report to WhatsApp.' });
+  }
+});
+
 // Endpoint dispatching refined combined sheet images to WhatsApp groups via Green API
 app.post('/api/whatsapp/send-refined-combined', upload.array('files', 10), async (req, res) => {
   try {

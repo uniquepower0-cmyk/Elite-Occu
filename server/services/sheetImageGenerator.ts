@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from '../contractorOfficers.js';
-import { isNameMatch, normalizeArabicName, isOperatingRoom, isOrXRoom } from '../nameUtils.js';
+import { isNameMatch, normalizeArabicName, isOperatingRoom, isOrXRoom, cleanRoomStr } from '../nameUtils.js';
 
 export { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay };
 
@@ -142,6 +142,10 @@ export function isOccupancyExcluded(
     isOperatingRoom(rLower) ||
     isOrXRoom(rLower) ||
     /\b(or|or-?\d+|orx)\b/i.test(rLower) ||
+    /\bor\s*[-#_]?\s*\d+\b/i.test(rLower) ||
+    rLower.startsWith('or ') ||
+    rLower.startsWith('or-') ||
+    rLower === 'or' ||
     rLower.includes('operating') ||
     rLower.includes('operation') ||
     rLower.includes('theatre') ||
@@ -149,6 +153,7 @@ export function isOccupancyExcluded(
     rLower.includes('عملية') ||
     rLower.includes('عمليه') ||
     rLower.includes('cath lab') ||
+    rLower.includes('cathlab') ||
     rLower.includes('قسطرة') ||
     rLower.includes('قسطره') ||
     rLower.includes('endoscopy') ||
@@ -172,9 +177,14 @@ export function isOccupancyExcluded(
     rLower.includes('رعايه منزليه') ||
     cLower.includes('homecare') ||
     cLower.includes('home care') ||
+    cLower.includes('home-care') ||
     cLower.includes('home sampling') ||
     cLower.includes('رعاية منزلية') ||
-    cLower.includes('رعايه منزليه')
+    cLower.includes('رعايه منزليه') ||
+    allText.includes('homecare') ||
+    allText.includes('home care') ||
+    allText.includes('رعاية منزلية') ||
+    allText.includes('رعايه منزليه')
   ) {
     return true;
   }
@@ -184,12 +194,16 @@ export function isOccupancyExcluded(
     isDialysisRoom(rLower) ||
     allText.includes('dialysis') ||
     allText.includes('diyalsis') ||
+    allText.includes('dialys') ||
     allText.includes('hemodialysis') ||
     allText.includes('haemodialysis') ||
+    allText.includes('hemo dialysis') ||
+    allText.includes('haemo dialysis') ||
     allText.includes('غسيل') ||
     allText.includes('استصفاء') ||
     allText.includes('ديلزة') ||
-    allText.includes('ديلزه')
+    allText.includes('ديلزه') ||
+    /\b(hd|hemo|dial)\s*[-#_]?\s*\d*\b/i.test(rLower)
   ) {
     return true;
   }
@@ -210,7 +224,20 @@ export function isOccupancyExcluded(
     rLower.includes('حضانه طبيعيه') ||
     rLower.includes('حضانة أطفال طبيعية') ||
     (rLower.includes('حضان') && (rLower.includes('طبيعي') || rLower.includes('طبيعيه'))) ||
-    rLower.includes('well baby room')
+    rLower.includes('well baby room') ||
+    allText.includes('wellbaby') ||
+    allText.includes('well baby') ||
+    allText.includes('حضانة طبيعية')
+  ) {
+    return true;
+  }
+
+  // 5. Day Case / Day Surgery
+  if (
+    rLower.includes('day case') ||
+    rLower.includes('daycase') ||
+    rLower.includes('day surgery') ||
+    rLower.includes('جراحة اليوم الواحد')
   ) {
     return true;
   }
@@ -377,7 +404,7 @@ export async function generateOccupancyJpeg(
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 36;
-  const deptHeaderHeight = 34;
+  const separatorHeight = 24;
 
   const cols = [
     { label: '# / الرقم', width: 60 },
@@ -391,19 +418,89 @@ export async function generateOccupancyJpeg(
     { label: 'VIP STATUS', width: 70 },
   ];
 
-  // Process rows and STRICTLY FILTER OUT: OR, Home Care, Dialysis, Well Baby
-  let processedData = (rawHospitalData || []).slice(3)
-    .map((row) => ({
-      room: String(row[0] || '').trim(),
-      name: String(row[1] || '').trim(),
-      physician: String(row[2] || '').trim(),
-      contractor: String(row[3] || '').trim(),
-      date: String(row[4] || '').trim(),
-      mrn: String(row[5] || '').trim(),
-    }))
-    .filter((p) => !isOccupancyExcluded(p.room, p.name, p.contractor, p.physician, dialysisCases));
+  // 1. Universal row parser: supports 39-col unified raw, 6-col formatted, and object lists
+  const rawList: any[] = [];
+  (rawHospitalData || []).forEach((row) => {
+    if (!row) return;
 
-  // Sort by department/room rank
+    if (!Array.isArray(row) && typeof row === 'object') {
+      const room = cleanRoomStr(String(row.room || row.bed || row.colB || '').trim());
+      const name = String(row.name || row.patient || row.colD || '').trim();
+      const physician = String(row.physician || row.doctor || row.colW || '').trim();
+      const contractor = String(row.contractor || row.payment || row.colM || '').trim();
+      const date = String(row.date || row.bookingDate || row.colA || '').trim();
+      const mrn = String(row.mrn || row.id || row.colC || row.colF || '').trim();
+      if (room && name && name.toLowerCase() !== 'patient' && name !== 'المريض') {
+        rawList.push({ room, name, physician, contractor, date, mrn });
+      }
+      return;
+    }
+
+    if (!Array.isArray(row) || row.length === 0) return;
+
+    const str0 = String(row[0] || '').trim();
+    const str1 = String(row[1] || '').trim();
+    const str2 = String(row[2] || '').trim();
+    const str3 = String(row[3] || '').trim();
+    const str0Low = str0.toLowerCase();
+    const str1Low = str1.toLowerCase();
+    const str2Low = str2.toLowerCase();
+    const str3Low = str3.toLowerCase();
+
+    // Skip table headers and empty/metadata rows
+    if (
+      str0Low.includes('admissiondate') ||
+      str0Low.includes('bed#') ||
+      str1Low.includes('bed#') ||
+      str2Low.includes('mrn') ||
+      str3Low.includes('patient') ||
+      str0 === 'رقم الغرفة' ||
+      str1 === 'اسم المريض' ||
+      str1Low === 'patient' ||
+      str1 === 'المريض' ||
+      (!row[0] && !row[1] && !row[2] && !row[3])
+    ) {
+      return;
+    }
+
+    // Unified raw table (>=10 cols) vs Formatted table (6 cols)
+    const isUnified = row.length >= 10 || (str0Low.includes('t') || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(str0)));
+
+    let room = '';
+    let name = '';
+    let physician = '';
+    let contractor = '';
+    let date = '';
+    let mrn = '';
+
+    if (isUnified) {
+      date = str0;
+      room = cleanRoomStr(String(row[1] || '').trim());
+      mrn = String(row[2] || '').trim();
+      name = String(row[3] || '').trim();
+      contractor = String(row[12] || '').trim();
+      physician = String(row[22] || '').trim();
+    } else {
+      room = cleanRoomStr(String(row[0] || '').trim());
+      name = String(row[1] || '').trim();
+      physician = String(row[2] || '').trim();
+      contractor = String(row[3] || '').trim();
+      date = String(row[4] || '').trim();
+      mrn = String(row[5] || '').trim();
+    }
+
+    if (room && name && name.toLowerCase() !== 'patient' && name !== 'المريض') {
+      rawList.push({ room, name, physician, contractor, date, mrn });
+    }
+  });
+
+  // 2. Strict Inpatient Exclusion Filter:
+  // Strictly excludes: OR, Home Care, Dialysis, Well Baby, Day Case
+  const processedData = rawList.filter(
+    (p) => !isOccupancyExcluded(p.room, p.name, p.contractor, p.physician, dialysisCases)
+  );
+
+  // 3. Sort identically to Excel coloured structured grid sheet
   processedData.sort((a, b) => {
     const roomA = a.room.toUpperCase();
     const roomB = b.room.toUpperCase();
@@ -436,7 +533,7 @@ export async function generateOccupancyJpeg(
     return { badge: '#455A64', row: '#F5F7F8' };
   };
 
-  // Group items by floor / clinical unit
+  // 4. Group items by clinical department and floor zones
   const groupedItems: { groupName: string; items: any[] }[] = [];
   processedData.forEach((p) => {
     const roomStr = p.room.toUpperCase();
@@ -448,11 +545,11 @@ export async function generateOccupancyJpeg(
     else if (roomStr.includes('SICU')) groupName = 'SICU';
     else if (roomStr.includes('VIP') || roomStr.includes('VIP ISOLATION')) groupName = 'VIP';
     else if (roomStr.includes('ICU')) groupName = 'ICU';
-    else if (roomNum >= 101 && roomNum <= 108) groupName = 'First Floor';
-    else if (roomNum >= 301 && roomNum <= 319) groupName = 'Zone A (301-319)';
-    else if (roomNum >= 320 && roomNum <= 329) groupName = 'Zone B (320-329)';
-    else if (roomNum >= 330 && roomNum <= 332) groupName = 'Zone C (330-332)';
-    else if (roomNum >= 401 && roomNum <= 422) groupName = '4th Floor';
+    else if (roomNum >= 101 && roomNum <= 108) groupName = '1st Floor (101-108)';
+    else if (roomNum >= 301 && roomNum <= 319) groupName = '301-319';
+    else if (roomNum >= 320 && roomNum <= 329) groupName = '320-329';
+    else if (roomNum >= 330 && roomNum <= 332) groupName = '330-332';
+    else if (roomNum >= 401 && roomNum <= 422) groupName = '4th Floor (401-422)';
     else if (!isNaN(roomNum) && roomNum > 0) groupName = 'Floor ' + Math.floor(roomNum / 100);
 
     let existing = groupedItems.find((g) => g.groupName === groupName);
@@ -463,9 +560,10 @@ export async function generateOccupancyJpeg(
     existing.items.push(p);
   });
 
+  // Calculate table height including #FCE4D6 separator rows between groups
   let totalTableHeight = tableHeaderHeight;
   groupedItems.forEach((g) => {
-    totalTableHeight += deptHeaderHeight + g.items.length * rowHeight;
+    totalTableHeight += separatorHeight + g.items.length * rowHeight;
   });
   totalTableHeight += 40;
 
@@ -491,14 +589,22 @@ export async function generateOccupancyJpeg(
     const rColors = getGroupColors(group.groupName);
     const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
 
-    // Department Separator Row
-    tableSvgContent += `
-      <rect y="${currentY}" width="${width}" height="${deptHeaderHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${width / 2}" y="${currentY + deptHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
-    `;
-    currentY += deptHeaderHeight;
+    // Coloured Structured Grid Separator Row:
+    // Rendered in exact Excel separator color #FCE4D6 with cell borders #B2B2B2
+    let sepX = 0;
+    cols.forEach((col) => {
+      tableSvgContent += `
+        <rect x="${sepX}" y="${currentY}" width="${col.width}" height="${separatorHeight}" fill="#FCE4D6" stroke="#B2B2B2" stroke-width="0.8"/>
+      `;
+      sepX += col.width;
+    });
 
-    // Patient rows
+    tableSvgContent += `
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#7C3B14" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+    `;
+    currentY += separatorHeight;
+
+    // Patient rows for this group
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
