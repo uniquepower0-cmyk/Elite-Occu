@@ -2,7 +2,9 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from '../contractorOfficers.js';
-import { isNameMatch } from '../nameUtils.js';
+import { isNameMatch, normalizeArabicName, isOperatingRoom, isOrXRoom } from '../nameUtils.js';
+
+export { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay };
 
 function escapeXml(unsafe: any): string {
   return String(unsafe || '').replace(/[<>&"'\\]/g, (c) => {
@@ -112,57 +114,258 @@ export function isDialysisRoom(roomStr: string): boolean {
 }
 
 /**
- * Builds an MRN lookup dictionary and reverse patient lookup from all known sources
+ * Robust Occupancy Exclusion Filter:
+ * Strictly excludes:
+ * 1. OR (Operating Rooms, Cath Lab, Endoscopy, Recovery, الإفاقة)
+ * 2. Home Care (HomeCare 1..30, الرعاية المنزلية)
+ * 3. Dialysis (Dialysis Rooms, Hemodialysis, الغسيل الكلوي)
+ * 4. Well Baby (Well Baby Room 1..3, الحضانة الطبيعية)
+ */
+export function isOccupancyExcluded(
+  room: string,
+  name?: string,
+  contractor?: string,
+  physician?: string,
+  dialysisCases: any[] = []
+): boolean {
+  const rLower = String(room || '').trim().toLowerCase();
+  const nLower = String(name || '').trim().toLowerCase();
+  const cLower = String(contractor || '').trim().toLowerCase();
+  const pLower = String(physician || '').trim().toLowerCase();
+  const allText = `${rLower} ${nLower} ${cLower} ${pLower}`;
+
+  if (!rLower || !nLower) return true;
+  if (rLower === 'bed' || rLower === 'room' || rLower === 'الغرفة' || nLower === 'patient' || nLower === 'المريض') return true;
+
+  // 1. Operating Room (OR) / Cath Lab / Endoscopy / Recovery
+  if (
+    isOperatingRoom(rLower) ||
+    isOrXRoom(rLower) ||
+    /\b(or|or-?\d+|orx)\b/i.test(rLower) ||
+    rLower.includes('operating') ||
+    rLower.includes('operation') ||
+    rLower.includes('theatre') ||
+    rLower.includes('عمليات') ||
+    rLower.includes('عملية') ||
+    rLower.includes('عمليه') ||
+    rLower.includes('cath lab') ||
+    rLower.includes('قسطرة') ||
+    rLower.includes('قسطره') ||
+    rLower.includes('endoscopy') ||
+    rLower.includes('مناظير') ||
+    rLower.includes('منظار') ||
+    rLower.includes('recovery') ||
+    rLower.includes('إفاقة') ||
+    rLower.includes('افاقة')
+  ) {
+    return true;
+  }
+
+  // 2. Home Care
+  if (
+    rLower.includes('homecare') ||
+    rLower.includes('home care') ||
+    rLower.includes('home-care') ||
+    rLower.includes('منزلية') ||
+    rLower.includes('منزليه') ||
+    rLower.includes('رعاية منزلية') ||
+    rLower.includes('رعايه منزليه') ||
+    cLower.includes('homecare') ||
+    cLower.includes('home care') ||
+    cLower.includes('home sampling') ||
+    cLower.includes('رعاية منزلية') ||
+    cLower.includes('رعايه منزليه')
+  ) {
+    return true;
+  }
+
+  // 3. Dialysis
+  if (
+    isDialysisRoom(rLower) ||
+    allText.includes('dialysis') ||
+    allText.includes('diyalsis') ||
+    allText.includes('hemodialysis') ||
+    allText.includes('haemodialysis') ||
+    allText.includes('غسيل') ||
+    allText.includes('استصفاء') ||
+    allText.includes('ديلزة') ||
+    allText.includes('ديلزه')
+  ) {
+    return true;
+  }
+  if (dialysisCases && dialysisCases.some((dp) => 
+    isNameMatch(dp.name, nLower) ||
+    (dp.mrn && dp.mrn === nLower) ||
+    (/^\d+$/.test(dp.name) && dp.name === nLower)
+  )) {
+    return true;
+  }
+
+  // 4. Well Baby
+  if (
+    rLower.includes('wellbaby') ||
+    rLower.includes('well baby') ||
+    rLower.includes('well-baby') ||
+    rLower.includes('حضانة طبيعية') ||
+    rLower.includes('حضانه طبيعيه') ||
+    rLower.includes('حضانة أطفال طبيعية') ||
+    (rLower.includes('حضان') && (rLower.includes('طبيعي') || rLower.includes('طبيعيه'))) ||
+    rLower.includes('well baby room')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Universal Intelligent MRN Resolver
+ * Solves MRN across exact match, normalized Arabic, and fuzzy patient names.
+ */
+export class MrnResolver {
+  public exactMap = new Map<string, string>();
+  public normMap = new Map<string, string>();
+  public mrnToPatient = new Map<string, { name: string; physician?: string; contractor?: string; room?: string }>();
+  public allPairs: Array<{ name: string; normName: string; mrn: string }> = [];
+
+  public add(name: string, mrn: string, details?: { physician?: string; contractor?: string; room?: string }) {
+    const rawName = String(name || '').trim();
+    const cleanMrn = String(mrn || '').trim();
+    if (!cleanMrn || cleanMrn === '—' || cleanMrn === '-' || cleanMrn.toLowerCase() === 'undefined' || cleanMrn.toLowerCase() === 'null') {
+      return;
+    }
+    if (!rawName) return;
+
+    const lower = rawName.toLowerCase();
+    const norm = normalizeArabicName(rawName);
+
+    if (!this.exactMap.has(lower)) {
+      this.exactMap.set(lower, cleanMrn);
+    }
+    if (norm && !this.normMap.has(norm)) {
+      this.normMap.set(norm, cleanMrn);
+    }
+    if (!this.mrnToPatient.has(cleanMrn)) {
+      this.mrnToPatient.set(cleanMrn, { name: rawName, ...details });
+    }
+    const stripped = cleanMrn.replace(/^0+/, '');
+    if (stripped && !this.mrnToPatient.has(stripped)) {
+      this.mrnToPatient.set(stripped, { name: rawName, ...details });
+    }
+    this.allPairs.push({ name: rawName, normName: norm, mrn: cleanMrn });
+  }
+
+  public resolve(patientName: string, directMrn?: string): string {
+    const direct = String(directMrn || '').trim();
+    if (direct && direct !== '—' && direct !== '-' && direct.toLowerCase() !== 'undefined' && direct.toLowerCase() !== 'null') {
+      return direct;
+    }
+    const rawName = String(patientName || '').trim();
+    if (!rawName) return '—';
+
+    // 1. Direct lowercase match
+    const lower = rawName.toLowerCase();
+    if (this.exactMap.has(lower)) return this.exactMap.get(lower)!;
+
+    // 2. Normalized Arabic match
+    const norm = normalizeArabicName(rawName);
+    if (norm && this.normMap.has(norm)) return this.normMap.get(norm)!;
+
+    // 3. Fuzzy match using isNameMatch
+    for (const pair of this.allPairs) {
+      if (isNameMatch(pair.name, rawName) || (norm && pair.normName && (pair.normName.includes(norm) || norm.includes(pair.normName)))) {
+        return pair.mrn;
+      }
+    }
+
+    return '—';
+  }
+
+  public getPatientByMrn(mrn: string) {
+    const cleanMrn = String(mrn || '').trim();
+    const stripped = cleanMrn.replace(/^0+/, '');
+    return this.mrnToPatient.get(cleanMrn) || (stripped ? this.mrnToPatient.get(stripped) : undefined);
+  }
+
+  public get nameToMrn(): Map<string, string> {
+    return this.exactMap;
+  }
+}
+
+/**
+ * Builds a comprehensive MRN resolver from all known sources (39-col raw, formatted, object arrays).
  */
 export function buildMrnLookup(
   rawRows: any[][] = [],
   otherLists: any[][] = []
-): {
-  nameToMrn: Map<string, string>;
-  mrnToPatient: Map<string, { name: string; physician?: string; contractor?: string; room?: string }>;
-} {
-  const nameToMrn = new Map<string, string>();
-  const mrnToPatient = new Map<string, { name: string; physician?: string; contractor?: string; room?: string }>();
+): MrnResolver {
+  const resolver = new MrnResolver();
 
-  (rawRows || []).slice(3).forEach((r) => {
-    const room = String(r[0] || '').trim();
-    const name = String(r[1] || '').trim();
-    const physician = String(r[2] || '').trim();
-    const contractor = String(r[3] || '').trim();
-    const mrn = String(r[5] || '').trim();
+  // 1. Index rawRows (handles both raw uploads with headers and pre-filtered arrays)
+  (rawRows || []).forEach((r) => {
+    if (!Array.isArray(r) || r.length === 0) return;
+    const isUnified = r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))));
+    let room = "";
+    let name = "";
+    let physician = "";
+    let contractor = "";
+    let mrn = "";
 
-    if (name && mrn && !nameToMrn.has(name.toLowerCase())) {
-      nameToMrn.set(name.toLowerCase(), mrn);
+    if (isUnified) {
+      room = String(r[1] || "").trim();
+      mrn = String(r[2] || "").trim();
+      name = String(r[3] || "").trim();
+      contractor = String(r[12] || "").trim();
+      physician = String(r[22] || "").trim();
+    } else {
+      room = String(r[0] || "").trim();
+      name = String(r[1] || "").trim();
+      physician = String(r[2] || "").trim();
+      contractor = String(r[3] || "").trim();
+      mrn = String(r[5] || "").trim();
     }
-    if (mrn && !mrnToPatient.has(mrn)) {
-      mrnToPatient.set(mrn, { name, physician, contractor, room });
+
+    // Skip table headers and empty rows
+    const nameLower = name.toLowerCase();
+    const mrnLower = mrn.toLowerCase();
+    if (
+      !name ||
+      !mrn ||
+      nameLower === 'patient' ||
+      nameLower === 'المريض' ||
+      mrnLower === 'mrn' ||
+      nameLower.includes('patient') ||
+      room.toLowerCase().includes('bed#')
+    ) {
+      return;
     }
+
+    resolver.add(name, mrn, { room, physician, contractor });
   });
 
+  // 2. Index otherLists (entries, discharged, dialysis, debts, transfers, registry)
   otherLists.forEach((list) => {
     (list || []).forEach((item: any) => {
-      const name = String(item.name || item.patient || '').trim();
-      const mrn = String(item.mrn || item.id || '').trim();
-      const physician = String(item.physician || item.doctor || '').trim();
-      const contractor = String(item.contractor || item.payment || '').trim();
-      const room = String(item.room || item.bed || '').trim();
+      if (!item) return;
+      const name = String(item.name || item.patient || item.patientName || item.colD || '').trim();
+      const mrn = String(item.mrn || item.id || item.patientId || item.barcode || item.colC || item.code || '').trim();
+      const physician = String(item.physician || item.doctor || item.colW || '').trim();
+      const contractor = String(item.contractor || item.payment || item.colM || '').trim();
+      const room = String(item.room || item.bed || item.colB || '').trim();
 
-      if (name && mrn && !nameToMrn.has(name.toLowerCase())) {
-        nameToMrn.set(name.toLowerCase(), mrn);
-      }
-      if (mrn && !mrnToPatient.has(mrn)) {
-        mrnToPatient.set(mrn, { name, physician, contractor, room });
+      if (name && mrn) {
+        resolver.add(name, mrn, { room, physician, contractor });
       }
     });
   });
 
-  return { nameToMrn, mrnToPatient };
+  return resolver;
 }
 
 /**
  * 1. Occupancy Sheet (Colored Structured Grid)
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
- * STRICTLY EXCLUDES: Dialysis cases (which appear only in Dialysis sheet).
+ * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateOccupancyJpeg(
   rawHospitalData: any[][],
@@ -188,7 +391,7 @@ export async function generateOccupancyJpeg(
     { label: 'VIP STATUS', width: 70 },
   ];
 
-  // Process rows and STRICTLY FILTER OUT DIALYSIS CASES
+  // Process rows and STRICTLY FILTER OUT: OR, Home Care, Dialysis, Well Baby
   let processedData = (rawHospitalData || []).slice(3)
     .map((row) => ({
       room: String(row[0] || '').trim(),
@@ -198,23 +401,7 @@ export async function generateOccupancyJpeg(
       date: String(row[4] || '').trim(),
       mrn: String(row[5] || '').trim(),
     }))
-    .filter((p) => {
-      if (!p.room || !p.name) return false;
-      const rLower = p.room.toLowerCase();
-      const nLower = p.name.toLowerCase();
-      if (rLower === 'bed' || rLower === 'room' || rLower === 'الغرفة' || nLower === 'patient' || nLower === 'المريض') return false;
-      if (/\b(or|or-1|or-2|or-3|or-4|or-5|or-6|or-7|or-8|or-9|or-10|or-11|or-12|or-13|or-14|or-15)\b/i.test(p.room)) return false;
-
-      // STRICT EXCLUSION: Dialysis cases must ONLY be in the Dialysis sheet
-      if (isDialysisRoom(p.room)) return false;
-      if (dialysisCases && dialysisCases.some((dp) => 
-        isNameMatch(dp.name, p.name) ||
-        (dp.mrn && p.mrn && dp.mrn === p.mrn) ||
-        (/^\d+$/.test(dp.name) && dp.name === p.mrn)
-      )) return false;
-
-      return true;
-    });
+    .filter((p) => !isOccupancyExcluded(p.room, p.name, p.contractor, p.physician, dialysisCases));
 
   // Sort by department/room rank
   processedData.sort((a, b) => {
@@ -361,15 +548,13 @@ export async function generateOccupancyJpeg(
 export async function generateEntriesJpeg(
   entryPatients: any[],
   dateLabel: string,
-  mrnLookupInput?: Map<string, string> | { nameToMrn: Map<string, string>; mrnToPatient: Map<string, any> },
+  mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
 ): Promise<Buffer> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
-
-  const nameToMrn = mrnLookupInput instanceof Map ? mrnLookupInput : (mrnLookupInput?.nameToMrn || new Map<string, string>());
 
   const cols = [
     { label: '# / الرقم', width: 60 },
@@ -419,13 +604,27 @@ export async function generateEntriesJpeg(
   processedData.forEach((p) => {
     const contractorVal = p.contractor || p.colM || '';
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
-    const resolvedMrn = p.mrn || p.colC || nameToMrn.get(String(p.name || '').trim().toLowerCase()) || '—';
+    const patientName = String(p.name || p.colD || '').trim();
+    const directMrn = String(p.mrn || p.colC || p.id || p.patientId || '').trim();
+
+    let resolvedMrn = directMrn;
+    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
+      if (mrnLookupInput?.resolve) {
+        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
+      } else if (mrnLookupInput instanceof Map) {
+        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
+      } else if (mrnLookupInput?.nameToMrn) {
+        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+      } else {
+        resolvedMrn = '—';
+      }
+    }
 
     const rowValues = [
       String(serial++),
       p.room || p.colB || '',
-      resolvedMrn,
-      p.name || p.colD || '',
+      resolvedMrn || '—',
+      patientName,
       p.physician || p.colW || '',
       cleanedContractor,
       getResponsibleOfficer(contractorVal),
@@ -457,15 +656,12 @@ export async function generateEntriesJpeg(
 export async function generateDialysisJpeg(
   dialysisPatients: any[],
   dateLabel: string,
-  mrnLookupInput?: Map<string, string> | { nameToMrn: Map<string, string>; mrnToPatient: Map<string, any> }
+  mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<Buffer> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
-
-  const nameToMrn = mrnLookupInput instanceof Map ? mrnLookupInput : (mrnLookupInput?.nameToMrn || new Map<string, string>());
-  const mrnToPatient = !(mrnLookupInput instanceof Map) && mrnLookupInput?.mrnToPatient ? mrnLookupInput.mrnToPatient : new Map<string, any>();
 
   const cols = [
     { label: '# / الرقم', width: 60 },
@@ -485,12 +681,12 @@ export async function generateDialysisJpeg(
     let physicianVal = String(p.physician || '').trim();
     let contractorVal = String(p.contractor || p.payment || '').trim();
     let roomVal = String(p.room || 'غسيل كلوي').trim();
-    let resolvedMrn = String(p.mrn || p.id || '').trim();
+    let directMrn = String(p.mrn || p.id || '').trim();
 
-    // If patientName is numeric, it is an MRN
+    let resolvedMrn = directMrn;
     if (/^\d{4,}$/.test(patientName)) {
       resolvedMrn = patientName;
-      const matched = mrnToPatient.get(resolvedMrn);
+      const matched = mrnLookupInput?.getPatientByMrn ? mrnLookupInput.getPatientByMrn(resolvedMrn) : mrnLookupInput?.mrnToPatient?.get(resolvedMrn);
       if (matched) {
         patientName = matched.name || patientName;
         if (!physicianVal) physicianVal = matched.physician || '';
@@ -498,8 +694,16 @@ export async function generateDialysisJpeg(
         if (roomVal === 'غسيل كلوي' && matched.room) roomVal = matched.room;
       }
     } else {
-      if (!resolvedMrn) {
-        resolvedMrn = nameToMrn.get(patientName.toLowerCase()) || '—';
+      if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
+        if (mrnLookupInput?.resolve) {
+          resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
+        } else if (mrnLookupInput instanceof Map) {
+          resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
+        } else if (mrnLookupInput?.nameToMrn) {
+          resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+        } else {
+          resolvedMrn = '—';
+        }
       }
     }
 
@@ -581,15 +785,13 @@ export async function generateDialysisJpeg(
 export async function generateExitJpeg(
   dischargedPatients: any[],
   dateLabel: string,
-  mrnLookupInput?: Map<string, string> | { nameToMrn: Map<string, string>; mrnToPatient: Map<string, any> },
+  mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
 ): Promise<Buffer> {
   const width = 1260;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
-
-  const nameToMrn = mrnLookupInput instanceof Map ? mrnLookupInput : (mrnLookupInput?.nameToMrn || new Map<string, string>());
 
   const cols = [
     { label: '# / الرقم', width: 60 },
@@ -636,13 +838,27 @@ export async function generateExitJpeg(
   processedData.forEach((p) => {
     const contractorVal = p.contractor || '';
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
-    const resolvedMrn = p.mrn || p.id || nameToMrn.get(String(p.name || '').trim().toLowerCase()) || '—';
+    const patientName = String(p.name || '').trim();
+    const directMrn = String(p.mrn || p.id || '').trim();
+
+    let resolvedMrn = directMrn;
+    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
+      if (mrnLookupInput?.resolve) {
+        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
+      } else if (mrnLookupInput instanceof Map) {
+        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
+      } else if (mrnLookupInput?.nameToMrn) {
+        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+      } else {
+        resolvedMrn = '—';
+      }
+    }
 
     const rowValues = [
       String(serial++),
       p.room || p.lastRoom || '',
-      resolvedMrn,
-      p.name || '',
+      resolvedMrn || '—',
+      patientName,
       p.physician || '',
       cleanedContractor,
       getResponsibleOfficer(contractorVal),
@@ -749,7 +965,11 @@ export async function generateDebtsJpeg(debts: any[], dateLabel: string): Promis
  * 6. Patient Transfers Sheet
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
  */
-export async function generateTransfersJpeg(transfers: any[], dateLabel: string): Promise<Buffer> {
+export async function generateTransfersJpeg(
+  transfers: any[],
+  dateLabel: string,
+  mrnLookupInput?: MrnResolver | Map<string, string> | any
+): Promise<Buffer> {
   const width = 1240;
   const headerHeight = 180;
   const rowHeight = 30;
@@ -787,10 +1007,26 @@ export async function generateTransfersJpeg(transfers: any[], dateLabel: string)
 
   (transfers || []).forEach((t) => {
     const contractorVal = t.contractor || '';
+    const patientName = String(t.name || t.patientName || '').trim();
+    const directMrn = String(t.mrn || t.id || t.patientId || t.barcode || '').trim();
+
+    let resolvedMrn = directMrn;
+    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
+      if (mrnLookupInput?.resolve) {
+        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
+      } else if (mrnLookupInput instanceof Map) {
+        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
+      } else if (mrnLookupInput?.nameToMrn) {
+        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+      } else {
+        resolvedMrn = '—';
+      }
+    }
+
     const rowValues = [
       String(serial++),
-      t.mrn || '',
-      t.name || t.patientName || '',
+      resolvedMrn || '—',
+      patientName,
       t.initialRoom || t.fromRoom || '',
       t.currentRoom || t.toRoom || '',
       t.physician || '',

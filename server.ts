@@ -3718,6 +3718,7 @@ async function handleUnifiedUpload(req: any, res: any) {
           return {
             room: String(row[1] || "").trim(), // Col B Room
             name: String(row[3] || "").trim(), // Col D Patient Name
+            mrn: String(row[2] || "").trim(),  // Col C MRN
             physician: String(row[22] || "").trim(), // Col W Treating Physician
             contractor: String(row[12] || "").trim(), // Col M Contractor name
             date: cleanAdmissionDateStr(row[0]), // Col A Admission date
@@ -3727,6 +3728,7 @@ async function handleUnifiedUpload(req: any, res: any) {
           return {
             room: cleanRoomStr(String(row[0] || "").trim()),
             name: String(row[1] || "").trim(),
+            mrn: String(row[5] || "").trim(), // Col F MRN
             physician: String(row[2] || "").trim(),
             contractor: String(row[3] || "").trim(),
             date: cleanAdmissionDateStr(row[4]),
@@ -7087,14 +7089,30 @@ async function updateHospitalState(rows: any[][]) {
 
   const extractRowsFromData = (sourceData: any[][], skip: number) => {
     if (!sourceData || sourceData.length <= skip) return [];
-    return sourceData.slice(skip).map(row => ({
-      room: String(row[1] || "").trim(), // Col B Room
-      name: String(row[3] || "").trim(), // Col D Patient Name
-      physician: String(row[22] || "").trim(), // Col W Treating Physician
-      contractor: String(row[12] || "").trim(), // Col M Contractor name
-      date: cleanAdmissionDateStr(row[0]), // Col A Admission date
-      rawDate: String(row[0] || "").trim(), // Col A raw string
-    })).filter(p => {
+    return sourceData.slice(skip).map(row => {
+      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
+      if (isUnified) {
+        return {
+          room: String(row[1] || "").trim(), // Col B Room
+          name: String(row[3] || "").trim(), // Col D Patient Name
+          mrn: String(row[2] || "").trim(),  // Col C MRN
+          physician: String(row[22] || "").trim(), // Col W Treating Physician
+          contractor: String(row[12] || "").trim(), // Col M Contractor name
+          date: cleanAdmissionDateStr(row[0]), // Col A Admission date
+          rawDate: String(row[0] || "").trim(), // Col A raw string
+        };
+      } else {
+        return {
+          room: cleanRoomStr(String(row[0] || "").trim()),
+          name: String(row[1] || "").trim(),
+          mrn: String(row[5] || "").trim(), // Col F MRN
+          physician: String(row[2] || "").trim(),
+          contractor: String(row[3] || "").trim(),
+          date: cleanAdmissionDateStr(row[4]),
+          rawDate: String(row[4] || "").trim(),
+        };
+      }
+    }).filter(p => {
       if (!p.room || !p.name) return false;
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
@@ -16273,7 +16291,13 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
     // Comprehensive MRN and Patient lookups from all datasets
     const mrnLookups = sheetGen.buildMrnLookup(
       ds.hospitalData,
-      [uniqueTodayEntries, uniqueCleanDischarged, ds.cumulativeDialysis || []]
+      [
+        uniqueTodayEntries,
+        uniqueCleanDischarged,
+        ds.cumulativeDialysis || [],
+        ds.cumulativeTransfers || [],
+        Object.values(patientRoomRegistry || {})
+      ]
     );
 
     const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
@@ -16349,7 +16373,7 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     // 6. Patient Transfers Sheet (if any)
     if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-      const transBuf = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel);
+      const transBuf = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel, mrnLookups);
       items.push({
         fileBuffer: transBuf,
         fileName: '06_Transfers.jpg',
