@@ -8,6 +8,10 @@ export interface WorkflowCardProps {
   actionLabel: string;
   onAction: () => void;
   disabled?: boolean;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
+  secondaryIcon?: React.ReactElement;
+  secondaryDisabled?: boolean;
 }
 
 export function WorkflowCard({ 
@@ -16,7 +20,11 @@ export function WorkflowCard({
   icon, 
   actionLabel, 
   onAction, 
-  disabled 
+  disabled,
+  secondaryActionLabel,
+  onSecondaryAction,
+  secondaryIcon,
+  secondaryDisabled
 }: WorkflowCardProps) {
   return (
     <div className={`bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/45 shadow-sm flex flex-col hover:border-teal-500/40 hover:shadow-md transition-all group ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -27,14 +35,27 @@ export function WorkflowCard({
       <p className="text-slate-600 text-[12px] mb-6 leading-relaxed font-semibold">
         {description}
       </p>
-      <button 
-        onClick={onAction}
-        disabled={disabled}
-        className="mt-auto py-3 px-5 bg-brand-primary text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300"
-      >
-        {actionLabel}
-        <ArrowRightLeft className="w-3.5 h-3.5 text-teal-100" />
-      </button>
+      <div className="mt-auto flex flex-col gap-2">
+        <button 
+          onClick={onAction}
+          disabled={disabled}
+          className="w-full py-3 px-5 bg-brand-primary text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300"
+        >
+          {actionLabel}
+          <ArrowRightLeft className="w-3.5 h-3.5 text-teal-100" />
+        </button>
+
+        {secondaryActionLabel && onSecondaryAction && (
+          <button 
+            onClick={onSecondaryAction}
+            disabled={secondaryDisabled || disabled}
+            className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-[10px] tracking-wider flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all active:scale-95 shadow-md shadow-emerald-900/10 disabled:bg-slate-300"
+          >
+            {secondaryIcon || <ArrowRightLeft className="w-3.5 h-3.5 text-emerald-100" />}
+            {secondaryActionLabel}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

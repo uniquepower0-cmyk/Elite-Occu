@@ -8,6 +8,7 @@ import ExcelJS from 'exceljs';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import sharp from 'sharp';
+import { greenApiService } from './server/services/greenApiService.js';
 import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
@@ -16155,6 +16156,152 @@ app.get('/api/reports/combined', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// Endpoint providing refined combined sheet structured data for client preview & JPEG rendering
+app.get('/api/reports/refined-combined-preview', async (req, res) => {
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ error: `No occupancy data available for date: ${reqDate || 'current'}.` });
+  }
+  try {
+    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
+    const cairoCombTodayStr = getCairoDateTime().dateStr;
+    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = activePatients.some(activePt => 
+        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+      );
+      if (isStillPresent) return false;
+      if (!ds.isHistorical) {
+        const dischargeDateVal = discPt.dischargeDate || discPt.date;
+        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const uniqueCleanDischarged: any[] = [];
+    cleanDischarged.forEach(p => {
+      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+        uniqueCleanDischarged.push(p);
+      }
+    });
+
+    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
+    const uniqueTodayEntries: any[] = [];
+    todayEntries.forEach(p => {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
+        uniqueTodayEntries.push(p);
+      }
+    });
+
+    const occupancyRows = getOccupancyRows(ds.hospitalData);
+
+    return res.json({
+      success: true,
+      dateLabel: ds.dateLabel,
+      occupancy: occupancyRows,
+      activePatients,
+      entries: uniqueTodayEntries,
+      dialysis: ds.cumulativeDialysis || [],
+      discharged: uniqueCleanDischarged,
+      debts: ds.cumulativeDebts || [],
+      // Note: Insured debts excluded per user specifications
+      transfers: ds.cumulativeTransfers || []
+    });
+  } catch (error: any) {
+    console.error('Refined Combined Preview Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint dispatching refined combined sheet images to WhatsApp groups via Green API
+app.post('/api/whatsapp/send-refined-combined', upload.array('files', 10), async (req, res) => {
+  try {
+    const files = (req as any).files as any[];
+    if (!files || files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No sheet images provided in request.' });
+    }
+
+    if (!greenApiService.isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Green API is not configured on the server. Please configure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS in .env'
+      });
+    }
+
+    let captions: string[] = [];
+    if (req.body.captions) {
+      if (Array.isArray(req.body.captions)) {
+        captions = req.body.captions;
+      } else {
+        try {
+          captions = JSON.parse(req.body.captions);
+        } catch {
+          captions = [req.body.captions];
+        }
+      }
+    }
+
+    const items = files.map((file, idx) => ({
+      fileBuffer: file.buffer,
+      fileName: file.originalname || `sheet_${idx + 1}.jpg`,
+      caption: captions[idx] || undefined,
+    }));
+
+    console.log(`[WhatsApp API] Starting broadcast of ${items.length} Refined Combined Sheet images...`);
+    const results = await greenApiService.broadcastBatch(items);
+
+    const hasFailure = results.some(r => !r.success);
+    const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+
+    return res.json({
+      success: !hasFailure,
+      totalSent,
+      results
+    });
+  } catch (err: any) {
+    console.error('[WhatsApp API Error]:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Internal error dispatching images to WhatsApp' });
+  }
+});
+
+// Endpoint dispatching a single sheet image to WhatsApp groups (Vercel serverless payload-safe)
+app.post('/api/whatsapp/send-image', upload.single('file'), async (req, res) => {
+  try {
+    const file = (req as any).file;
+    if (!file) {
+      return res.status(400).json({ success: false, error: 'No image file provided.' });
+    }
+
+    if (!greenApiService.isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Green API is not configured on the server. Please configure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS in .env'
+      });
+    }
+
+    const caption = req.body.caption ? String(req.body.caption) : undefined;
+    const fileName = file.originalname || 'sheet.jpg';
+
+    const results = await greenApiService.broadcastBatch([{
+      fileBuffer: file.buffer,
+      fileName,
+      caption,
+    }]);
+
+    const hasFailure = results.some(r => !r.success);
+    return res.json({
+      success: !hasFailure,
+      sentCount: results.reduce((sum, r) => sum + r.sentCount, 0),
+      results
+    });
+  } catch (err: any) {
+    console.error('[WhatsApp Single Image API Error]:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Error sending image to WhatsApp' });
   }
 });
 

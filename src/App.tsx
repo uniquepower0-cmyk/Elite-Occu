@@ -88,6 +88,7 @@ import { ActionButton } from './components/ui/ActionButton';
 import { StatCard } from './components/ui/StatCard';
 import { WorkflowCard } from './components/ui/WorkflowCard';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { generateAndSendRefinedSheetsToWhatsApp } from './components/RefinedSheetsVisualRenderer';
 
 const ViewLoadingFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
@@ -1613,6 +1614,26 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       alert(`Download failed: ${err.message}`);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const handleSendRefinedCombinedToWhatsApp = async () => {
+    setProcessing('Initiating WhatsApp Report Broadcast');
+    try {
+      const res = await generateAndSendRefinedSheetsToWhatsApp((status) => {
+        setProcessing(status);
+      });
+
+      if (res.success) {
+        alert(`✓ Successfully dispatched ${res.sentCount} refined sheet images to WhatsApp group(s)!`);
+      } else {
+        alert(`⚠️ WhatsApp Send Error: ${res.error || 'Failed to dispatch images'}`);
+      }
+    } catch (err: any) {
+      console.error('WhatsApp Error:', err);
+      alert(`Failed to send to WhatsApp: ${err.message || String(err)}`);
     } finally {
       setProcessing(null);
     }
@@ -4828,6 +4849,10 @@ export default function App() {
                           actionLabel={processing === 'Downloading Refined Combined Sheet' ? 'Generating...' : 'Download'}
                           onAction={downloadRefinedCombinedReport}
                           disabled={!!processing}
+                          secondaryActionLabel="Send to WhatsApp"
+                          onSecondaryAction={handleSendRefinedCombinedToWhatsApp}
+                          secondaryIcon={<Send className="w-3.5 h-3.5 text-white" />}
+                          secondaryDisabled={!!processing}
                         />
                         <WorkflowCard 
                           title="Refined Companion Sheet"
