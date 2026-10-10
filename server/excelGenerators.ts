@@ -14,8 +14,8 @@ import {
   isWholeNameMatch,
   isPrivateCreditCase,
   isToday
-} from './nameUtils';
-import { KEYWORDS_TO_EXCLUDE, GLOBAL_EXCLUSIONS } from './occupancyLogic';
+} from './nameUtils.js';
+import { KEYWORDS_TO_EXCLUDE, GLOBAL_EXCLUSIONS } from './occupancyLogic.js';
 import {
   findOccupancyPatient,
   findAdmittedRoomForInPatient,
@@ -23,8 +23,8 @@ import {
   getEnrichedOrListForStats,
   getOverListPatients,
   getAvailableVacantRooms
-} from './orLogic';
-import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './contractorOfficers';
+} from './orLogic.js';
+import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './contractorOfficers.js';
 
 export const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 export const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');

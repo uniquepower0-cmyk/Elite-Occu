@@ -11,7 +11,7 @@ import {
   isPatientMatch,
   normalizeArabicName,
   getTodayRiyadhDateTimeStr
-} from './nameUtils';
+} from './nameUtils.js';
 
 export const KEYWORDS_TO_EXCLUDE = [
   "or", "operating", "عمليات",

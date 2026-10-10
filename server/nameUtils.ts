@@ -1,4 +1,4 @@
-import { getCairoDateTime } from '../historyManager';
+import { getCairoDateTime } from '../historyManager.js';
 
 export function normalizeRoom(roomStr: string): string {
   if (!roomStr) return "";

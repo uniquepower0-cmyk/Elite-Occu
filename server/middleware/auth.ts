@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { createClient } from '@supabase/supabase-js';
-import { config } from '../config/env';
+import { config } from '../config/env.js';
 
 // Isolated auth client for verifying user session tokens
 const authClient = config.supabaseServiceRoleKey

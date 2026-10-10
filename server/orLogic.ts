@@ -10,8 +10,8 @@ import {
   normalizeRoom,
   getAccommodationCategory,
   normalizeArabicName
-} from './nameUtils';
-import { getOccupancyRows } from './occupancyLogic';
+} from './nameUtils.js';
+import { getOccupancyRows } from './occupancyLogic.js';
 
 export function classifyInOutFallback(p: any): 'IN' | 'OUT' {
   if (!p) return 'OUT';
