@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import sharp from 'sharp';
 import { greenApiService } from './server/services/greenApiService.js';
+import * as sheetGen from './server/services/sheetImageGenerator.js';
 import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
@@ -16215,6 +16216,141 @@ app.get('/api/reports/refined-combined-preview', async (req, res) => {
   } catch (error: any) {
     console.error('Refined Combined Preview Error:', error);
     return res.status(500).json({ error: error.message });
+  }
+});
+
+// Dedicated server-side trigger: generates high-fidelity JPEGs using sharp and broadcasts via Green API
+// Completely bypasses browser canvas to eliminate "Tainted canvas" restrictions.
+app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return res.status(400).json({ success: false, error: `No occupancy data available for date: ${reqDate || 'current'}.` });
+  }
+
+  if (!greenApiService.isConfigured()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Green API is not configured on the server. Please ensure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS are set in your environment / Vercel settings.'
+    });
+  }
+
+  try {
+    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
+    const cairoCombTodayStr = getCairoDateTime().dateStr;
+    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+      const isStillPresent = activePatients.some(activePt => 
+        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+      );
+      if (isStillPresent) return false;
+      if (!ds.isHistorical) {
+        const dischargeDateVal = discPt.dischargeDate || discPt.date;
+        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const uniqueCleanDischarged: any[] = [];
+    cleanDischarged.forEach(p => {
+      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+        uniqueCleanDischarged.push(p);
+      }
+    });
+
+    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
+    const uniqueTodayEntries: any[] = [];
+    todayEntries.forEach(p => {
+      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
+        uniqueTodayEntries.push(p);
+      }
+    });
+
+    const occupancyRows = getOccupancyRows(ds.hospitalData);
+    const dateLabel = ds.dateLabel || cairoCombTodayStr;
+
+    const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
+
+    // 1. Occupancy Sheet
+    if (occupancyRows && occupancyRows.length > 0) {
+      const occBuf = await sheetGen.generateOccupancyJpeg(occupancyRows, dateLabel);
+      items.push({
+        fileBuffer: occBuf,
+        fileName: '01_Occupancy.jpg',
+        caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${activePatients.length}`
+      });
+    }
+
+    // 2. Admissions Sheet
+    if (uniqueTodayEntries && uniqueTodayEntries.length > 0) {
+      const entriesBuf = await sheetGen.generateEntriesJpeg(uniqueTodayEntries, dateLabel);
+      items.push({
+        fileBuffer: entriesBuf,
+        fileName: '02_Admissions.jpg',
+        caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${uniqueTodayEntries.length}`
+      });
+    }
+
+    // 3. Dialysis Sheet
+    if (ds.cumulativeDialysis && ds.cumulativeDialysis.length > 0) {
+      const diaBuf = await sheetGen.generateDialysisJpeg(ds.cumulativeDialysis, dateLabel);
+      items.push({
+        fileBuffer: diaBuf,
+        fileName: '03_Dialysis.jpg',
+        caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${ds.cumulativeDialysis.length}`
+      });
+    }
+
+    // 4. Exit / Discharges Sheet
+    if (uniqueCleanDischarged && uniqueCleanDischarged.length > 0) {
+      const exitBuf = await sheetGen.generateExitJpeg(uniqueCleanDischarged, dateLabel);
+      items.push({
+        fileBuffer: exitBuf,
+        fileName: '04_Discharges.jpg',
+        caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${uniqueCleanDischarged.length}`
+      });
+    }
+
+    // 5. General Debts Sheet (if any)
+    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+      const debtsBuf = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel);
+      items.push({
+        fileBuffer: debtsBuf,
+        fileName: '05_Debts.jpg',
+        caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${ds.cumulativeDebts.length}`
+      });
+    }
+
+    // 6. Patient Transfers Sheet (if any)
+    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+      const transBuf = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel);
+      items.push({
+        fileBuffer: transBuf,
+        fileName: '06_Transfers.jpg',
+        caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${ds.cumulativeTransfers.length}`
+      });
+    }
+
+    if (items.length === 0) {
+      return res.status(400).json({ success: false, error: 'No data records found to generate sheet images.' });
+    }
+
+    console.log(`[WhatsApp Trigger] Broadcasting ${items.length} server-generated sheet JPEGs to Green API...`);
+    const results = await greenApiService.broadcastBatch(items);
+
+    const hasFailure = results.some(r => !r.success);
+    const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+
+    return res.json({
+      success: !hasFailure,
+      sentCount: totalSent,
+      totalSheets: items.length,
+      results
+    });
+  } catch (error: any) {
+    console.error('[WhatsApp Trigger Error]:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal error broadcasting sheets to WhatsApp.' });
   }
 });
 

@@ -381,146 +381,38 @@ function buildTransfersHtml(transfers: any[], dateLabel: string): string {
 }
 
 /**
- * Main Orchestration Function:
- * Fetches preview dataset, renders each sheet to JPEG Blob, and uploads to Green API via Vercel-optimized chunked dispatch.
+ * RefinedSheetsVisualRenderer
+ * Dispatches Mohanad's Refined Combined Sheets to WhatsApp groups via Green API.
+ * Uses high-fidelity server-side SVG-to-JPEG generation via sharp to completely
+ * prevent browser canvas tainting ("Tainted canvases may not be exported").
  */
+
 export async function generateAndSendRefinedSheetsToWhatsApp(
   onProgress: (status: string) => void
 ): Promise<{ success: boolean; sentCount: number; error?: string }> {
   try {
-    onProgress('Fetching report data from server...');
-    const res = await fetch('/api/reports/refined-combined-preview');
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to retrieve report preview dataset.');
+    onProgress('Generating and broadcasting refined sheets to WhatsApp...');
+    const res = await fetch('/api/whatsapp/send-refined-combined-trigger', {
+      method: 'POST',
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to dispatch report to WhatsApp.');
     }
 
-    const payload = await res.json();
-    const dateLabel = payload.dateLabel || new Date().toISOString().split('T')[0];
-
-    // Build the list of sheets to render and dispatch (Strictly excluding insured debts per DEC-07)
-    const sheetsToProcess: SheetDefinition[] = [];
-
-    // 1. Occupancy
-    if (payload.occupancy && payload.occupancy.length > 0) {
-      sheetsToProcess.push({
-        id: '01_Occupancy',
-        name: 'Occupancy Sheet',
-        titleAr: 'تقرير الإشغال العام',
-        titleEn: 'Hospital Occupancy',
-        caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${payload.activePatients?.length || 0}`,
-        data: payload.occupancy,
-        renderHtml: (date) => buildOccupancyHtml(payload.occupancy, date),
-      });
-    }
-
-    // 2. Entries
-    if (payload.entries && payload.entries.length > 0) {
-      sheetsToProcess.push({
-        id: '02_Entries',
-        name: 'Admissions Sheet',
-        titleAr: 'حالات الدخول اليومي',
-        titleEn: 'Daily Admissions',
-        caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${payload.entries.length}`,
-        data: payload.entries,
-        renderHtml: (date) => buildEntriesHtml(payload.entries, date),
-      });
-    }
-
-    // 3. Dialysis
-    if (payload.dialysis && payload.dialysis.length > 0) {
-      sheetsToProcess.push({
-        id: '03_Dialysis',
-        name: 'Dialysis Sheet',
-        titleAr: 'مرضى الغسيل الكلوي',
-        titleEn: 'Dialysis Unit',
-        caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${payload.dialysis.length}`,
-        data: payload.dialysis,
-        renderHtml: (date) => buildDialysisHtml(payload.dialysis, date),
-      });
-    }
-
-    // 4. Exits / Discharges
-    if (payload.discharged && payload.discharged.length > 0) {
-      sheetsToProcess.push({
-        id: '04_Exit',
-        name: 'Discharged Sheet',
-        titleAr: 'حالات الخروج الرسمية',
-        titleEn: 'Discharges',
-        caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${payload.discharged.length}`,
-        data: payload.discharged,
-        renderHtml: (date) => buildExitHtml(payload.discharged, date),
-      });
-    }
-
-    // 5. Debts (General/Cash Debts only)
-    if (payload.debts && payload.debts.length > 0) {
-      sheetsToProcess.push({
-        id: '05_Debts',
-        name: 'Debts Sheet',
-        titleAr: 'تقرير مديونيات المرضى',
-        titleEn: 'Patient Debts',
-        caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${payload.debts.length}`,
-        data: payload.debts,
-        renderHtml: (date) => buildDebtsHtml(payload.debts, date),
-      });
-    }
-
-    // 6. Patient Transfers
-    if (payload.transfers && payload.transfers.length > 0) {
-      sheetsToProcess.push({
-        id: '06_Transfers',
-        name: 'Transfers Sheet',
-        titleAr: 'سجل تحويلات المرضى بين الغرف',
-        titleEn: 'Patient Transfers',
-        caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${payload.transfers.length}`,
-        data: payload.transfers,
-        renderHtml: (date) => buildTransfersHtml(payload.transfers, date),
-      });
-    }
-
-    if (sheetsToProcess.length === 0) {
-      throw new Error('No sheet data available to send for today.');
-    }
-
-    let sentCount = 0;
-
-    // Process and send each sheet individually to satisfy Vercel serverless request limits
-    for (let i = 0; i < sheetsToProcess.length; i++) {
-      const sheet = sheetsToProcess[i];
-      onProgress(`Rendering ${sheet.name} (${i + 1}/${sheetsToProcess.length})...`);
-
-      const html = sheet.renderHtml(dateLabel);
-      const jpegBlob = await htmlToJpegBlob(html);
-
-      onProgress(`Sending ${sheet.name} to WhatsApp (${i + 1}/${sheetsToProcess.length})...`);
-
-      const formData = new FormData();
-      formData.append('file', jpegBlob, `${sheet.id}.jpg`);
-      formData.append('fileName', `${sheet.id}.jpg`);
-      formData.append('caption', sheet.caption);
-
-      const sendRes = await fetch('/api/whatsapp/send-image', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!sendRes.ok) {
-        const errJson = await sendRes.json().catch(() => ({}));
-        throw new Error(errJson.error || `Failed to send ${sheet.name} to WhatsApp.`);
-      }
-
-      const resData = await sendRes.json();
-      if (!resData.success) {
-        throw new Error(resData.error || `Error delivering ${sheet.name} to WhatsApp group.`);
-      }
-
-      sentCount++;
-    }
-
-    return { success: true, sentCount };
+    onProgress('Broadcast complete!');
+    return { 
+      success: true, 
+      sentCount: data.sentCount ?? data.totalSheets ?? 0 
+    };
   } catch (error: any) {
-    console.error('[WhatsApp Automation Client Error]:', error);
-    return { success: false, sentCount: 0, error: error.message || 'Failed to dispatch report to WhatsApp.' };
+    console.error('[WhatsApp Broadcast Error]:', error);
+    return { 
+      success: false, 
+      sentCount: 0, 
+      error: error.message || 'Failed to broadcast report to WhatsApp.' 
+    };
   }
 }
