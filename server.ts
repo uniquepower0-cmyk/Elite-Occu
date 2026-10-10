@@ -16270,11 +16270,22 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
     const occupancyRows = getOccupancyRows(ds.hospitalData);
     const dateLabel = ds.dateLabel || cairoCombTodayStr;
 
+    // Comprehensive MRN and Patient lookups from all datasets
+    const mrnLookups = sheetGen.buildMrnLookup(
+      ds.hospitalData,
+      [uniqueTodayEntries, uniqueCleanDischarged, ds.cumulativeDialysis || []]
+    );
+
     const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
 
-    // 1. Occupancy Sheet (Colored Structured Grid)
+    // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes dialysis cases
     if (ds.hospitalData && ds.hospitalData.length > 0) {
-      const occBuf = await sheetGen.generateOccupancyJpeg(ds.hospitalData, dateLabel, isPatientVip);
+      const occBuf = await sheetGen.generateOccupancyJpeg(
+        ds.hospitalData,
+        dateLabel,
+        isPatientVip,
+        ds.cumulativeDialysis || []
+      );
       items.push({
         fileBuffer: occBuf,
         fileName: '01_Occupancy.jpg',
@@ -16282,9 +16293,14 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
       });
     }
 
-    // 2. Admissions Sheet
+    // 2. Admissions Sheet - strictly excludes dialysis cases
     if (uniqueTodayEntries && uniqueTodayEntries.length > 0) {
-      const entriesBuf = await sheetGen.generateEntriesJpeg(uniqueTodayEntries, dateLabel);
+      const entriesBuf = await sheetGen.generateEntriesJpeg(
+        uniqueTodayEntries,
+        dateLabel,
+        mrnLookups,
+        ds.cumulativeDialysis || []
+      );
       items.push({
         fileBuffer: entriesBuf,
         fileName: '02_Admissions.jpg',
@@ -16292,9 +16308,13 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
       });
     }
 
-    // 3. Dialysis Sheet
+    // 3. Dialysis Sheet - includes ALL dialysis cases exclusively with MRN and responsible officers
     if (ds.cumulativeDialysis && ds.cumulativeDialysis.length > 0) {
-      const diaBuf = await sheetGen.generateDialysisJpeg(ds.cumulativeDialysis, dateLabel);
+      const diaBuf = await sheetGen.generateDialysisJpeg(
+        ds.cumulativeDialysis,
+        dateLabel,
+        mrnLookups
+      );
       items.push({
         fileBuffer: diaBuf,
         fileName: '03_Dialysis.jpg',
@@ -16302,9 +16322,14 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
       });
     }
 
-    // 4. Exit / Discharges Sheet
+    // 4. Exit / Discharges Sheet - strictly excludes dialysis cases
     if (uniqueCleanDischarged && uniqueCleanDischarged.length > 0) {
-      const exitBuf = await sheetGen.generateExitJpeg(uniqueCleanDischarged, dateLabel);
+      const exitBuf = await sheetGen.generateExitJpeg(
+        uniqueCleanDischarged,
+        dateLabel,
+        mrnLookups,
+        ds.cumulativeDialysis || []
+      );
       items.push({
         fileBuffer: exitBuf,
         fileName: '04_Discharges.jpg',
@@ -16312,7 +16337,7 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
       });
     }
 
-    // 5. General Debts Sheet (if any)
+    // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
     if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
       const debtsBuf = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel);
       items.push({
