@@ -36,7 +36,17 @@ import {
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
 
-dotenv.config();
+process.env.DOTENV_CONFIG_QUIET = 'true';
+dotenv.config({ quiet: true });
+
+// Filter out Node.js 22 DEP0169 deprecation warning emitted by Express 4 / internal dependencies
+// Prevents serverless log aggregators (e.g. Vercel) from reporting false-positive errors on stderr.
+process.on('warning', (warning) => {
+  if (warning.name === 'DeprecationWarning' && (warning as any).code === 'DEP0169') return;
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn(warning.name, warning.message);
+  }
+});
 
 // Configure fontconfig for serverless environments (AWS Lambda / Vercel / Railway)
 const fontsDir = path.resolve(process.cwd(), 'fonts');

@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 // Load .env from project root
-dotenv.config();
+dotenv.config({ quiet: true });
 
 export interface AppConfig {
   port: number;

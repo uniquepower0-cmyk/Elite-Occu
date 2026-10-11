@@ -2,6 +2,18 @@ import type { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 
+// Suppress dotenv promotional/tip banner output in serverless execution logs
+process.env.DOTENV_CONFIG_QUIET = 'true';
+
+// Suppress Node.js 22 DEP0169 deprecation warning emitted to stderr by legacy dependencies (e.g. Express 4 / Google APIs)
+// This prevents Vercel runtime from erroneously classifying benign internal deprecation notices as level: "error".
+process.on('warning', (warning) => {
+  if (warning.name === 'DeprecationWarning' && (warning as any).code === 'DEP0169') return;
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn(warning.name, warning.message);
+  }
+});
+
 // Configure fontconfig for serverless environments (AWS Lambda / Vercel)
 const fontsDir = path.resolve(process.cwd(), 'fonts');
 if (!process.env.FONTCONFIG_PATH) {
