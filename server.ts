@@ -178,11 +178,35 @@ if (CONFIG_PATH && SERVICE_ACCOUNT_PATH) {
   console.info("[Firebase Admin] No service-account-key.json or firebase-applet-config.json detected. Running with Supabase/local persistent store.");
 }
 
-// Writable directory fallback: Vercel serverless has a read-only root, so /tmp is used
-const WRITABLE_BASE = process.env.VERCEL ? '/tmp' : process.cwd();
+// Environment detection & writable directory fallback: Vercel serverless has a read-only root, so /tmp is used
+const IS_VERCEL = !!process.env.VERCEL;
+const WRITABLE_BASE = IS_VERCEL ? '/tmp' : process.cwd();
 const DATA_FILE = path.join(WRITABLE_BASE, 'hospital_data.json');
 const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
+
+// Atomic file writing utilities to prevent partial/corrupted JSON reads during concurrent access or serverless timeouts
+async function writeJsonAtomic(filePath: string, obj: any): Promise<void> {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  }
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  const content = JSON.stringify(obj);
+  await fs.promises.writeFile(tempPath, content, 'utf-8');
+  await fs.promises.rename(tempPath, filePath);
+}
+
+function writeJsonAtomicSync(filePath: string, obj: any): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  }
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  const content = JSON.stringify(obj);
+  fs.writeFileSync(tempPath, content, 'utf-8');
+  fs.renameSync(tempPath, filePath);
+}
 
 function getCustomHeaderBgInfo() {
   const candidatePaths = [
@@ -544,17 +568,20 @@ function parseAdmissionDateToISO(val: any): string | null {
   if (/^\d{13}$/.test(str)) {
     const ts = parseInt(str, 10);
     const d = new Date(ts);
-    return !isNaN(d.getTime()) ? d.toISOString() : null;
+    if (isNaN(d.getTime())) return null;
+    return d.getTime() > Date.now() ? new Date().toISOString() : d.toISOString();
   }
   if (/^\d{10}$/.test(str)) {
     const ts = parseInt(str, 10) * 1000;
     const d = new Date(ts);
-    return !isNaN(d.getTime()) ? d.toISOString() : null;
+    if (isNaN(d.getTime())) return null;
+    return d.getTime() > Date.now() ? new Date().toISOString() : d.toISOString();
   }
   const num = Number(str);
   if (!isNaN(num) && num > 40000 && num < 60000) {
     const d = new Date((num - 25569) * 86400 * 1000);
-    return !isNaN(d.getTime()) ? d.toISOString() : null;
+    if (isNaN(d.getTime())) return null;
+    return d.getTime() > Date.now() ? new Date().toISOString() : d.toISOString();
   }
   let cleanStr = str.replace(/\s+/g, ' ');
   const isPM = /pm|م/i.test(cleanStr);
@@ -573,7 +600,8 @@ function parseAdmissionDateToISO(val: any): string | null {
     if (isPM && h < 12) h += 12;
     if (isAM && h === 12) h = 0;
     const dateObj = new Date(Date.UTC(y, m, d, h, min, sec));
-    return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
+    if (isNaN(dateObj.getTime())) return null;
+    return dateObj.getTime() > Date.now() ? new Date().toISOString() : dateObj.toISOString();
   }
 
   // Pattern 2: D/M/Y or M/D/Y (detect delimiter: slashes from PowerBI are M/D/Y, dashes from app are D-M-Y)
@@ -606,11 +634,14 @@ function parseAdmissionDateToISO(val: any): string | null {
       month = n2 - 1;
     }
     const dateObj = new Date(Date.UTC(y, month, day, h, min, sec));
-    return !isNaN(dateObj.getTime()) ? dateObj.toISOString() : null;
+    if (isNaN(dateObj.getTime())) return null;
+    return dateObj.getTime() > Date.now() ? new Date().toISOString() : dateObj.toISOString();
   }
 
   const parsedTs = Date.parse(cleanStr);
-  if (!isNaN(parsedTs)) return new Date(parsedTs).toISOString();
+  if (!isNaN(parsedTs)) {
+    return parsedTs > Date.now() ? new Date().toISOString() : new Date(parsedTs).toISOString();
+  }
   return null;
 }
 
@@ -2144,34 +2175,44 @@ async function executeLoadData(force = false) {
   try {
     // 1. Try to load local disk cache first for fast immediate recovery
     if (fs.existsSync(DATA_FILE)) {
-      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      hospitalData = parsed.current || null;
-      previousHospitalData = parsed.previous || null;
-      cumulativeDischarged = parsed.discharged || [];
-      cumulativeEntries = parsed.entries || [];
-      cumulativeDialysis = parsed.dialysis || [];
-      cumulativeDebts = parsed.debts || [];
-      cumulativeInsuredDebts = parsed.insuredDebts || [];
-      cumulativeMedicalPlans = parsed.medicalPlans || [];
-      cumulativeCompanionStatus = parsed.companionStatus || [];
-      cumulativeLOS = parsed.losData || [];
-      cumulativeORList = parsed.orList || [];
-      vipCasesText = parsed.vipCasesText || "";
-      earlyDischargeRoomsText = parsed.earlyDischargeRoomsText || "";
-      pendingDischargePatientsText = parsed.pendingDischargePatientsText || "";
-      uploadedAt = parsed.uploadedAt || null;
-      if (parsed.lastDatabaseUpdatedAt) lastKnownDatabaseUpdatedAt = String(parsed.lastDatabaseUpdatedAt);
-      manuallyDischargedNames = parsed.manuallyDischargedNames || [];
-      cumulativeTransfers = parsed.transfers || [];
-      patientRoomRegistry = parsed.patientRoomRegistry || {};
-      if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
-      if (parsed.lastActiveDate) lastActiveDate = String(parsed.lastActiveDate);
-      if (parsed.lastTransfersDate) lastTransfersDate = String(parsed.lastTransfersDate);
-      console.log('Hospital data loaded from local disk cache.');
+      try {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        hospitalData = parsed.current || null;
+        previousHospitalData = parsed.previous || null;
+        cumulativeDischarged = parsed.discharged || [];
+        cumulativeEntries = parsed.entries || [];
+        cumulativeDialysis = parsed.dialysis || [];
+        cumulativeDebts = parsed.debts || [];
+        cumulativeInsuredDebts = parsed.insuredDebts || [];
+        cumulativeMedicalPlans = parsed.medicalPlans || [];
+        cumulativeCompanionStatus = parsed.companionStatus || [];
+        cumulativeLOS = parsed.losData || [];
+        cumulativeORList = parsed.orList || [];
+        vipCasesText = parsed.vipCasesText || "";
+        earlyDischargeRoomsText = parsed.earlyDischargeRoomsText || "";
+        pendingDischargePatientsText = parsed.pendingDischargePatientsText || "";
+        uploadedAt = parsed.uploadedAt || null;
+        if (parsed.lastDatabaseUpdatedAt) lastKnownDatabaseUpdatedAt = String(parsed.lastDatabaseUpdatedAt);
+        manuallyDischargedNames = parsed.manuallyDischargedNames || [];
+        cumulativeTransfers = parsed.transfers || [];
+        patientRoomRegistry = parsed.patientRoomRegistry || {};
+        if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
+        if (parsed.lastActiveDate) lastActiveDate = String(parsed.lastActiveDate);
+        if (parsed.lastTransfersDate) lastTransfersDate = String(parsed.lastTransfersDate);
+        console.log('Hospital data loaded from local disk cache.');
+      } catch (parseErr) {
+        console.error('Failed to load local data (purging corrupted disk cache):', parseErr);
+        try {
+          if (fs.existsSync(DATA_FILE)) {
+            fs.unlinkSync(DATA_FILE);
+            console.warn('Purged corrupt cache file from disk:', DATA_FILE);
+          }
+        } catch (_) {}
+      }
     }
   } catch (err) {
-    console.error('Failed to load local data:', err);
+    console.error('Failed to access local data file:', err);
   }
 
   // 2. Load/override with Supabase dataset using granular structured schema (state/*) as the primary durable source of truth
@@ -3207,9 +3248,9 @@ async function saveData() {
       lastTransfersDate: lastTransfersDate
     };
     
-    // 1. Save locally fast sync (non-blocking async I/O)
+    // 1. Save locally fast sync (atomic crash-resilient I/O)
     try { 
-      await fs.promises.writeFile(DATA_FILE, JSON.stringify(data));
+      await writeJsonAtomic(DATA_FILE, data);
       console.log('Hospital data saved to local persistence.'); 
     } catch (e) { 
       console.error('Failed to save local data (might be read-only env)', e); 
@@ -3362,21 +3403,39 @@ async function saveData() {
         }
       ];
 
+      // Upsert in small batches (3-4 nodes per batch) to prevent PostgreSQL statement_timeout (error 57014)
+      const primaryGranularNodes = granularNodes.filter(n => n.path !== 'state/dataset');
+      const legacyDatasetNode = granularNodes.find(n => n.path === 'state/dataset');
+
       let sbErr: any = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(granularNodes);
-        if (!error) {
-          sbErr = null;
-          break;
+      const CHUNK_SIZE = 4;
+      for (let i = 0; i < primaryGranularNodes.length; i += CHUNK_SIZE) {
+        const chunk = primaryGranularNodes.slice(i, i + CHUNK_SIZE);
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(chunk);
+          if (!error) {
+            sbErr = null;
+            break;
+          }
+          sbErr = error;
+          const errMsg = String(error.message || error.details || error);
+          const isRetryable = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT') || errMsg.includes('57014');
+          if (isRetryable && attempt < 3) {
+            console.warn(`[Supabase Sync] Batch ${Math.floor(i / CHUNK_SIZE) + 1} transient glitch (attempt ${attempt}/3: ${errMsg}). Retrying in ${attempt * 200}ms...`);
+            await new Promise(res => setTimeout(res, attempt * 200));
+          } else {
+            break;
+          }
         }
-        sbErr = error;
-        const errMsg = String(error.message || error.details || error);
-        const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
-        if (isNetworkErr && attempt < 3) {
-          console.warn(`[Supabase Sync] Transient connection glitch (attempt ${attempt}/3: ${errMsg}). Retrying in ${attempt * 300}ms...`);
-          await new Promise(res => setTimeout(res, attempt * 300));
-        } else {
-          break;
+      }
+
+      // Upsert legacy monolithic dataset node separately so its multi-megabyte size never blocks primary state
+      if (legacyDatasetNode) {
+        try {
+          const { error: legErr } = await supabaseAdmin.from('rtdb_nodes').upsert(legacyDatasetNode as any);
+          if (legErr) console.warn('[Supabase Sync] Legacy state/dataset upsert notice:', legErr.message);
+        } catch (legacyEx: any) {
+          console.warn('[Supabase Sync] Legacy state/dataset upsert skipped:', legacyEx?.message || legacyEx);
         }
       }
 
@@ -3483,8 +3542,7 @@ function triggerChangeLogSnapshot(changeType: ChangeType = 'general') {
     (!cumulativeTransfers || cumulativeTransfers.length === 0)
   ) return;
 
-  if (changeLogDebounceTimer) clearTimeout(changeLogDebounceTimer);
-  changeLogDebounceTimer = setTimeout(async () => {
+  const executeLog = async () => {
     try {
       const cairo = getCairoDateTime();
       const activeDateStr = uploadedAt
@@ -3504,13 +3562,22 @@ function triggerChangeLogSnapshot(changeType: ChangeType = 'general') {
     } catch (err) {
       console.error('[ChangeLog] Failed to save change log entry:', err);
     }
-  }, 750);
+  };
+
+  if (IS_VERCEL) {
+    // On Vercel serverless, run without dangling timers because containers freeze after response completion
+    executeLog().catch(() => {});
+  } else {
+    if (changeLogDebounceTimer) clearTimeout(changeLogDebounceTimer);
+    changeLogDebounceTimer = setTimeout(executeLog, 750);
+  }
 }
 
 // Background auto-fetch schedule from database on update
 let serverAutoSyncDebounceTimer: NodeJS.Timeout | null = null;
 
 function triggerServerAutoFetchFromDatabase(reason: string) {
+  if (IS_VERCEL) return;
   if (serverAutoSyncDebounceTimer) clearTimeout(serverAutoSyncDebounceTimer);
   serverAutoSyncDebounceTimer = setTimeout(async () => {
     try {
@@ -3536,6 +3603,10 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
 
 // Supabase background sync scheduler - Upgraded to Realtime WebSockets
 function setupServerDatabaseAutoSync() {
+  if (IS_VERCEL) {
+    console.log('[Supabase Realtime] Skipped background WebSockets and setInterval drift polling on Vercel Serverless.');
+    return;
+  }
   try {
     console.log('[Supabase Realtime] Initializing exact-row Realtime Subscriptions...');
 
@@ -3605,10 +3676,14 @@ function setupServerDatabaseAutoSync() {
 
 // Trigger loadData asynchronously during startup
 loadData().then(() => {
-  setupServerDatabaseAutoSync();
+  if (!IS_VERCEL) {
+    setupServerDatabaseAutoSync();
+  }
 }).catch(err => {
   console.error("Async startup data load failed:", err);
-  setupServerDatabaseAutoSync();
+  if (!IS_VERCEL) {
+    setupServerDatabaseAutoSync();
+  }
 });
 
 const GLOBAL_EXCLUSIONS = [
@@ -4150,6 +4225,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
     }
 
     const { findCol } = buildColumnIndexResolver(rows);
+    const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
     const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1);
     const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
     const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
@@ -4180,7 +4256,17 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
 
       const rawMrn = String(row[colMrnIdx] || "").trim();
       const mrn = rawMrn.replace(/^0+/, "");
-      const admDate = parseAdmissionDateToISO(row[0]) || cleanAdmissionDateStr(row[0]);
+      const rawAdmVal = (row[colAdmIdx] !== undefined && row[colAdmIdx] !== null && String(row[colAdmIdx]).trim() !== "") ? row[colAdmIdx] : row[0];
+      const admDate = parseAdmissionDateToISO(rawAdmVal) || cleanAdmissionDateStr(rawAdmVal);
+      let safeAdmDate = admDate || null;
+      if (safeAdmDate) {
+        try {
+          const parsedTime = new Date(safeAdmDate).getTime();
+          if (!isNaN(parsedTime) && parsedTime > Date.now()) {
+            safeAdmDate = new Date().toISOString();
+          }
+        } catch (_) {}
+      }
       const contractor = String(row[colContractorIdx] || "").trim();
       const financial = String(row[colFinancialIdx] || "").trim();
       const physician = String(row[colPhysIdx] || "").trim();
@@ -4211,7 +4297,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
         "Bed#": room,
         "Floor Name": getAccommodationCategory(room) || "",
         TreatingPhysicianName: physician || null,
-        AdmissionDate: admDate || null,
+        AdmissionDate: safeAdmDate || null,
         ContractorName: contractor || null,
         "Financial Status": financial || null,
         "Total Invoice": totalInvoice,
@@ -4706,13 +4792,18 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     // Update local disk cache for fast immediate reboot recovery
     try {
       if (fs.existsSync(DATA_FILE)) {
-        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        parsed.orList = parsedData;
-        parsed.uploadedAt = uploadedAt;
-        parsed.lastActiveDate = lastActiveDate;
-        parsed.lastDatabaseUpdatedAt = nowIso;
-        fs.writeFileSync(DATA_FILE, JSON.stringify(parsed));
+        try {
+          const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+          const parsed = JSON.parse(raw);
+          parsed.orList = parsedData;
+          parsed.uploadedAt = uploadedAt;
+          parsed.lastActiveDate = lastActiveDate;
+          parsed.lastDatabaseUpdatedAt = nowIso;
+          writeJsonAtomicSync(DATA_FILE, parsed);
+        } catch (parseErr) {
+          console.warn('Corrupt local cache found while updating OR list, purging:', parseErr);
+          try { if (fs.existsSync(DATA_FILE)) fs.unlinkSync(DATA_FILE); } catch (_) {}
+        }
       }
     } catch (diskErr) {
       console.warn('Failed to update disk cache for OR list:', diskErr);
@@ -8778,8 +8869,10 @@ async function checkEgyptianDailyReset() {
   }
 }
 
-// Check every 20 seconds
-setInterval(checkEgyptianDailyReset, 20000);
+// Check every 20 seconds (only on persistent server, Vercel cron uses /api/cron/daily-reset)
+if (!IS_VERCEL) {
+  setInterval(checkEgyptianDailyReset, 20000);
+}
 
 // Webhook endpoint for external schedulers (Vercel Cron, GitHub Actions, cloud crons)
 app.all('/api/cron/daily-reset', async (req, res) => {
@@ -8870,12 +8963,23 @@ app.post('/api/reset', async (req, res) => {
         if (trErr) console.warn(`[Reset] Relational transfers deletion notice for ${d}:`, trErr.message);
       }
 
-      // Mark any active admissions as Discharged
-      const { error: admErr } = await supabaseAdmin
+      // Mark any active admissions as Discharged safely without violating chk_admissions_dates
+      const nowIso = new Date().toISOString();
+      const { data: activeAdms } = await supabaseAdmin
         .from('admissions')
-        .update({ status: 'Discharged', discharge_date: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .select('id, admission_date')
         .eq('status', 'Admitted');
-      if (admErr) console.warn('[Reset] Relational admissions update notice:', admErr.message);
+      
+      if (activeAdms && activeAdms.length > 0) {
+        for (const adm of activeAdms) {
+          const admTime = adm.admission_date ? new Date(adm.admission_date).getTime() : 0;
+          const safeDischarge = (admTime > Date.now()) ? adm.admission_date : nowIso;
+          await supabaseAdmin
+            .from('admissions')
+            .update({ status: 'Discharged', discharge_date: safeDischarge, updated_at: nowIso })
+            .eq('id', adm.id);
+        }
+      }
     } catch (relErr: any) {
       console.warn('[Reset] Relational DB sync error (non-fatal):', relErr?.message || relErr);
     }

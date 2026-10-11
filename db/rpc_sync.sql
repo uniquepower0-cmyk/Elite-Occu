@@ -78,15 +78,18 @@ BEGIN
     COALESCE(
       CASE 
         WHEN NULLIF(rec->>'AdmissionDate', '') IS NOT NULL THEN
-          CASE
-            -- Standard ISO: YYYY-MM-DD...
-            WHEN (rec->>'AdmissionDate') ~ '^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}' 
-              THEN (rec->>'AdmissionDate')::TIMESTAMPTZ
-            -- European/Middle-Eastern format: DD-MM-YYYY HH24:MI(:SS)
-            WHEN (rec->>'AdmissionDate') ~ '^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}' 
-              THEN to_timestamp(rec->>'AdmissionDate', 'DD-MM-YYYY HH24:MI:SS')
-            ELSE (rec->>'AdmissionDate')::TIMESTAMPTZ
-          END
+          LEAST(
+            CASE
+              -- Standard ISO: YYYY-MM-DD...
+              WHEN (rec->>'AdmissionDate') ~ '^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}' 
+                THEN (rec->>'AdmissionDate')::TIMESTAMPTZ
+              -- European/Middle-Eastern format: DD-MM-YYYY HH24:MI(:SS)
+              WHEN (rec->>'AdmissionDate') ~ '^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}' 
+                THEN to_timestamp(rec->>'AdmissionDate', 'DD-MM-YYYY HH24:MI:SS')
+              ELSE (rec->>'AdmissionDate')::TIMESTAMPTZ
+            END,
+            NOW()
+          )
         ELSE NULL 
       END,
       NOW()
@@ -192,7 +195,7 @@ BEGIN
 
   IF v_active_admission_ids IS NOT NULL AND array_length(v_active_admission_ids, 1) > 0 THEN
     UPDATE public.admissions 
-    SET status = 'Discharged', discharge_date = NOW(), updated_at = NOW()
+    SET status = 'Discharged', discharge_date = GREATEST(NOW(), admission_date), updated_at = NOW()
     WHERE status = 'Admitted' 
       AND (source IS NULL OR source = 'powerbi')
       AND NOT (id = ANY(v_active_admission_ids));
