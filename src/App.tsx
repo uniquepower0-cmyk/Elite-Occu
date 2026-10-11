@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } from 'react';
 import { 
   Building2, 
   Users, 
@@ -399,6 +399,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -425,8 +426,10 @@ export default function App() {
   const [dashboardTab, setDashboardTab] = useState<'hospital' | 'or-list'>('hospital');
   const [hoveredPatient, setHoveredPatient] = useState<any | null>(null);
   const [orSearchQuery, setOrSearchQuery] = useState('');
+  const deferredOrSearchQuery = useDeferredValue(orSearchQuery);
   const [entryRows, setEntryRows] = useState<any[]>([]);
   const [entrySearchQuery, setEntrySearchQuery] = useState('');
+  const deferredEntrySearchQuery = useDeferredValue(entrySearchQuery);
   const [dialysisCount, setDialysisCount] = useState<number>(0);
   const [dialysisRows, setDialysisRows] = useState<any[]>([]);
 
@@ -1244,6 +1247,13 @@ export default function App() {
     }
   };
 
+  const fetchDataRef = useRef(fetchData);
+  fetchDataRef.current = fetchData;
+
+  const handleSilentFetch = useCallback(() => {
+    fetchDataRef.current({ silent: true });
+  }, []);
+
   const fetchTransfers = async () => {
     try {
       const res = await fetch('/api/transfers');
@@ -1931,7 +1941,7 @@ export default function App() {
     }
   };
 
-  const handleCopyFormattedVips = async () => {
+  const handleCopyFormattedVips = useCallback(async () => {
     setProcessing('Copying Formatted VIP Cases...');
     try {
       const res = await fetch('/api/vip-cases/formatted', {
@@ -1962,7 +1972,7 @@ export default function App() {
     } finally {
       setProcessing(null);
     }
-  };
+  }, [vipCases]);
 
   const copyFormattedEntries = async () => {
     if (entryRows.length === 0) {
@@ -2589,7 +2599,7 @@ export default function App() {
     };
   }, [orList, dischargedPatients, orOccupancyPatients]);
 
-  const copyExceedingALOSPatients = async () => {
+  const copyExceedingALOSPatients = useCallback(async () => {
     if (exceedingALOSPatients.length === 0) {
       alert("No patients exceeding ALOS currently found or loaded.");
       return;
@@ -2612,7 +2622,7 @@ export default function App() {
     } else {
       alert("Could not copy to clipboard. Please try again.");
     }
-  };
+  }, [exceedingALOSPatients]);
 
   const totalOccupied = activeStatsPatients.length;
   const totalSlots = stats.reduce((acc, s) => acc + s.total, 0);
@@ -2638,8 +2648,16 @@ export default function App() {
   const cashCount = useMemo(() => activeStatsPatients.filter(p => isCashPayment(p.payment)).length, [activeStatsPatients]);
   const insuredCount = totalOccupied - cashCount;
 
+  const generalAvailableRoomsCount = useMemo(() => {
+    return emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length;
+  }, [emptyRoomsList]);
+
+  const criticalZonesCount = useMemo(() => {
+    return stats.filter(s => s.total > 0 && s.occupied / s.total > 0.8).length;
+  }, [stats]);
+
   const filteredViewPatients = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = deferredSearchQuery.toLowerCase().trim();
     return patients.filter(p => {
       const matchSearch = !q || p.name.toLowerCase().includes(q) || p.room.toLowerCase().includes(q);
       if (!matchSearch) return false;
@@ -2648,7 +2666,7 @@ export default function App() {
       if (paymentFilter === 'insured') return !isCashPayment(p.payment);
       return true;
     });
-  }, [patients, searchQuery, paymentFilter]);
+  }, [patients, deferredSearchQuery, paymentFilter]);
 
   if (!isAuthenticated) {
     return (
@@ -3317,7 +3335,7 @@ export default function App() {
 
                     <AutoFetchCountdownBadge 
                       rate={autoFetchScheduleRate} 
-                      onFetch={() => fetchData({ silent: true })} 
+                      onFetch={handleSilentFetch} 
                     />
 
                     <button
@@ -3345,7 +3363,7 @@ export default function App() {
                   <StatCard label="Insured Cases" value={`${insuredCount}`} subValue="Insurance covered" icon={<ShieldCheck className="text-[#0284c7]" />} color="sky" />
                   <StatCard 
                     label="Available" 
-                    value={`${emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length}`} 
+                    value={`${generalAvailableRoomsCount}`} 
                     subValue="General ward rooms" 
                     icon={<Building2 className="text-emerald-600" />} 
                     color="emerald" 
@@ -3367,7 +3385,7 @@ export default function App() {
                     color="teal" 
                     highlighted={true}
                   />
-                  <StatCard label="Critical Zones" value={stats.filter(s => s.occupied/s.total > 0.8).length.toString()} subValue="> 80% capacity" icon={<AlertCircle className="text-amber-600" />} color="amber" />
+                  <StatCard label="Critical Zones" value={`${criticalZonesCount}`} subValue="> 80% capacity" icon={<AlertCircle className="text-amber-600" />} color="amber" />
                   <StatCard 
                     label="VIP Cases" 
                     value={`${vipCount}`} 
@@ -3548,7 +3566,7 @@ export default function App() {
                       )}
 
                       {(() => {
-                        const query = entrySearchQuery.toLowerCase().trim();
+                        const query = deferredEntrySearchQuery.toLowerCase().trim();
                         const filtered = entryRows.filter(e => {
                           const nameMatch = String(e.name || "").toLowerCase().includes(query);
                           const roomMatch = String(e.room || "").toLowerCase().includes(query);
@@ -3967,8 +3985,8 @@ export default function App() {
 
                             const totalDuration = maxMins - minMins;
 
-                            // Filter patients based on orSearchQuery
-                            const query = orSearchQuery.toLowerCase().trim();
+                            // Filter patients based on orSearchQuery (using deferred value for responsive typing)
+                            const query = deferredOrSearchQuery.toLowerCase().trim();
                             const filteredPatientsWithTimes = patientsWithTimes.filter(p => {
                               if (!query) return true;
                               const name = String(p.patientName || "").toLowerCase();
@@ -4263,7 +4281,7 @@ export default function App() {
 
                               <div className="space-y-6 max-h-[640px] overflow-y-auto pr-2">
                                 {(() => {
-                                  const query = orSearchQuery.toLowerCase().trim();
+                                  const query = deferredOrSearchQuery.toLowerCase().trim();
                                   const filteredOrList = orList.filter(p => {
                                     if (!query) return true;
                                     const name = String(p.patientName || "").toLowerCase();

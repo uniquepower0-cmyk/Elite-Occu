@@ -193,24 +193,47 @@ CREATE TABLE IF NOT EXISTS public.rtdb_nodes (
 CREATE INDEX IF NOT EXISTS idx_rtdb_nodes_path_pattern ON public.rtdb_nodes (path text_pattern_ops);
 ALTER TABLE public.rtdb_nodes ENABLE ROW LEVEL SECURITY;
 
--- 10. Atomic Lock Function for Daily Reset Rollover (11:59 PM Cairo)
+-- 10. Atomic In-Memory Lock Function for Daily Reset Rollover (11:59 PM Cairo)
 CREATE OR REPLACE FUNCTION public.acquire_daily_reset_lock(p_date TEXT)
-RETURNS BOOLEAN LANGUAGE plpgsql AS $$
+RETURNS BOOLEAN 
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
 BEGIN
-    INSERT INTO public.rtdb_nodes (path, data, updated_at)
-    VALUES ('locks/daily_reset_' || p_date, '{"locked": true}', NOW())
-    ON CONFLICT (path) DO NOTHING;
-    RETURN FOUND;
+    RETURN pg_try_advisory_lock(hashtext('daily_reset_' || p_date));
 END;
 $$;
 
--- 11. Security (Row Level Security - RLS)
+-- 11. Security (Row Level Security - RLS Policies)
 ALTER TABLE public.patients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rooms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.staff ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transfers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.or_cases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.rtdb_nodes ENABLE ROW LEVEL SECURITY;
+
+-- Allow authenticated hospital staff to view clinical records
+DROP POLICY IF EXISTS "Allow authenticated read patients" ON public.patients;
+CREATE POLICY "Allow authenticated read patients" ON public.patients FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read rooms" ON public.rooms;
+CREATE POLICY "Allow authenticated read rooms" ON public.rooms FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read staff" ON public.staff;
+CREATE POLICY "Allow authenticated read staff" ON public.staff FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read admissions" ON public.admissions;
+CREATE POLICY "Allow authenticated read admissions" ON public.admissions FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read transfers" ON public.transfers;
+CREATE POLICY "Allow authenticated read transfers" ON public.transfers FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read or_cases" ON public.or_cases;
+CREATE POLICY "Allow authenticated read or_cases" ON public.or_cases FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Allow authenticated read rtdb_nodes" ON public.rtdb_nodes;
+CREATE POLICY "Allow authenticated read rtdb_nodes" ON public.rtdb_nodes FOR SELECT TO authenticated USING (true);
 
 -- 12. Realtime publication additions
 DO $$ BEGIN
@@ -398,9 +421,9 @@ CREATE INDEX IF NOT EXISTS idx_admissions_room ON public.admissions(room_id);
 
 CREATE INDEX IF NOT EXISTS idx_or_cases_room ON public.or_cases(room_id);
 
--- RTDB nodes path prefix search optimization (accelerates LIKE 'state/%')
-CREATE INDEX IF NOT EXISTS idx_rtdb_nodes_path_pattern 
-ON public.rtdb_nodes (path text_pattern_ops);
+-- Index foreign key on specialty_aliases
+CREATE INDEX IF NOT EXISTS idx_specialty_aliases_specialty_id 
+ON public.specialty_aliases(specialty_id);
 
 -- Trigram fuzzy and substring matching for bilingual Arabic & English names
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -421,7 +444,7 @@ ON public.admissions (status, patient_id)
 INCLUDE (room_id, physician_id, contractor_id, contractor_name, financial_status, total_invoice, remaining_debt, admission_date)
 WHERE status = 'Admitted';
 
--- High-Churn JSONB table storage tuning (enables HOT updates to eliminate index bloat)
+-- High-Churn table storage tuning (enables HOT updates to eliminate index bloat)
 ALTER TABLE public.rtdb_nodes SET (
     fillfactor = 85,
     autovacuum_vacuum_scale_factor = 0.05,
@@ -429,8 +452,11 @@ ALTER TABLE public.rtdb_nodes SET (
     autovacuum_vacuum_cost_limit = 1000
 );
 
+ALTER TABLE public.admissions SET (fillfactor = 90);
+
 -- Query planner statistics (calibrates cost model for skewed admitted vs discharged ratio)
 ALTER TABLE public.admissions ALTER COLUMN status SET STATISTICS 500;
+ANALYZE public.admissions;
 
 -- ==============================================================================
 -- 17. SPECIALIZED OPERATIONAL & FINANCIAL VIEWS
