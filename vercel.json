@@ -6,9 +6,35 @@
     "api/index.ts": {
       "memory": 1024,
       "maxDuration": 60,
-      "includeFiles": "node_modules/sharp/**,node_modules/@img/**,fonts/**"
+      "includeFiles": "fonts/**,header_bg.png,node_modules/sharp/**,node_modules/@img/**"
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron/daily-reset",
+      "schedule": "55 21 * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(fonts|elite_logo.*|header_bg\\.webp)(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" }
   ]

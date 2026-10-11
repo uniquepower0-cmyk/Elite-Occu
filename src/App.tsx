@@ -3767,83 +3767,49 @@ export default function App() {
                         <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
                           <StatCard 
                             label=" Formal TOTAL OR List" 
-                            value={`${orList.length}`} 
+                            value={`${orStats.total}`} 
                             subValue="Total scheduled cases" 
                             icon={<Users className="text-indigo-600" />} 
                             color="indigo" 
                           />
                           <StatCard 
                             label="Doctor Case (DC)" 
-                            value={`${orList.filter(p => isDoctorCase(p)).length}`} 
+                            value={`${orStats.dcCount}`} 
                             subValue="Doctor Case surgery" 
                             icon={<Clock className="text-amber-600" />} 
                             color="yellow" 
                           />
                           <StatCard 
                             label="Hospital Case (HC)" 
-                            value={`${orList.filter(p => isHospitalCase(p)).length}`} 
+                            value={`${orStats.hcCount}`} 
                             subValue="Hospital Case" 
                             icon={<Building2 className="text-purple-600" />} 
                             color="purple" 
                           />
                           <StatCard 
                             label="IN Patients" 
-                            value={`${orList.length > 0 ? orList.filter(p => {
-                              const isDischarged = dischargedPatients.some(discPt => {
-                                const nameMatch = isClientNameMatch(p.patientName, discPt.name);
-                                const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-                                return nameMatch || mrnMatch;
-                              });
-                              if (isDischarged) return false;
-                              if (p.realStatus === 'IN') return true;
-                              if (p.realStatus === 'OUT') return false;
-                              const statusVal = String(p.column3 || p.vt || "").toUpperCase().trim();
-                              if (statusVal.includes("IN")) return true;
-                              if (statusVal.includes("OUT")) return false;
-                              const combined = `${p.column3} ${p.vt} ${p.postC} ${p.flClassName}`.toUpperCase();
-                              return combined.includes("IN") && !combined.includes("OUT");
-                            }).length : orOccupancyPatients.length}`} 
+                            value={`${orStats.inCount}`} 
                             subValue="Currently Admitted Patients" 
                             icon={<ShieldCheck className="text-blue-600" />} 
                             color="sky" 
                           />
                           <StatCard 
                             label="OUT Patients" 
-                            value={`${orList.filter(p => {
-                              const isDischarged = dischargedPatients.some(discPt => {
-                                const nameMatch = isClientNameMatch(p.patientName, discPt.name);
-                                const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-                                return nameMatch || mrnMatch;
-                              });
-                              if (isDischarged) return false;
-                              if (p.realStatus === 'IN') return false;
-                              if (p.realStatus === 'OUT') return true;
-                              const statusVal = String(p.column3 || p.vt || "").toUpperCase().trim();
-                              if (statusVal.includes("OUT")) return true;
-                              if (statusVal.includes("IN")) return false;
-                              const combined = `${p.column3} ${p.vt} ${p.postC} ${p.flClassName}`.toUpperCase();
-                              return combined.includes("OUT") || !combined.includes("IN");
-                            }).length}`} 
+                            value={`${orStats.outCount}`} 
                             subValue="Not Currently Admitted Patients" 
                             icon={<CheckCircle2 className="text-emerald-600" />} 
                             color="teal" 
                           />
                           <StatCard 
                             label="Discharged OR Patients" 
-                            value={`${orList.filter(p => 
-                              dischargedPatients.some(discPt => {
-                                const nameMatch = isClientNameMatch(p.patientName, discPt.name);
-                                const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-                                return nameMatch || mrnMatch;
-                              })
-                            ).length}`} 
+                            value={`${orStats.dischargedCount}`} 
                             subValue="Discharged OR Patients" 
                             icon={<LogOut className="text-pink-600" />} 
                             color="pink" 
                           />
                           <StatCard 
                             label="Post SICU" 
-                            value={`${orList.filter(p => String(p.postC || "").toUpperCase().includes("SICU")).length}`} 
+                            value={`${orStats.sicuCount}`} 
                             subValue="Surgical ICU Cases" 
                             icon={<Activity className="text-rose-600" />} 
                             color="rose" 
@@ -4354,18 +4320,14 @@ export default function App() {
                                           {patientsInRoom.map((p, idx) => {
                                             const status = String(p.column3 || p.vt || "").toUpperCase();
                                             const isInOut = p.realStatus || "OUT";
-                                            const isDischarged = dischargedPatients.some(discPt => {
+                                            const matchingDisc = dischargedPatients.find(discPt => {
                                               const nameMatch = isClientNameMatch(p.patientName, discPt.name);
                                               const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
                                               return nameMatch || mrnMatch;
-                                            });
-                                            const matchingDisc = isDischarged ? dischargedPatients.find(discPt => {
-                                              const nameMatch = isClientNameMatch(p.patientName, discPt.name);
-                                              const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
-                                              return nameMatch || mrnMatch;
-                                            }) : null;
+                                            }) || null;
+                                            const isDischarged = !!matchingDisc;
                                             return (
-                                              <div key={idx} className="p-4 hover:bg-slate-50/40 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                              <div key={p.mrn ? `room-${room}-${p.mrn}` : `room-${room}-${p.patientName}-${idx}`} className="p-4 hover:bg-slate-50/40 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                                                 <div className="space-y-1">
                                                   <div className="flex items-center gap-2">
                                                     <span className="text-xs font-bold text-slate-400 font-mono">#{p.serial || idx + 1}</span>
@@ -4705,22 +4667,36 @@ export default function App() {
                 className="space-y-12 pb-12"
               >
                 {/* Section: Medical Director & Inpatient manager */}
-                {currentView === 'medical-director' && (
-                  <MedicalDirectorView 
-                    processing={processing}
-                    onDownloadCombinedReport={downloadMedicalDirectorCombinedReport}
-                    onDownloadMedicalPlans={downloadMedicalPlansReport}
-                  />
-                )}
+                {currentView === 'medical-director' ? (
+                  <ErrorBoundary
+                    fallbackTitle="Medical Director Module Unavailable"
+                    fallbackSubtitle="Could not load the medical director view. Please retry."
+                  >
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <MedicalDirectorView 
+                        processing={processing}
+                        onDownloadCombinedReport={downloadMedicalDirectorCombinedReport}
+                        onDownloadMedicalPlans={downloadMedicalPlansReport}
+                      />
+                    </React.Suspense>
+                  </ErrorBoundary>
+                ) : null}
 
                 {/* Section: Duty Manager */}
-                {currentView === 'duty-manager' && (
-                  <DutyManagerView 
-                    processing={processing}
-                    onDownloadCombinedReport={downloadCombinedReport}
-                    onDownloadMedicalPlans={downloadMedicalPlansReport}
-                  />
-                )}
+                {currentView === 'duty-manager' ? (
+                  <ErrorBoundary
+                    fallbackTitle="Duty Manager Module Unavailable"
+                    fallbackSubtitle="Could not load the duty manager view. Please retry."
+                  >
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <DutyManagerView 
+                        processing={processing}
+                        onDownloadCombinedReport={downloadCombinedReport}
+                        onDownloadMedicalPlans={downloadMedicalPlansReport}
+                      />
+                    </React.Suspense>
+                  </ErrorBoundary>
+                ) : null}
 
                 {/* Section: Mohanad's Sheets */}
                 {currentView === 'mohanad-sheets' && (

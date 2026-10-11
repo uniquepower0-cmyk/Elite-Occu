@@ -9248,6 +9248,10 @@ app.get('/api/history/occupancy/detail', async (req, res) => {
         }))
       : rawDischarged.filter((p: any) => p.dischargeType === 'manual');
 
+    if (ds.isHistorical) {
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400');
+    }
+
     res.json({
       date: ds.dateLabel,
       isHistorical: ds.isHistorical,
@@ -9329,6 +9333,10 @@ app.get('/api/history/or/detail', async (req, res) => {
     const occDs = await resolveOccupancyDataset(dateStr);
     const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
     const enriched = getEnrichedOrListForStats(ds.orList, occRows);
+
+    if (ds.isHistorical) {
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400');
+    }
 
     res.json({
       date: ds.dateLabel,
