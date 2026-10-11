@@ -2142,7 +2142,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
 }
 
 let lastKnownDatabaseUpdatedAt: string | null = null;
-let lastServerFetchTimestamp: number = Date.now();
+let lastServerFetchTimestamp: number = 0;
 let isServerAutoSyncing = false;
 let activeLoadDataPromise: Promise<void> | null = null;
 let inMemoryNodeTimestamps: Record<string, string> = {};
@@ -3049,6 +3049,14 @@ app.get('/api/db-status', async (req, res) => {
 // Login Audit Logs endpoints (powered by Supabase)
 app.get('/api/logins', async (req, res) => {
   try {
+    const isForce = req.query.force === 'true' || req.query.force === '1';
+    if (isForce) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    } else {
+      // Vercel Serverless Edge Cache: cache at edge for 30s, stale-while-revalidate for 60s
+      res.setHeader('Cache-Control', 'public, max-age=10, s-maxage=30, stale-while-revalidate=60');
+    }
+
     // 1. Fetch from relational auth_audit_logs table first
     const { data: relationalLogs, error: rErr } = await supabaseAdmin
       .from('auth_audit_logs')
@@ -3106,6 +3114,7 @@ app.get('/api/logins', async (req, res) => {
 });
 
 app.post('/api/logins', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   try {
     const { userId, email, displayName, timestamp } = req.body;
     const now = timestamp || new Date().toISOString();
@@ -3128,7 +3137,29 @@ app.post('/api/logins', async (req, res) => {
       console.warn('Profile upsert note (non-fatal):', profileErr.message);
     }
 
-    // 2. Append to audit_logs in rtdb_nodes
+    // 2. Server-side duplicate suppression check:
+    // If this user already has an audit log entry in the last 2 minutes, suppress duplicate entry creation.
+    const cutoffIso = new Date(Date.now() - 120000).toISOString();
+    let isDuplicate = false;
+
+    try {
+      const { data: recentRelationalLogs } = await supabaseAdmin
+        .from('auth_audit_logs')
+        .select('id, logged_in_at')
+        .eq('email', userEmail)
+        .gte('logged_in_at', cutoffIso)
+        .limit(1);
+
+      if (recentRelationalLogs && recentRelationalLogs.length > 0) {
+        isDuplicate = true;
+      }
+    } catch (_) {}
+
+    if (isDuplicate) {
+      return res.json({ success: true, deduplicated: true });
+    }
+
+    // 3. Append to audit_logs in rtdb_nodes
     const { data: existingNode } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('data')
@@ -3136,23 +3167,27 @@ app.post('/api/logins', async (req, res) => {
       .maybeSingle();
 
     let logs: any[] = (existingNode && Array.isArray(existingNode.data)) ? existingNode.data : [];
-    logs.unshift({
-      id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-      userId: uid,
-      email: userEmail,
-      displayName: name,
-      timestamp: now
-    });
-    // Keep last 150 entries
-    if (logs.length > 150) logs = logs.slice(0, 150);
+    // Secondary duplicate check in rtdb_nodes within 2 minutes
+    const recentNodeEntry = logs.find(l => l.email === userEmail && (Date.now() - new Date(l.timestamp).getTime() < 120000));
+    if (!recentNodeEntry) {
+      logs.unshift({
+        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        userId: uid,
+        email: userEmail,
+        displayName: name,
+        timestamp: now
+      });
+      // Keep last 150 entries
+      if (logs.length > 150) logs = logs.slice(0, 150);
 
-    await supabaseAdmin.from('rtdb_nodes').upsert({
-      path: 'audit_logs',
-      data: logs,
-      updated_at: now
-    });
+      await supabaseAdmin.from('rtdb_nodes').upsert({
+        path: 'audit_logs',
+        data: logs,
+        updated_at: now
+      });
+    }
 
-    // 3. Dual-write to relational auth_audit_logs table
+    // 4. Dual-write to relational auth_audit_logs table
     try {
       const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
       const userAgent = (req.headers['user-agent'] || '').toString();
@@ -7591,7 +7626,7 @@ app.get('/api/occupancy/data', async (req, res) => {
   const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
   const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
 
-  if (force || isStale || (isDataMissing && lastActiveDate)) {
+  if (force || isStale || isDataMissing || !hospitalData) {
     try {
       await loadData(force);
     } catch (err) {
@@ -9092,6 +9127,9 @@ app.post('/api/reset-or', async (req, res) => {
 // History API Endpoints
 app.get('/api/history/occupancy/dates', async (req, res) => {
   try {
+    if (!hospitalData) {
+      await loadData();
+    }
     let dates = await getAvailableDates('occupancy');
     if (hospitalData && hospitalData.length > 3) {
       const cairo = getCairoDateTime();
@@ -9261,6 +9299,9 @@ app.post('/api/history/occupancy/snapshot', async (req, res) => {
 
 app.get('/api/history/or/dates', async (req, res) => {
   try {
+    if (!cumulativeORList || cumulativeORList.length === 0) {
+      await loadData();
+    }
     let dates = await getAvailableDates('or');
     if (cumulativeORList && cumulativeORList.length > 0) {
       const cairo = getCairoDateTime();
@@ -9510,7 +9551,7 @@ app.post('/api/workflows/:type', (req, res) => {
 // Guarantees all generated Excel workbooks use the latest dataset from Supabase
 app.use('/api/reports', async (req, res, next) => {
   const isStale = (Date.now() - lastServerFetchTimestamp > 3000);
-  if (isStale) {
+  if (!hospitalData || isStale) {
     try {
       await loadData(false);
     } catch (err) {

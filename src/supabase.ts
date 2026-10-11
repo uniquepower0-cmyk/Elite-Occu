@@ -61,62 +61,111 @@ export async function signOutUser() {
   if (error) throw error;
 }
 
+// Client-side debounce and in-flight tracking to prevent repeated API calls
+let lastLoggedUser = '';
+let lastLoggedTime = 0;
+let inFlightLoginPromise: Promise<void> | null = null;
+
+let auditLogsCache: { logs: SupabaseAuditLog[]; fetchedAt: number } | null = null;
+let inFlightLogsPromise: Promise<SupabaseAuditLog[]> | null = null;
+
 export async function logUserLogin(user: { uid?: string; email?: string; displayName?: string }) {
   const timestamp = new Date().toISOString();
   const userId = user.uid || `usr_${Date.now()}`;
   const email = user.email || 'user@elite.hospital';
   const displayName = user.displayName || 'Authorized Staff';
+  const now = Date.now();
 
-  try {
-    // Delegate all profile writes to the server-side API which uses the service-role
-    // key (bypasses RLS) and handles upsert conflict resolution correctly.
-    // Never write to 'profiles' directly from the browser with the anon key —
-    // that triggers RLS violations (42501) and duplicate email errors (23505).
-    await fetch('/api/logins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        email,
-        displayName,
-        timestamp,
-      }),
-    });
-  } catch (err) {
-    console.error('Failed to record login audit:', err);
+  // Deduplicate client-side: suppress duplicate login audit posts for the same user within 2 minutes
+  if (lastLoggedUser === email && (now - lastLoggedTime) < 120000) {
+    return;
   }
+
+  // If a login request is already in-flight for this user, reuse that promise
+  if (inFlightLoginPromise && lastLoggedUser === email) {
+    return inFlightLoginPromise;
+  }
+
+  lastLoggedUser = email;
+  lastLoggedTime = now;
+
+  inFlightLoginPromise = (async () => {
+    try {
+      await fetch('/api/logins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          email,
+          displayName,
+          timestamp,
+        }),
+      });
+      // Invalidate audit logs cache so the next view fetch sees the latest entry
+      auditLogsCache = null;
+    } catch (err) {
+      console.error('Failed to record login audit:', err);
+    } finally {
+      inFlightLoginPromise = null;
+    }
+  })();
+
+  return inFlightLoginPromise;
 }
 
-export async function fetchSupabaseAuditLogs(): Promise<SupabaseAuditLog[]> {
-  try {
-    const res = await fetch('/api/logins');
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.logs)) {
-        return data.logs;
-      }
-    }
-  } catch (e) {
-    console.warn('Error fetching login logs from API, trying direct Supabase query:', e);
+export async function fetchSupabaseAuditLogs(force = false): Promise<SupabaseAuditLog[]> {
+  const now = Date.now();
+
+  // Return cached audit logs if fresh (within 30s) and force refresh was not requested
+  if (!force && auditLogsCache && (now - auditLogsCache.fetchedAt < 30000)) {
+    return auditLogsCache.logs;
   }
 
-  // Only attempt a direct Supabase query when a valid anon key is available;
-  // without it the request would return 401 and pollute the browser console.
-  if (SUPABASE_ANON_KEY) {
-    try {
-      const { data, error } = await supabase
-        .from('rtdb_nodes')
-        .select('data')
-        .eq('path', 'audit_logs')
-        .single();
+  // Share in-flight request if another caller is already fetching
+  if (inFlightLogsPromise) {
+    return inFlightLogsPromise;
+  }
 
-      if (!error && data && Array.isArray(data.data)) {
-        return data.data;
+  inFlightLogsPromise = (async () => {
+    try {
+      const url = force ? '/api/logins?force=true' : '/api/logins';
+      const res = await fetch(url, {
+        headers: force ? { 'Cache-Control': 'no-cache' } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.logs)) {
+          auditLogsCache = { logs: data.logs, fetchedAt: Date.now() };
+          return data.logs;
+        }
       }
     } catch (e) {
-      console.error('Supabase direct audit log fetch error:', e);
+      console.warn('Error fetching login logs from API, trying direct Supabase query:', e);
+    } finally {
+      inFlightLogsPromise = null;
     }
-  }
 
-  return [];
+    // Only attempt a direct Supabase query when a valid anon key is available;
+    // without it the request would return 401 and pollute the browser console.
+    if (SUPABASE_ANON_KEY) {
+      try {
+        const { data, error } = await supabase
+          .from('rtdb_nodes')
+          .select('data')
+          .eq('path', 'audit_logs')
+          .single();
+
+        if (!error && data && Array.isArray(data.data)) {
+          auditLogsCache = { logs: data.data, fetchedAt: Date.now() };
+          return data.data;
+        }
+      } catch (e) {
+        console.error('Supabase direct audit log fetch error:', e);
+      }
+    }
+
+    return auditLogsCache ? auditLogsCache.logs : [];
+  })();
+
+  return inFlightLogsPromise;
 }

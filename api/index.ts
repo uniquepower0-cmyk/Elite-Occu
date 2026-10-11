@@ -20,11 +20,14 @@ let appError: Error | null = null;
 // Lazy-load the server to catch any module-level crash and surface it as a readable 500
 function getApp() {
   if (!appPromise) {
-    appPromise = import('../server.js').then(m => m.default).catch(err => {
-      appError = err;
-      console.error('[api/index] Server module failed to load:', err);
-      return null;
-    });
+    appPromise = import('../server.js')
+      .catch(() => import('../server'))
+      .then(m => m.default || m)
+      .catch(err => {
+        appError = err;
+        console.error('[api/index] Server module failed to load:', err);
+        return null;
+      });
   }
   return appPromise;
 }

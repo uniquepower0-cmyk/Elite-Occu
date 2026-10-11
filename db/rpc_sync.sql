@@ -116,11 +116,16 @@ BEGIN
   SET mrn = 'UNKNOWN-' || gen_random_uuid()::text
   WHERE mrn IN ('None', 'nan');
 
-  -- 2. Batch Upsert Patients
+  CREATE INDEX IF NOT EXISTS idx_tmp_sync_mrn ON tmp_sync_admissions_staging(mrn);
+  CREATE INDEX IF NOT EXISTS idx_tmp_sync_bed ON tmp_sync_admissions_staging(bed);
+  CREATE INDEX IF NOT EXISTS idx_tmp_sync_phys ON tmp_sync_admissions_staging(physician_name);
+
+  -- 2. Batch Upsert Patients (Deterministic: choose row with non-empty phone)
   INSERT INTO public.patients (mrn, name, phone, updated_at)
   SELECT DISTINCT ON (s.mrn) s.mrn, s.patient_name, s.phone, NOW()
   FROM tmp_sync_admissions_staging s
   WHERE s.mrn IS NOT NULL
+  ORDER BY s.mrn, s.phone NULLS LAST
   ON CONFLICT (mrn) DO UPDATE 
   SET name = EXCLUDED.name, 
       phone = CASE 
@@ -136,11 +141,14 @@ BEGIN
   FROM public.patients p
   WHERE p.mrn = s.mrn;
 
+  CREATE INDEX IF NOT EXISTS idx_tmp_sync_pid ON tmp_sync_admissions_staging(patient_id);
+
   -- 3. Batch Upsert Rooms
   INSERT INTO public.rooms (name, ward_type)
   SELECT DISTINCT ON (s.bed) s.bed, s.ward_type
   FROM tmp_sync_admissions_staging s
   WHERE s.bed IS NOT NULL
+  ORDER BY s.bed, s.ward_type NULLS LAST
   ON CONFLICT (name) DO UPDATE 
   SET ward_type = COALESCE(EXCLUDED.ward_type, rooms.ward_type);
 
@@ -150,11 +158,12 @@ BEGIN
   FROM public.rooms r
   WHERE r.name = s.bed;
 
-  -- 4. Batch Upsert Staff
+  -- 4. Batch Upsert Staff (Deterministic: choose specialized role over generic 'Physician')
   INSERT INTO public.staff (name, role)
   SELECT DISTINCT ON (s.physician_name) s.physician_name, s.specialty
   FROM tmp_sync_admissions_staging s
   WHERE s.physician_name IS NOT NULL
+  ORDER BY s.physician_name, CASE WHEN s.specialty != 'Physician' THEN 0 ELSE 1 END
   ON CONFLICT (name) DO UPDATE 
   SET role = CASE WHEN EXCLUDED.role != 'Physician' THEN EXCLUDED.role ELSE staff.role END;
 
@@ -174,6 +183,7 @@ BEGIN
     s.total_invoice, s.remaining_debt, s.admission_date, s.notes, 'Admitted', s.source, NOW()
   FROM tmp_sync_admissions_staging s
   WHERE s.patient_id IS NOT NULL
+  ORDER BY s.patient_id, s.admission_date DESC NULLS LAST
   ON CONFLICT (patient_id) WHERE status = 'Admitted'
   DO UPDATE SET
     room_id = EXCLUDED.room_id,
@@ -186,19 +196,20 @@ BEGIN
     notes = COALESCE(EXCLUDED.notes, admissions.notes),
     updated_at = NOW();
 
-  -- 6. Auto-Discharge: Only active PowerBI-sourced admissions not in this sync are marked Discharged
-  -- Manual uploads (source = 'manual') are preserved from auto-discharge
-  SELECT array_agg(a.id) INTO v_active_admission_ids
-  FROM public.admissions a
-  JOIN tmp_sync_admissions_staging s ON s.patient_id = a.patient_id
-  WHERE a.status = 'Admitted';
-
-  IF v_active_admission_ids IS NOT NULL AND array_length(v_active_admission_ids, 1) > 0 THEN
-    UPDATE public.admissions 
-    SET status = 'Discharged', discharge_date = GREATEST(NOW(), admission_date), updated_at = NOW()
-    WHERE status = 'Admitted' 
-      AND (source IS NULL OR source = 'powerbi')
-      AND NOT (id = ANY(v_active_admission_ids));
+  -- 6. High-Performance Set-Based Auto-Discharge
+  -- Only active PowerBI-sourced admissions not present in this sync are marked Discharged
+  -- Guard: Only proceed if staging table contains resolved admissions to prevent catastrophic wipe
+  IF (SELECT count(*) FROM tmp_sync_admissions_staging WHERE patient_id IS NOT NULL) > 0 THEN
+    UPDATE public.admissions a
+    SET status = 'Discharged', 
+        discharge_date = GREATEST(NOW(), a.admission_date), 
+        updated_at = NOW()
+    WHERE a.status = 'Admitted' 
+      AND (a.source IS NULL OR a.source = 'powerbi')
+      AND NOT EXISTS (
+        SELECT 1 FROM tmp_sync_admissions_staging s
+        WHERE s.patient_id = a.patient_id
+      );
   END IF;
 END;
 $$;

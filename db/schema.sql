@@ -316,6 +316,12 @@ BEGIN
     SELECT name INTO v_old_room_name FROM public.rooms WHERE id = OLD.room_id;
     SELECT name INTO v_new_room_name FROM public.rooms WHERE id = NEW.room_id;
 
+    -- Safeguard: Do not log transfers if either room is an operating or procedural suite
+    IF LOWER(COALESCE(v_old_room_name, '')) ~ '^(or|o\.r|operation|theatre|cath|dialysis|recovery|pacu|endoscopy)' 
+       OR LOWER(COALESCE(v_new_room_name, '')) ~ '^(or|o\.r|operation|theatre|cath|dialysis|recovery|pacu|endoscopy)' THEN
+      RETURN NEW;
+    END IF;
+
     INSERT INTO public.transfers (
       admission_id,
       patient_id,

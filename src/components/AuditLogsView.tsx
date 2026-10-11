@@ -72,7 +72,8 @@ export function AuditLogsView({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loginLogs.map((log) => {
-                  const localDate = new Date(log.timestamp).toLocaleString();
+                  const d = new Date(log.timestamp);
+                  const localDate = !isNaN(d.getTime()) ? d.toLocaleString() : (log.timestamp || new Date().toLocaleString());
                   return (
                     <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="py-3.5 pl-4 font-semibold text-slate-800 flex items-center gap-2">

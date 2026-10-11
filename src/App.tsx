@@ -385,10 +385,10 @@ export default function App() {
   const [dialysisCount, setDialysisCount] = useState<number>(0);
   const [dialysisRows, setDialysisRows] = useState<any[]>([]);
 
-  const fetchLoginLogs = async () => {
+  const fetchLoginLogs = async (force: boolean = false) => {
     setLoadingLogs(true);
     try {
-      const logs = await fetchSupabaseAuditLogs();
+      const logs = await fetchSupabaseAuditLogs(force);
       if (logs && Array.isArray(logs) && logs.length > 0) {
         setLoginLogs(logs.map(l => ({
           id: l.id,
@@ -551,7 +551,6 @@ export default function App() {
         const parsed = JSON.parse(savedSession);
         setUser(parsed);
         setIsAuthenticated(true);
-        checkDataStatus();
       } catch (e) {}
     }
 
@@ -571,6 +570,7 @@ export default function App() {
         if (profile?.role === 'unauthorized') {
           await supabase.auth.signOut();
           sessionStorage.removeItem('elite_auth_user');
+          sessionStorage.removeItem('elite_auth_session_logged');
           setUser(null);
           setIsAuthenticated(false);
           setAuthError(`Access Denied: ${userEmail} is not on the authorized hospital staff list.`);
@@ -585,15 +585,8 @@ export default function App() {
         setUser(loggedUser);
         setIsAuthenticated(true);
         sessionStorage.setItem('elite_auth_user', JSON.stringify(loggedUser));
-        checkDataStatus();
-
-        logUserLogin({
-          uid: u.id,
-          email: u.email || 'mohanad.md07@gmail.com',
-          displayName: loggedUser.name
-        }).catch(err => {
-          console.error('Failed to log login:', err);
-        });
+        // Note: Do not call logUserLogin() here. Retrieving an active existing session
+        // on page load/refresh is not a new login event.
       }
       setLoading(false);
     });
@@ -612,6 +605,7 @@ export default function App() {
         if (profile?.role === 'unauthorized') {
           await supabase.auth.signOut();
           sessionStorage.removeItem('elite_auth_user');
+          sessionStorage.removeItem('elite_auth_session_logged');
           setUser(null);
           setIsAuthenticated(false);
           setAuthError(`Access Denied: ${userEmail} is not on the authorized hospital staff list.`);
@@ -626,21 +620,26 @@ export default function App() {
         setUser(loggedUser);
         setIsAuthenticated(true);
         sessionStorage.setItem('elite_auth_user', JSON.stringify(loggedUser));
-        checkDataStatus();
 
+        // Deduplicate login audit tracking: only log once per user session
         if (event === 'SIGNED_IN') {
-          logUserLogin({
-            uid: u.id,
-            email: u.email || 'mohanad.md07@gmail.com',
-            displayName: loggedUser.name
-          }).catch(err => {
-            console.error('Failed to log login:', err);
-          });
+          const alreadyLogged = sessionStorage.getItem('elite_auth_session_logged');
+          if (alreadyLogged !== u.id) {
+            sessionStorage.setItem('elite_auth_session_logged', u.id);
+            logUserLogin({
+              uid: u.id,
+              email: u.email || 'mohanad.md07@gmail.com',
+              displayName: loggedUser.name
+            }).catch(err => {
+              console.error('Failed to log login:', err);
+            });
+          }
         }
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setIsAuthenticated(false);
         sessionStorage.removeItem('elite_auth_user');
+        sessionStorage.removeItem('elite_auth_session_logged');
       }
       setLoading(false);
     });
@@ -822,6 +821,7 @@ export default function App() {
       setUser(adminUser);
       setIsAuthenticated(true);
       sessionStorage.setItem('elite_auth_user', JSON.stringify(adminUser));
+      sessionStorage.setItem('elite_auth_session_logged', 'admin-mohanad');
       await logUserLogin({
         uid: 'admin-mohanad',
         email: adminUser.email,
@@ -836,6 +836,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('elite_auth_user');
+      sessionStorage.removeItem('elite_auth_session_logged');
       await signOutUser();
     } catch (err) {
       console.error('Logout failed:', err);
@@ -5110,13 +5111,13 @@ export default function App() {
                   <ErrorBoundary
                     fallbackTitle="Audit Trail Unavailable"
                     fallbackSubtitle="Could not load the user activity logs. Please retry."
-                    onReset={() => fetchLoginLogs()}
+                    onReset={() => fetchLoginLogs(true)}
                   >
                     <React.Suspense fallback={<ViewLoadingFallback />}>
                       <AuditLogsView 
                         loginLogs={loginLogs}
                         loadingLogs={loadingLogs}
-                        onRefreshLogs={fetchLoginLogs}
+                        onRefreshLogs={() => fetchLoginLogs(true)}
                       />
                     </React.Suspense>
                   </ErrorBoundary>

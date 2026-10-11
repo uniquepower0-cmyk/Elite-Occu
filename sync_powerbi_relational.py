@@ -107,12 +107,27 @@ POWERBI_PASS = os.getenv("POWERBI_PASS", "")
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1/rtdb_nodes"
 SUPABASE_RPC_URL = f"{SUPABASE_URL}/rest/v1/rpc/sync_powerbi_admissions"
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
     "Prefer": "resolution=merge-duplicates,return=representation"
 }
+
+_sb_session = None
+def get_supabase_session():
+    global _sb_session
+    if _sb_session is None:
+        _sb_session = requests.Session()
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retries)
+        _sb_session.mount("https://", adapter)
+        _sb_session.mount("http://", adapter)
+        _sb_session.headers.update(SUPABASE_HEADERS)
+    return _sb_session
 
 # --- LOGGING & CONSOLE HELPERS ---
 
@@ -303,11 +318,12 @@ def fetch_existing_supabase_state(cairo_date_str=None):
     if not cairo_date_str:
         cairo_date_str = get_cairo_now().strftime("%Y-%m-%d")
     # Egress optimization: fetch only relevant state nodes rather than all state/* nodes
-    get_url = f"{SUPABASE_REST_URL}?path=in.(state/metadata,state/discharged,state/dialysis,state/transfers,state/occupancy,state/entries)&select=path,data,updated_at"
+    get_url = f"{SUPABASE_REST_URL}?path=in.(state/metadata,state/discharged,state/dialysis,state/transfers,state/occupancy,state/entries,history/occupancy_index)&select=path,data,updated_at"
     state_map = {}
     time_map = {}
     try:
-        res = requests.get(get_url, headers=SUPABASE_HEADERS, timeout=15, verify=False)
+        session = get_supabase_session()
+        res = session.get(get_url, timeout=15, verify=False)
         if res.status_code == 200:
             for record in res.json():
                 p = record.get("path")
@@ -410,6 +426,7 @@ def fetch_existing_supabase_state(cairo_date_str=None):
         "dialysis": existing_dial,
         "manually_discharged_names": list(manual_names_set),
         "manually_discharged_mrns": list(manual_mrns_set),
+        "occupancy_index": state_map.get("history/occupancy_index") or [],
         "existing_metadata": meta,
         "is_new_day": is_new_day,
         "is_system_reset": is_system_reset
@@ -578,51 +595,41 @@ def fetch_powerbi_and_sync():
                 
             # PostgREST expects the JSON keys to match the SQL function parameter names.
             # Since our SQL function is `sync_powerbi_admissions(payload JSON)`, we must wrap the array in `{"payload": [...]}`
-            rpc_res = requests.post(SUPABASE_RPC_URL, headers=rpc_headers, json={"payload": rpc_payload}, verify=False)
+            session = get_supabase_session()
+            rpc_res = session.post(SUPABASE_RPC_URL, headers={"Prefer": "return=minimal"}, json={"payload": rpc_payload}, timeout=25, verify=False)
             if rpc_res.status_code not in [200, 204]:
-                log(f"RPC Relational Sync Failed: {rpc_res.text}")
+                log(f"RPC Relational Sync Failed ({rpc_res.status_code}): {rpc_res.text}")
+                # Emergency Fallback: Directly upsert patients to PostgreSQL if RPC was unavailable
+                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                try:
+                    pts_to_upsert = []
+                    seen_mrns = set()
+                    for item in rpc_payload:
+                        m = item.get("MRN")
+                        if not m or m.startswith("UNKNOWN-") or m in seen_mrns:
+                            continue
+                        seen_mrns.add(m)
+                        p_entry = {
+                            "mrn": m,
+                            "name": item.get("Patient") or "Unknown Patient",
+                            "updated_at": now_iso
+                        }
+                        if item.get("Mobile"):
+                            p_entry["phone"] = item["Mobile"]
+                        pts_to_upsert.append(p_entry)
+
+                    if pts_to_upsert:
+                        session.post(
+                            f"{SUPABASE_URL}/rest/v1/patients?on_conflict=mrn",
+                            headers={"Prefer": "resolution=merge-duplicates"},
+                            json=pts_to_upsert,
+                            timeout=20,
+                            verify=False
+                        )
+                except Exception as pt_err:
+                    log(f"Notice: Direct patient upsert fallback error: {pt_err}")
             else:
                 log("Relational Database admissions successfully synchronized via RPC!")
-
-            # Also directly upsert patients to PostgreSQL to guarantee phone numbers and names are updated
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            try:
-                pts_with_phone = []
-                pts_without_phone = []
-                seen_mrns = set()
-                for item in rpc_payload:
-                    m = item.get("MRN")
-                    if not m or m.startswith("UNKNOWN-") or m in seen_mrns:
-                        continue
-                    seen_mrns.add(m)
-                    p_entry = {
-                        "mrn": m,
-                        "name": item.get("Patient") or "Unknown Patient",
-                        "updated_at": now_iso
-                    }
-                    if item.get("Mobile"):
-                        p_entry["phone"] = item["Mobile"]
-                        pts_with_phone.append(p_entry)
-                    else:
-                        pts_without_phone.append(p_entry)
-
-                base_rest = f"{SUPABASE_URL}/rest/v1"
-                if pts_with_phone:
-                    requests.post(
-                        f"{base_rest}/patients?on_conflict=mrn",
-                        headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
-                        json=pts_with_phone,
-                        verify=False
-                    )
-                if pts_without_phone:
-                    requests.post(
-                        f"{base_rest}/patients?on_conflict=mrn",
-                        headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
-                        json=pts_without_phone,
-                        verify=False
-                    )
-            except Exception as pt_err:
-                log(f"Notice: Direct patient upsert: {pt_err}")
 
             legacy_occupancy_rows = []
             
@@ -1277,10 +1284,93 @@ def fetch_powerbi_and_sync():
                     "updated_at": now_iso
                 }
             ]
-            sb_response = requests.post(SUPABASE_REST_URL, headers=SUPABASE_HEADERS, json=granular_nodes, verify=False)
+
+            # ---------------------------------------------------------
+            # 6. TODAY'S SNAPSHOT & HISTORY INDEX ATOMIC PARITY
+            # Guarantees reports & UI history never fall back to yesterday
+            # ---------------------------------------------------------
+            auto_disc_list = [p for p in existing.get("discharged", []) if isinstance(p, dict) and p.get("dischargeType") != "manual"]
+            manual_disc_list = [p for p in existing.get("discharged", []) if isinstance(p, dict) and p.get("dischargeType") == "manual"]
+            
+            summary_info = {
+                "totalOccupancy": max(0, len(legacy_occupancy_rows) - 1),
+                "entriesCount": len(cumulative_entries),
+                "dischargesCount": len(existing.get("discharged", [])),
+                "autoDischargesCount": len(auto_disc_list),
+                "manualDischargesCount": len(manual_disc_list),
+                "dialysisCount": len(cumulative_dialysis),
+                "debtsCount": len(cash_debts),
+                "insuredDebtsCount": len(insured_debts),
+                "transfersCount": len(cumulative_transfers)
+            }
+
+            raw_hist_index = existing.get("occupancy_index") or []
+            existing_index_entries = [e for e in raw_hist_index if isinstance(e, dict) and str(e.get("date", "")).strip() != cairo_date_str]
+            today_index_entry = {
+                "date": cairo_date_str,
+                "timestamp": int(time.time() * 1000),
+                "cairoTime": cairo_now.strftime("%Y-%m-%d %H:%M:%S"),
+                "summary": summary_info
+            }
+            updated_hist_index = [today_index_entry] + existing_index_entries
+            try:
+                updated_hist_index.sort(key=lambda x: str(x.get("date", "")), reverse=True)
+            except:
+                pass
+
+            granular_nodes.extend([
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/summary",
+                    "data": summary_info,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/hospital_data",
+                    "data": legacy_occupancy_rows,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/discharged",
+                    "data": existing.get("discharged", []),
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/transfers",
+                    "data": cumulative_transfers,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/entries",
+                    "data": cumulative_entries,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/dialysis",
+                    "data": cumulative_dialysis,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/debts",
+                    "data": cash_debts,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": f"history/occupancy/{cairo_date_str}/insured_debts",
+                    "data": insured_debts,
+                    "updated_at": now_iso
+                },
+                {
+                    "path": "history/occupancy_index",
+                    "data": updated_hist_index,
+                    "updated_at": now_iso
+                }
+            ])
+
+            session = get_supabase_session()
+            sb_response = session.post(SUPABASE_REST_URL, json=granular_nodes, timeout=30, verify=False)
             
             if sb_response.status_code in [200, 201]:
-                log(f"Legacy JSON state, Debts, Dialysis, Entries, and Discharged successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers, {len(cumulative_entries)} entries, {len(existing.get('discharged', []))} discharged).")
+                log(f"Supabase state + Today's Snapshot ({cairo_date_str}) successfully updated ({len(cash_debts)} cash, {len(insured_debts)} insured, {len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers, {len(cumulative_entries)} entries, {len(existing.get('discharged', []))} discharged).")
                 return True
             else:
                 log(f"Supabase upsert failed with status {sb_response.status_code}: {sb_response.text}")
@@ -1300,16 +1390,16 @@ def check_cairo_day_rollover():
         last_cairo_seen_date = today_str
         return
 
-    # Check for calendar day change or 11:59 PM trigger
-    if today_str != last_cairo_seen_date:
-        log(f"[Scheduled Day Rollover] Cairo calendar date transitioned from {last_cairo_seen_date} to {today_str}. Triggering clean daily sync job...")
+    clean_last_seen = last_cairo_seen_date.replace("_1159_done", "")
+    # Check for calendar day change or EOD trigger
+    if today_str != clean_last_seen:
+        log(f"[Scheduled Day Rollover] Cairo calendar date transitioned from {clean_last_seen} to {today_str}. Triggering clean daily sync job...")
         last_cairo_seen_date = today_str
         run_sync_job()
-    elif now_cairo.hour == 23 and now_cairo.minute == 59:
+    elif now_cairo.hour == 23 and now_cairo.minute >= 58:
         if last_cairo_seen_date == today_str:
-            # Stamped to avoid re-triggering multiple times in minute 59
             last_cairo_seen_date = f"{today_str}_1159_done"
-            log(f"[Scheduled Reset] 11:59 PM Cairo time reached ({today_str}). Triggering end-of-day rollover...")
+            log(f"[Scheduled Reset] EOD Cairo time reached ({today_str} {now_cairo.strftime('%H:%M')}). Triggering end-of-day rollover...")
             run_sync_job()
 
 def run_sync_job():
