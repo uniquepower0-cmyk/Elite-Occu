@@ -22,7 +22,10 @@ import {
   classifyInOutFallback,
   getEnrichedOrListForStats,
   getOverListPatients,
-  getAvailableVacantRooms
+  getAvailableVacantRooms,
+  isDoctorCase,
+  isHospitalCase,
+  getORCaseType
 } from './orLogic.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './contractorOfficers.js';
 

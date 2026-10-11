@@ -445,7 +445,7 @@ export async function generateOccupancyJpeg(
 
   // 1. Universal row parser: supports 39-col unified raw, 6-col formatted, and object lists
   const rawList: any[] = [];
-  (rawHospitalData || []).forEach((row) => {
+  (rawHospitalData || []).forEach((row: any) => {
     if (!row) return;
 
     if (!Array.isArray(row) && typeof row === 'object') {

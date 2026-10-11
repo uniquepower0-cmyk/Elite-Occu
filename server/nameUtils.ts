@@ -728,14 +728,32 @@ export function isCashPayment(payment: string): boolean {
 
 export function isPrivateCreditCase(p: any): boolean {
   if (!p) return false;
+  const fields = [
+    p.vt,
+    p.column2,
+    p.column3,
+    p.contractorName,
+    p.contractor,
+    p.paidBy,
+    p.payment,
+    p.postC,
+    p.flClassName,
+    p.financialStatus,
+    p.operativeComment
+  ];
+  if (fields.some(field => {
+    if (!field) return false;
+    const str = String(field).toLowerCase();
+    return str.includes("private credit") || str.includes("privatecredit");
+  })) {
+    return true;
+  }
+
   const payment = String(p.paidBy || p.payment || "").toLowerCase().trim();
   const contractor = String(p.contractorName || p.contractor || "").toLowerCase().trim();
-  const vt = String(p.vt || "").toLowerCase().trim();
-  const col3 = String(p.column3 || "").toLowerCase().trim();
-
-  const isCash = isCashPayment(payment) || isCashPayment(contractor);
   const isCredit = contractor.includes("credit") || contractor.includes("اجل") || contractor.includes("آجل") || contractor.includes("شركة") || contractor.includes("شركه") || contractor.includes("insurance") || contractor.includes("تأمين") || contractor.includes("تامين");
   const isPrivate = contractor.includes("private") || contractor.includes("خاص") || payment.includes("private");
 
   return isCredit && isPrivate;
 }
+

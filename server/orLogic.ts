@@ -9,7 +9,8 @@ import {
   cleanRoomStr,
   normalizeRoom,
   getAccommodationCategory,
-  normalizeArabicName
+  normalizeArabicName,
+  isPrivateCreditCase
 } from './nameUtils.js';
 import { getOccupancyRows } from './occupancyLogic.js';
 
@@ -411,3 +412,98 @@ export function getAvailableVacantRooms(occRows: any[][]): { [key: string]: stri
 
   return groupedVacant;
 }
+
+export function isDoctorCase(p: any): boolean {
+  if (!p) return false;
+
+  // 1. Private Credit is always treated as Doctor Case (DC)
+  if (isPrivateCreditCase(p)) return true;
+
+  // 2. Paid by Doctor / Physician
+  const paidBy = String(p.paidBy || p.payment || "").toLowerCase().trim();
+  if (
+    paidBy.includes("طبيب") || 
+    paidBy.includes("دكتور") || 
+    paidBy.includes("doctor") || 
+    paidBy.includes("physician")
+  ) {
+    return true;
+  }
+
+  // 3. Visit Type (VT) explicitly tagged as DC / Doctor / Day Case
+  const vt = String(p.vt || "").toUpperCase().trim();
+  if (
+    vt === "DC" || 
+    /\bDC\b/.test(vt) || 
+    vt.includes("DOCTOR") || 
+    vt.includes("DAY") || 
+    vt.includes("DAYCASE") || 
+    vt.includes("طبيب") || 
+    vt.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 4. Financial / Payment status column (column3 / financialStatus)
+  const col3 = String(p.column3 || "").toUpperCase().trim();
+  const financial = String(p.financialStatus || "").toUpperCase().trim();
+  if (
+    col3 === "DC" || 
+    /\bDC\b/.test(col3) || 
+    col3.includes("DOCTOR") || 
+    col3.includes("طبيب") || 
+    col3.includes("دكتور") ||
+    financial.includes("DOCTOR") ||
+    financial.includes("طبيب") ||
+    financial.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 5. Accommodation class / flClassName indicating Day Case or Doctor Case
+  const flClass = String(p.flClassName || "").toLowerCase().trim();
+  if (flClass.includes("daycase") || flClass.includes("day case") || flClass.includes("يوم")) {
+    return true;
+  }
+
+  // 6. Comments or notes containing doctor case keywords
+  const comment = `${p.operativeComment || ""} ${p.postC || ""} ${p.column2 || ""}`.toLowerCase();
+  const doctorCaseKeywords = [
+    "doctor case", "doctor_case", "doctorcase", "doctor-case",
+    "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+    "cash doctor", "كاش طبيب", "كاش دكتور",
+    "doctor case surgery",
+    "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+    "توصية دكتور", "توصيه دكتور", "خصم دكتور", "خصم طبيب"
+  ];
+  if (doctorCaseKeywords.some(kw => comment.includes(kw) || paidBy.includes(kw) || flClass.includes(kw))) {
+    return true;
+  }
+
+  // 7. Check if VT has explicit HC
+  if (vt.includes("HC") || vt.includes("HOSPITAL") || vt.includes("مستشفى") || vt.includes("INPATIENT")) {
+    return false;
+  }
+
+  // 8. Check if column3 or contractor has corporate insurance
+  if (col3.includes("HC") || col3.includes("HOSPITAL") || col3.includes("مستشفى")) {
+    return false;
+  }
+
+  const contractor = String(p.contractorName || p.contractor || "").trim();
+  if (contractor && !paidBy.includes("طبيب") && !paidBy.includes("دكتور")) {
+    return false;
+  }
+
+  // Default for uncontracted cash surgical cases: DC
+  return true;
+}
+
+export function isHospitalCase(p: any): boolean {
+  return !isDoctorCase(p);
+}
+
+export function getORCaseType(p: any): 'DC' | 'HC' {
+  return isDoctorCase(p) ? 'DC' : 'HC';
+}
+

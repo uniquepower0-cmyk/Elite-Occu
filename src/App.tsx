@@ -121,17 +121,122 @@ const isPrivateCreditCase = (p: any): boolean => {
     p.column2,
     p.column3,
     p.contractorName,
+    p.contractor,
     p.paidBy,
+    p.payment,
     p.postC,
     p.flClassName,
     p.financialStatus,
     p.operativeComment
   ];
-  return fields.some(field => {
+  if (fields.some(field => {
     if (!field) return false;
     const str = String(field).toLowerCase();
     return str.includes("private credit") || str.includes("privatecredit");
-  });
+  })) {
+    return true;
+  }
+
+  const payment = String(p.paidBy || p.payment || "").toLowerCase().trim();
+  const contractor = String(p.contractorName || p.contractor || "").toLowerCase().trim();
+  const isCredit = contractor.includes("credit") || contractor.includes("اجل") || contractor.includes("آجل") || contractor.includes("شركة") || contractor.includes("شركه") || contractor.includes("insurance") || contractor.includes("تأمين") || contractor.includes("تامين");
+  const isPrivate = contractor.includes("private") || contractor.includes("خاص") || payment.includes("private");
+
+  return isCredit && isPrivate;
+};
+
+const isDoctorCase = (p: any): boolean => {
+  if (!p) return false;
+
+  // 1. Private Credit is always treated as Doctor Case (DC)
+  if (isPrivateCreditCase(p)) return true;
+
+  // 2. Paid by Doctor / Physician
+  const paidBy = String(p.paidBy || p.payment || "").toLowerCase().trim();
+  if (
+    paidBy.includes("طبيب") || 
+    paidBy.includes("دكتور") || 
+    paidBy.includes("doctor") || 
+    paidBy.includes("physician")
+  ) {
+    return true;
+  }
+
+  // 3. Visit Type (VT) explicitly tagged as DC / Doctor / Day Case
+  const vt = String(p.vt || "").toUpperCase().trim();
+  if (
+    vt === "DC" || 
+    /\bDC\b/.test(vt) || 
+    vt.includes("DOCTOR") || 
+    vt.includes("DAY") || 
+    vt.includes("DAYCASE") || 
+    vt.includes("طبيب") || 
+    vt.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 4. Financial / Payment status column (column3 / financialStatus)
+  const col3 = String(p.column3 || "").toUpperCase().trim();
+  const financial = String(p.financialStatus || "").toUpperCase().trim();
+  if (
+    col3 === "DC" || 
+    /\bDC\b/.test(col3) || 
+    col3.includes("DOCTOR") || 
+    col3.includes("طبيب") || 
+    col3.includes("دكتور") ||
+    financial.includes("DOCTOR") ||
+    financial.includes("طبيب") ||
+    financial.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 5. Accommodation class / flClassName indicating Day Case or Doctor Case
+  const flClass = String(p.flClassName || "").toLowerCase().trim();
+  if (flClass.includes("daycase") || flClass.includes("day case") || flClass.includes("يوم")) {
+    return true;
+  }
+
+  // 6. Comments or notes containing doctor case keywords
+  const comment = `${p.operativeComment || ""} ${p.postC || ""} ${p.column2 || ""}`.toLowerCase();
+  const doctorCaseKeywords = [
+    "doctor case", "doctor_case", "doctorcase", "doctor-case",
+    "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+    "cash doctor", "كاش طبيب", "كاش دكتور",
+    "doctor case surgery",
+    "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+    "توصية دكتور", "توصيه دكتور", "خصم دكتور", "خصم طبيب"
+  ];
+  if (doctorCaseKeywords.some(kw => comment.includes(kw) || paidBy.includes(kw) || flClass.includes(kw))) {
+    return true;
+  }
+
+  // 7. Check if VT has explicit HC
+  if (vt.includes("HC") || vt.includes("HOSPITAL") || vt.includes("مستشفى") || vt.includes("INPATIENT")) {
+    return false;
+  }
+
+  // 8. Check if column3 or contractor has corporate insurance
+  if (col3.includes("HC") || col3.includes("HOSPITAL") || col3.includes("مستشفى")) {
+    return false;
+  }
+
+  const contractor = String(p.contractorName || p.contractor || "").trim();
+  if (contractor && !paidBy.includes("طبيب") && !paidBy.includes("دكتور")) {
+    return false;
+  }
+
+  // Default for uncontracted cash surgical cases: DC
+  return true;
+};
+
+const isHospitalCase = (p: any): boolean => {
+  return !isDoctorCase(p);
+};
+
+const getORCaseType = (p: any): 'DC' | 'HC' => {
+  return isDoctorCase(p) ? 'DC' : 'HC';
 };
 
 const normalizeArabicName = (name: string): string => {
@@ -3583,28 +3688,14 @@ export default function App() {
                           />
                           <StatCard 
                             label="Doctor Case (DC)" 
-                            value={`${orList.filter(p => {
-                              if (isPrivateCreditCase(p)) return true;
-                              const vt = String(p.vt || "").toUpperCase().trim();
-                              if (vt.includes("DC")) return true;
-                              if (vt.includes("HC")) return false;
-                              const combined = `${p.vt} ${p.column3} ${p.postC} ${p.flClassName}`.toUpperCase();
-                              return combined.includes("DC") && !combined.includes("HC");
-                            }).length}`} 
+                            value={`${orList.filter(p => isDoctorCase(p)).length}`} 
                             subValue="Doctor Case surgery" 
                             icon={<Clock className="text-amber-600" />} 
                             color="yellow" 
                           />
                           <StatCard 
                             label="Hospital Case (HC)" 
-                            value={`${orList.filter(p => {
-                              if (isPrivateCreditCase(p)) return false;
-                              const vt = String(p.vt || "").toUpperCase().trim();
-                              if (vt.includes("HC")) return true;
-                              if (vt.includes("DC")) return false;
-                              const combined = `${p.vt} ${p.column3} ${p.postC} ${p.flClassName}`.toUpperCase();
-                              return combined.includes("HC") || (!combined.includes("DC") && combined.includes("IN"));
-                            }).length}`} 
+                            value={`${orList.filter(p => isHospitalCase(p)).length}`} 
                             subValue="Hospital Case" 
                             icon={<Building2 className="text-purple-600" />} 
                             color="purple" 
@@ -3968,9 +4059,7 @@ export default function App() {
                                                     String(p.flClassName || "").toUpperCase().includes("VIP") ||
                                                     (p.vipStatus && String(p.vipStatus).trim() !== "");
 
-                                                  const isHc = (String(p.vt || "").toUpperCase().includes("HC") ||
-                                                    (!String(p.vt || "").toUpperCase().includes("DC") && `${p.vt} ${p.column3} ${p.postC} ${p.flClassName}`.toUpperCase().includes("HC"))) &&
-                                                    !isPrivateCreditCase(p);
+                                                  const isHc = isHospitalCase(p);
 
                                                   const colors = isVip
                                                     ? { bg: 'bg-amber-50 hover:bg-amber-100 text-[#7c2d12] hover:shadow-amber-250/30' }
@@ -4065,11 +4154,11 @@ export default function App() {
                                           </span>
                                         )}
                                         <span className={`px-2.5 py-1 text-[9px] font-black font-mono border rounded-full tracking-wider uppercase ${
-                                          String(hoveredPatient.vt || "DC").toUpperCase().includes("HC") && !isPrivateCreditCase(hoveredPatient)
+                                          isHospitalCase(hoveredPatient)
                                             ? 'border-purple-200 bg-purple-50 text-purple-800'
                                             : 'border-blue-200 bg-blue-50 text-blue-800'
                                         }`}>
-                                          Admission: {isPrivateCreditCase(hoveredPatient) ? "DC" : (hoveredPatient.vt || "DC")}
+                                          Admission: {getORCaseType(hoveredPatient)}
                                         </span>
                                       </div>
                                     </div>
@@ -4226,11 +4315,11 @@ export default function App() {
                                                     </span>
                                                   )}
                                                   <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wider border ${
-                                                    String(p.vt || "").toUpperCase().trim() === "HC" && !isPrivateCreditCase(p)
+                                                    isHospitalCase(p)
                                                       ? 'bg-purple-50 text-purple-800 border-purple-200' 
                                                       : 'bg-amber-50 text-amber-800 border-amber-200'
                                                   }`}>
-                                                    {isPrivateCreditCase(p) ? 'DC' : (p.vt || 'DC')}
+                                                    {getORCaseType(p)}
                                                   </span>
                                                 </div>
                                               </div>

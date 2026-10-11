@@ -4606,14 +4606,34 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     const idxSurgeon = getIndex(["surgeon name", "surgeon", "اسم الطبيب", "الجراح", "طبيب"], 7);
     const idxColumn2 = getIndex(["column2", "equipment", "الأجهزة", "تاور", "tower"], 8);
     const idxORRoom = getIndex(["or room", "room", "الغرفة", "غرفة العمليات", "غرفة"], 9);
-    const idxColumn3 = getIndex(["column3", "status", "الحالة"], 10);
-    const idxContractor = getIndex(["contractorname", "contractor", "التعاقد", "جهة"], 11);
-    const idxPaidBy = getIndex(["paidby", "paid", "الدافع"], 12);
-    const idxPostC = getIndex(["post c", "postop", "عناية"], 13);
-    const idxVT = getIndex(["vt", "visittype", "نوع الزيارة"], 14);
+    const idxColumn3 = getIndex(["column3", "status", "الحالة", "الحاله"], 10);
+    const idxContractor = getIndex(["contractorname", "contractor name", "contractor_name", "contractor", "التعاقد", "جهة التعاقد", "الجهة", "الشركه", "الشركة"], 11);
+    const idxPaidBy = getIndex(["paidby", "paid by", "paid_by", "paid", "الدافع", "طريقة الدفع", "طريقه الدفع", "الدفع", "الجهة الدافعة", "سداد", "مسدد"], 12);
+    const idxPostC = getIndex(["post c", "postop", "عناية", "عنايه"], 13);
+    const idxVT = getIndex([
+      "vt", 
+      "visit type", 
+      "visittype", 
+      "visit_type", 
+      "case type", 
+      "casetype", 
+      "case_type", 
+      "admission type", 
+      "admission_type", 
+      "نوع الزيارة", 
+      "نوع الزياره", 
+      "نوع الحالة", 
+      "نوع الحاله", 
+      "جهة تحويل الحالة", 
+      "جهة تحويل الحاله", 
+      "نوع الدخول", 
+      "dc/hc", 
+      "hc/dc", 
+      "doctor/hospital"
+    ], 14);
     const idxComment = getIndex(["operativecomment", "comment", "ملاحظات"], 15);
-    const idxClass = getIndex(["flclassname", "class", "الدرجة"], 16);
-    const idxFinancial = getIndex(["financial status", "financial", "المالي"], 17);
+    const idxClass = getIndex(["flclassname", "class", "الدرجة", "الدرجه"], 16);
+    const idxFinancial = getIndex(["financial status", "financial", "المالي", "الحالة المالية", "الحاله الماليه", "الموقف المالي"], 17);
     
     const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
@@ -13085,18 +13105,124 @@ function isPrivateCreditCase(p: any): boolean {
     p.column2,
     p.column3,
     p.contractorName,
+    p.contractor,
     p.paidBy,
+    p.payment,
     p.postC,
     p.flClassName,
     p.financialStatus,
     p.operativeComment
   ];
-  return fields.some(field => {
+  if (fields.some(field => {
     if (!field) return false;
     const str = String(field).toLowerCase();
     return str.includes("private credit") || str.includes("privatecredit");
-  });
+  })) {
+    return true;
+  }
+
+  const payment = String(p.paidBy || p.payment || "").toLowerCase().trim();
+  const contractor = String(p.contractorName || p.contractor || "").toLowerCase().trim();
+  const isCredit = contractor.includes("credit") || contractor.includes("اجل") || contractor.includes("آجل") || contractor.includes("شركة") || contractor.includes("شركه") || contractor.includes("insurance") || contractor.includes("تأمين") || contractor.includes("تامين");
+  const isPrivate = contractor.includes("private") || contractor.includes("خاص") || payment.includes("private");
+
+  return isCredit && isPrivate;
 }
+
+function isDoctorCase(p: any): boolean {
+  if (!p) return false;
+
+  // 1. Private Credit is always treated as Doctor Case (DC)
+  if (isPrivateCreditCase(p)) return true;
+
+  // 2. Paid by Doctor / Physician
+  const paidBy = String(p.paidBy || p.payment || "").toLowerCase().trim();
+  if (
+    paidBy.includes("طبيب") || 
+    paidBy.includes("دكتور") || 
+    paidBy.includes("doctor") || 
+    paidBy.includes("physician")
+  ) {
+    return true;
+  }
+
+  // 3. Visit Type (VT) explicitly tagged as DC / Doctor / Day Case
+  const vt = String(p.vt || "").toUpperCase().trim();
+  if (
+    vt === "DC" || 
+    /\bDC\b/.test(vt) || 
+    vt.includes("DOCTOR") || 
+    vt.includes("DAY") || 
+    vt.includes("DAYCASE") || 
+    vt.includes("طبيب") || 
+    vt.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 4. Financial / Payment status column (column3 / financialStatus)
+  const col3 = String(p.column3 || "").toUpperCase().trim();
+  const financial = String(p.financialStatus || "").toUpperCase().trim();
+  if (
+    col3 === "DC" || 
+    /\bDC\b/.test(col3) || 
+    col3.includes("DOCTOR") || 
+    col3.includes("طبيب") || 
+    col3.includes("دكتور") ||
+    financial.includes("DOCTOR") ||
+    financial.includes("طبيب") ||
+    financial.includes("دكتور")
+  ) {
+    return true;
+  }
+
+  // 5. Accommodation class / flClassName indicating Day Case or Doctor Case
+  const flClass = String(p.flClassName || "").toLowerCase().trim();
+  if (flClass.includes("daycase") || flClass.includes("day case") || flClass.includes("يوم")) {
+    return true;
+  }
+
+  // 6. Comments or notes containing doctor case keywords
+  const comment = `${p.operativeComment || ""} ${p.postC || ""} ${p.column2 || ""}`.toLowerCase();
+  const doctorCaseKeywords = [
+    "doctor case", "doctor_case", "doctorcase", "doctor-case",
+    "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+    "cash doctor", "كاش طبيب", "كاش دكتور",
+    "doctor case surgery",
+    "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+    "توصية دكتور", "توصيه دكتور", "خصم دكتور", "خصم طبيب"
+  ];
+  if (doctorCaseKeywords.some(kw => comment.includes(kw) || paidBy.includes(kw) || flClass.includes(kw))) {
+    return true;
+  }
+
+  // 7. Check if VT has explicit HC
+  if (vt.includes("HC") || vt.includes("HOSPITAL") || vt.includes("مستشفى") || vt.includes("INPATIENT")) {
+    return false;
+  }
+
+  // 8. Check if column3 or contractor has corporate insurance
+  if (col3.includes("HC") || col3.includes("HOSPITAL") || col3.includes("مستشفى")) {
+    return false;
+  }
+
+  const contractor = String(p.contractorName || p.contractor || "").trim();
+  if (contractor && !paidBy.includes("طبيب") && !paidBy.includes("دكتور")) {
+    return false;
+  }
+
+  // Default for uncontracted cash surgical cases: DC
+  return true;
+}
+
+function isHospitalCase(p: any): boolean {
+  return !isDoctorCase(p);
+}
+
+function getORCaseType(p: any): 'DC' | 'HC' {
+  return isDoctorCase(p) ? 'DC' : 'HC';
+}
+
 
 async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = []) {
   const listDate = data[0]?.orListDate || "";
@@ -13164,24 +13290,10 @@ async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: any[], oc
   const dcPatients: any[] = [];
 
   enrichedList.forEach(p => {
-    if (isPrivateCreditCase(p)) {
-      dcPatients.push(p);
-      return;
-    }
-    const vtVal = String(p.vt || "").toUpperCase().trim();
-    if (vtVal.includes("HC")) {
-      hcPatients.push(p);
-    } else if (vtVal.includes("DC")) {
+    if (getORCaseType(p) === 'DC') {
       dcPatients.push(p);
     } else {
-      const combined = `${p.vt} ${p.column3} ${p.postC} ${p.flClassName}`.toUpperCase();
-      if (combined.includes("HC")) {
-        hcPatients.push(p);
-      } else if (combined.includes("DC")) {
-        dcPatients.push(p);
-      } else {
-        dcPatients.push(p);
-      }
+      hcPatients.push(p);
     }
   });
 
@@ -13254,7 +13366,7 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
       ? `${p.startTime || '—'} - ${p.endTime || '—'}`
       : '—';
 
-    const caseType = isPrivateCreditCase(p) ? 'DC' : 'HC';
+    const caseType = getORCaseType(p);
 
     const rowValues = [
       serial++, 
@@ -13597,9 +13709,7 @@ async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[]
             String(p.flClassName || "").toUpperCase().includes("VIP") ||
             (p.vipStatus && String(p.vipStatus).trim() !== "");
 
-          const isHc = (String(p.vt || "").toUpperCase().includes("HC") ||
-            (!String(p.vt || "").toUpperCase().includes("DC") && `${p.vt} ${p.column3} ${p.postC} ${p.flClassName}`.toUpperCase().includes("HC"))) &&
-            !isPrivateCreditCase(p);
+          const isHc = isHospitalCase(p);
 
           let blockColor = 'FFE3F2FD'; // Soft theme-light blue
           let textColor = 'FF0D47A1'; // Deep Indigo
@@ -15182,7 +15292,7 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
         p.mrn,
         p.flClassName || "N/A",
         p.roomDisplay,
-        p.vt || "N/A",
+        getORCaseType(p),
         p.surgeonName || "N/A",
         p.arOperationName || p.engOperationName || "N/A",
         statusText
@@ -15228,7 +15338,7 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
     { width: 14 },  // MRN
     { width: 24 },  // Requested Category
     { width: 32 },  // Suggested Room
-    { width: 12 },  // Visit Type
+    { width: 12 },  // Case Type / Visit Type
     { width: 22 },  // Surgeon name
     { width: 28 },  // Operation
     { width: 16 }   // Status
@@ -15236,15 +15346,18 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
 }
 
 app.get('/api/reports/or_admissions', async (req, res) => {
-  if (cumulativeORList.length === 0) {
-    return res.status(400).json({ error: 'No OR list data available. Please upload the OR list sheet first.' });
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const ds = await resolveORDataset(reqDate);
+  if (!ds.orList || ds.orList.length === 0) {
+    return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}. Please upload OR list first.` });
   }
   try {
     const workbook = new ExcelJS.Workbook();
-    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-    await addORAdmissionsSheet(workbook, cumulativeORList, occRows);
+    const occDs = await resolveOccupancyDataset(reqDate);
+    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+    await addORAdmissionsSheet(workbook, ds.orList, occRows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="OR_Admissions_Sheet_${getCairoDateTime().dateStr}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="OR_Admissions_Sheet_${ds.dateLabel}.xlsx"`);
     await workbook.xlsx.write(res);
     if (!res.writableEnded) res.end();
   } catch (error: any) {
@@ -15595,7 +15708,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.font = { name: 'Calibri', size: 11, color: { argb: colNumber === 12 ? statusTextColor : 'FF000000' } };
       if (colNumber === 3 || colNumber === 5 || colNumber === 6 || colNumber === 8 || colNumber === 9) {
-        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: colNumber === 12 ? statusTextColor : 'FF000000' } };
+        cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
       }
       if (colNumber === 10 && p.alos > 0 && p.los > p.alos) {
         cell.font = { bold: true, name: 'Calibri', size: 11, color: { argb: 'FFC62828' } }; 
