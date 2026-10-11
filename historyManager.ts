@@ -145,21 +145,38 @@ export async function saveChangeLogEntry(
 
   try {
     const nowIso = new Date(timestamp).toISOString();
-    const { error } = await historySupabase
-      .from('rtdb_nodes')
-      .upsert({ path, data: logEntry, updated_at: nowIso });
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { error } = await historySupabase
+        .from('rtdb_nodes')
+        .upsert({ path, data: logEntry, updated_at: nowIso });
 
-    if (error) {
-      console.error(`[ChangeLog] Failed to save change log entry (${logEntry.changeType}) for ${dateStr}:`, error);
-    } else {
-      console.log(`[ChangeLog] Change log entry saved: ${path} (type=${logEntry.changeType})`);
+      if (!error) {
+        lastError = null;
+        console.log(`[ChangeLog] Change log entry saved: ${path} (type=${logEntry.changeType})`);
+        break;
+      }
+      lastError = error;
+      const errMsg = String(error.message || error.details || error);
+      const isRetryable = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+      if (isRetryable && attempt < 3) {
+        await new Promise(res => setTimeout(res, attempt * 150));
+      } else {
+        break;
+      }
     }
-  } catch (err) {
-    console.error(`[ChangeLog] Exception saving change log entry:`, err);
+
+    if (lastError) {
+      console.warn(`[ChangeLog] Notice saving change log entry (${logEntry.changeType}) for ${dateStr}:`, lastError.message || lastError);
+    }
+  } catch (err: any) {
+    console.warn(`[ChangeLog] Notice saving change log entry:`, err?.message || err);
   }
 
   // Also update the changelog index so we know which dates have changelog entries
-  await updateChangeLogIndex(dateStr);
+  try {
+    await updateChangeLogIndex(dateStr);
+  } catch (_) {}
 
   return logEntry;
 }

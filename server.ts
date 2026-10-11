@@ -2277,6 +2277,8 @@ async function executeLoadData(force = false) {
           latestNodeUpdated = node.updated_at;
         }
         const lastKnownTs = inMemoryNodeTimestamps[node.path];
+        // Do not fetch legacy state/dataset if granular nodes are present
+        if (node.path === 'state/dataset') continue;
         if (force || !lastKnownTs || lastKnownTs !== node.updated_at || inMemoryStateMap[node.path] === undefined) {
           pathsToFetch.push(node.path);
         }
@@ -2703,7 +2705,7 @@ async function executeLoadData(force = false) {
       }
     }
 
-    if (needsSave) {
+    if (needsSave && !IS_VERCEL) {
       console.log('Persisting newly derived datasets to Supabase cloud database...');
       saveData().catch(e => console.error('Error saving derived datasets:', e));
     }
@@ -2728,7 +2730,7 @@ async function executeLoadData(force = false) {
   }
 
   const transfersCleaned = sanitizeAndDeduplicateTransfers();
-  if (transfersCleaned) {
+  if (transfersCleaned && !IS_VERCEL) {
     console.log('[Transfers] Sanitized and removed corrupted ping-pong duplicates on startup.');
     saveData().catch(e => console.error('Error saving cleaned transfers:', e));
   }
@@ -3430,7 +3432,8 @@ async function saveData() {
       }
 
       // Upsert legacy monolithic dataset node separately so its multi-megabyte size never blocks primary state
-      if (legacyDatasetNode) {
+      // On Vercel serverless, skip this 2.5MB monolithic blob entirely to prevent PostgreSQL 57014 statement timeout
+      if (legacyDatasetNode && !IS_VERCEL) {
         try {
           const { error: legErr } = await supabaseAdmin.from('rtdb_nodes').upsert(legacyDatasetNode as any);
           if (legErr) console.warn('[Supabase Sync] Legacy state/dataset upsert notice:', legErr.message);
@@ -3491,7 +3494,11 @@ async function saveData() {
       }
 
       // Fire a debounced change-log entry for this save (type injected by caller via pendingChangeType)
-      triggerChangeLogSnapshot(_pendingChangeType);
+      if (IS_VERCEL) {
+        await triggerChangeLogSnapshot(_pendingChangeType);
+      } else {
+        triggerChangeLogSnapshot(_pendingChangeType);
+      }
       _pendingChangeType = 'general'; // reset after consuming
     } catch (sbEx) {
       console.error('Supabase sync exception:', sbEx);
@@ -3559,14 +3566,14 @@ function triggerChangeLogSnapshot(changeType: ChangeType = 'general') {
         cumulativeTransfers: cumulativeTransfers || [],
         vipCasesText: vipCasesText || '',
       });
-    } catch (err) {
-      console.error('[ChangeLog] Failed to save change log entry:', err);
+    } catch (err: any) {
+      console.warn('[ChangeLog] Notice saving change log entry:', err?.message || err);
     }
   };
 
   if (IS_VERCEL) {
-    // On Vercel serverless, run without dangling timers because containers freeze after response completion
-    executeLog().catch(() => {});
+    // On Vercel serverless, execute and await synchronously within the caller lifecycle
+    return executeLog();
   } else {
     if (changeLogDebounceTimer) clearTimeout(changeLogDebounceTimer);
     changeLogDebounceTimer = setTimeout(executeLog, 750);
@@ -9783,7 +9790,7 @@ app.delete('/api/header-background', (req, res) => {
 // Patient Transfers API Endpoints
 app.get('/api/transfers', (req, res) => {
   const cleaned = sanitizeAndDeduplicateTransfers();
-  if (cleaned) {
+  if (cleaned && !IS_VERCEL) {
     saveData().catch(e => console.error('Save error after transfers sanitization:', e));
   }
   const cairo = getCairoDateTime();
