@@ -13,6 +13,9 @@ export function DutyManagerView({
   onDownloadCombinedReport,
   onDownloadMedicalPlans,
 }: DutyManagerViewProps) {
+  const isDownloadingCombined = processing === 'Downloading Combined Sheet';
+  const isDownloadingPlans = processing === 'Downloading Medical Plans';
+
   return (
     <section>
       <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
@@ -26,17 +29,19 @@ export function DutyManagerView({
           title="Download Combined Sheet"
           description="Download a single Excel file containing Formatted Occupancy, Entry, and Exit sheets."
           icon={<FileText className="text-indigo-600" />}
-          actionLabel={processing === 'Downloading Combined Sheet' ? 'Generating...' : 'Download Combined'}
+          actionLabel={isDownloadingCombined ? 'Generating...' : 'Download Combined'}
           onAction={onDownloadCombinedReport}
           disabled={!!processing}
+          isLoading={isDownloadingCombined}
         />
         <WorkflowCard 
           title="Medical Plans Sheet"
           description="Download structured SBAR medical plans (تطورات الحالات) extracted from the debt source."
           icon={<FileText className="text-sky-600" />}
-          actionLabel={processing === 'Downloading Medical Plans' ? 'Generating...' : 'Download Medical Plans'}
+          actionLabel={isDownloadingPlans ? 'Generating...' : 'Download Medical Plans'}
           onAction={onDownloadMedicalPlans}
           disabled={!!processing}
+          isLoading={isDownloadingPlans}
         />
       </div>
     </section>

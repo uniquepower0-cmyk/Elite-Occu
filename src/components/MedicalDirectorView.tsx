@@ -13,6 +13,9 @@ export function MedicalDirectorView({
   onDownloadCombinedReport,
   onDownloadMedicalPlans,
 }: MedicalDirectorViewProps) {
+  const isDownloadingCombined = processing === 'Downloading Medical Director & Inpatient Manager Combined Report';
+  const isDownloadingPlans = processing === 'Downloading Medical Plans';
+
   return (
     <section>
       <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
@@ -26,17 +29,19 @@ export function MedicalDirectorView({
           title="Combined Inpatient & Medical Director Sheet"
           description="Download a single combined workbook including: Formatted Occupancy, Inpatient Summary Sheet, Closed Units Summary, Inpatients By Specialty, and LOS Sheet."
           icon={<FileSpreadsheet className="text-emerald-700" />}
-          actionLabel={processing === 'Downloading Medical Director & Inpatient Manager Combined Report' ? 'Generating Combined Report...' : 'Download Combined Workbook'}
+          actionLabel={isDownloadingCombined ? 'Generating Combined Report...' : 'Download Combined Workbook'}
           onAction={onDownloadCombinedReport}
           disabled={!!processing}
+          isLoading={isDownloadingCombined}
         />
         <WorkflowCard 
           title="Medical Plans Sheet"
           description="Download structured SBAR medical plans (تطورات الحالات) extracted from the debt source."
           icon={<FileText className="text-teal-600" />}
-          actionLabel={processing === 'Downloading Medical Plans' ? 'Generating...' : 'Download Medical Plans'}
+          actionLabel={isDownloadingPlans ? 'Generating...' : 'Download Medical Plans'}
           onAction={onDownloadMedicalPlans}
           disabled={!!processing}
+          isLoading={isDownloadingPlans}
         />
       </div>
     </section>

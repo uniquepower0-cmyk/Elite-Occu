@@ -87,6 +87,10 @@ import { NavItem } from './components/ui/NavItem';
 import { ActionButton } from './components/ui/ActionButton';
 import { StatCard } from './components/ui/StatCard';
 import { WorkflowCard } from './components/ui/WorkflowCard';
+import { EmptyState } from './components/ui/EmptyState';
+import { ErrorBanner } from './components/ui/ErrorBanner';
+import { TableSkeleton } from './components/ui/TableSkeleton';
+import { useToast } from './context/ToastContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 interface AutoFetchCountdownBadgeProps {
@@ -388,6 +392,8 @@ const isClientNameMatch = (nameA: string, nameB: string): boolean => {
 };
 
 export default function App() {
+  const toast = useToast();
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [user, setUser] = useState<{ email: string; name: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -536,14 +542,14 @@ export default function App() {
       if (response.ok) {
         setHasHeaderBg(true);
         setBgTimestamp(Date.now());
-        alert('Header background picture uploaded successfully! It will be used in both the printed sheet and the live preview.');
+        toast.success('Header background picture uploaded successfully! It will be used in both the printed sheet and live preview.');
       } else {
         const data = await response.json().catch(() => ({ error: 'Upload failed' }));
-        alert(`Failed to upload header background: ${data.error}`);
+        toast.error(`Failed to upload header background: ${data.error}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading background picture:', error);
-      alert('An error occurred while uploading.');
+      toast.error('An error occurred while uploading header background.');
     } finally {
       setProcessing('');
     }
@@ -561,12 +567,13 @@ export default function App() {
       if (response.ok) {
         setHasHeaderBg(false);
         setBgTimestamp(Date.now());
-        alert('Header background photo reset successfully.');
+        toast.success('Header background photo reset successfully.');
       } else {
-        alert('Failed to reset header background photo.');
+        toast.error('Failed to reset header background photo.');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error resetting background:', error);
+      toast.error('Failed to reset background: ' + (error?.message || 'Network error'));
     } finally {
       setProcessing('');
     }
@@ -923,7 +930,7 @@ export default function App() {
         setOccupancyHistoryRefreshKey(k => k + 1);
         await fetchData({ force: true });
         setCurrentView('dashboard');
-        alert(resetRes.message || 'Today\'s occupancy state, OR schedule, intra-day metrics, and database snapshots have been completely removed from the database.');
+        toast.success(resetRes.message || 'Today\'s occupancy state and database snapshots have been reset.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('Reset failed on server:', errorData.error);
@@ -931,7 +938,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Reset caught error:', err);
-      alert('Reset failed: ' + (err.message || 'Network error'));
+      toast.error('Reset failed: ' + (err.message || 'Network error'));
     } finally {
       setLoading(false);
     }
@@ -951,7 +958,7 @@ export default function App() {
         console.log('OR list reset successful on server:', resetRes);
         setOrHistoryRefreshKey(k => k + 1);
         await fetchData();
-        alert(resetRes.message || 'OR list data has been reset.');
+        toast.success(resetRes.message || 'OR list data has been reset.');
       } else {
         const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
         console.error('OR reset failed on server:', errorData.error);
@@ -959,7 +966,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Reset OR list caught error:', err);
-      alert('OR reset failed: ' + (err.message || 'Network error'));
+      toast.error('OR reset failed: ' + (err.message || 'Network error'));
     } finally {
       setLoading(false);
     }
@@ -979,13 +986,13 @@ export default function App() {
         setOrList(result.orList || []);
         setOverList(result.overList || []);
         if (result.uploadedAt) setUploadedAt(result.uploadedAt);
-        alert(`Successfully synchronized OR dashboard with the occupancy sheet!\n\n• Status: Reconciled & Paired\n• Total Schedules: ${result.total}\n• Admitted (IN): ${result.matched}\n• Non-Admitted (OUT): ${result.outpatients}\n• Over List Cases: ${result.overList?.length || 0}`);
+        toast.success(`Successfully synchronized OR dashboard with occupancy sheet (${result.total} schedules, ${result.matched} admitted).`);
       } else {
-        alert('Could not synchronize: ' + (result.error || 'Unknown error'));
+        toast.error('Could not synchronize: ' + (result.error || 'Unknown error'));
       }
     } catch (err: any) {
       console.error('Error in OR sync:', err);
-      alert('OR sync failed: ' + (err.message || 'Network error'));
+      toast.error('OR sync failed: ' + (err.message || 'Network error'));
     } finally {
       setLoading(false);
       setProcessing(null);
@@ -1036,13 +1043,14 @@ export default function App() {
       }
 
       setIsDataLoaded(true);
+      toast.success('Unified sheet uploaded and parsed successfully!');
       fetchData();
     } catch (err: any) {
       console.error('Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
-        alert('Error: Server returned HTML instead of JSON. The server may be restarting or the file format was unrecognized. Please try again.');
+        toast.error('Server returned HTML instead of JSON. The server may be restarting or file format was unrecognized.');
       } else {
-        alert('Error uploading file: ' + err.message);
+        toast.error('Error uploading file: ' + err.message);
       }
     } finally {
       setLoading(false);
@@ -1084,14 +1092,14 @@ export default function App() {
         setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
-      alert(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
+      toast.success(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
       fetchData();
     } catch (err: any) {
       console.error('Debts Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
-        alert('Error: Server returned HTML instead of JSON. The server may be restarting or the file format was unrecognized. Please try again.');
+        toast.error('Server returned HTML instead of JSON. Please try again.');
       } else {
-        alert('Error uploading debts file: ' + err.message);
+        toast.error('Error uploading debts file: ' + err.message);
       }
     } finally {
       setLoading(false);
@@ -1134,15 +1142,15 @@ export default function App() {
       }
 
       const dateMsg = data.date ? ` for ${data.date}` : "";
-      alert(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
+      toast.success(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
       setOrHistoryRefreshKey(k => k + 1);
       fetchData();
     } catch (err: any) {
       console.error('OR List Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
-        alert('Error: Server returned non-JSON response during OR List upload. Please verify the spreadsheet format and try again.');
+        toast.error('Server returned non-JSON response during OR List upload. Please verify the spreadsheet format.');
       } else {
-        alert('Error uploading OR List file: ' + err.message);
+        toast.error('Error uploading OR List file: ' + err.message);
       }
     } finally {
       setLoading(false);
@@ -1169,6 +1177,7 @@ export default function App() {
       }
       const res = await fetch(url, { headers });
       if (res.status === 304) {
+        setFetchError(null);
         return; // Data has not changed in cloud database, skip re-parsing and re-rendering
       }
       if (!res.ok) {
@@ -1178,6 +1187,7 @@ export default function App() {
         }
         const text = await res.text().catch(() => '');
         console.warn('Fetch /api/occupancy/data returned status:', res.status, text.substring(0, 50));
+        setFetchError(`Server returned status ${res.status} while fetching occupancy records.`);
         return;
       }
       
@@ -1186,8 +1196,11 @@ export default function App() {
       
       if (data.error) {
         console.warn('Occupancy data notice:', data.error);
+        setFetchError(data.error);
         return;
       }
+
+      setFetchError(null);
 
       if (data.lastDatabaseUpdatedAt) {
         lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
@@ -1233,12 +1246,14 @@ export default function App() {
         setTransfersList(data.transfers);
       }
       setLastSyncedTimestamp(Date.now());
+      setFetchError(null);
     } catch (err: any) {
       if (retries > 0) {
         await new Promise(r => setTimeout(r, delay));
         return fetchData({ silent, retries: retries - 1, delay: delay * 1.5 });
       }
       console.warn('Fetch data transient warning (will retry automatically):', err?.message || err);
+      setFetchError(err?.message || 'Failed to synchronize hospital data with remote server.');
     } finally {
       isFetchingRef.current = false;
       if (!silent) {
@@ -1286,7 +1301,7 @@ export default function App() {
       window.URL.revokeObjectURL(url);
       a.remove();
     } catch (err: any) {
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1314,7 +1329,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1340,7 +1355,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1366,7 +1381,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1392,7 +1407,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1418,7 +1433,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1444,7 +1459,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1470,7 +1485,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1517,7 +1532,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1543,7 +1558,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1569,7 +1584,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1595,7 +1610,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1621,7 +1636,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1647,7 +1662,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1673,7 +1688,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1699,7 +1714,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1725,7 +1740,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1751,7 +1766,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1766,13 +1781,13 @@ export default function App() {
       });
 
       if (res.success) {
-        alert(`✓ Successfully dispatched ${res.sentCount} refined sheet images to WhatsApp group(s)!`);
+        toast.success(`✓ Successfully dispatched ${res.sentCount} refined sheet images to WhatsApp group(s)!`);
       } else {
-        alert(`⚠️ WhatsApp Send Error: ${res.error || 'Failed to dispatch images'}`);
+        toast.error(`WhatsApp Send Error: ${res.error || 'Failed to dispatch images'}`);
       }
     } catch (err: any) {
       console.error('WhatsApp Error:', err);
-      alert(`Failed to send to WhatsApp: ${err.message || String(err)}`);
+      toast.error(`Failed to send to WhatsApp: ${err.message || String(err)}`);
     } finally {
       setProcessing(null);
     }
@@ -1788,13 +1803,13 @@ export default function App() {
       const data = await res.json();
 
       if (data.success) {
-        alert(`✓ Successfully dispatched the combined Excel file (${data.fileName || 'Excel file'}) to WhatsApp group(s)!`);
+        toast.success(`✓ Successfully dispatched the combined Excel file (${data.fileName || 'Excel file'}) to WhatsApp group(s)!`);
       } else {
-        alert(`⚠️ WhatsApp Send Error: ${data.error || 'Failed to dispatch combined Excel report'}`);
+        toast.error(`WhatsApp Send Error: ${data.error || 'Failed to dispatch combined Excel report'}`);
       }
     } catch (err: any) {
       console.error('WhatsApp Error:', err);
-      alert(`Failed to send combined Excel sheet to WhatsApp: ${err.message || String(err)}`);
+      toast.error(`Failed to send combined Excel sheet to WhatsApp: ${err.message || String(err)}`);
     } finally {
       setProcessing(null);
     }
@@ -1820,7 +1835,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1862,16 +1877,16 @@ export default function App() {
       });
       if (res.ok) {
         setVipSaveStatus('saved');
-        alert('VIP cases updated & saved to database permanently!');
+        toast.success('VIP cases updated & saved to database permanently!');
         await fetchData(); // Refresh state and sheets
       } else {
         setVipSaveStatus('unsaved');
-        alert('Failed to update VIP cases.');
+        toast.error('Failed to update VIP cases.');
       }
     } catch (err: any) {
       console.error(err);
       setVipSaveStatus('unsaved');
-      alert(`Error saving VIP cases: ${err.message}`);
+      toast.error(`Error saving VIP cases: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1891,14 +1906,14 @@ export default function App() {
       if (res.ok) {
         setVipCases('');
         setVipSaveStatus('saved');
-        alert('VIP cases reset successfully!');
+        toast.success('VIP cases reset successfully!');
         await fetchData(); // Refresh state and sheets
       } else {
-        alert('Failed to reset VIP cases.');
+        toast.error('Failed to reset VIP cases.');
       }
     } catch (err: any) {
       console.error(err);
-      alert(`Error resetting VIP cases: ${err.message}`);
+      toast.error(`Error resetting VIP cases: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1959,16 +1974,17 @@ export default function App() {
         const copied = await copyToClipboard(data.text);
         if (copied) {
           setIsCopied(true);
+          toast.success('VIP cases formatted & copied to clipboard!');
           setTimeout(() => setIsCopied(false), 2500);
         } else {
-          alert('Could not copy to clipboard. Please try again.');
+          toast.error('Could not copy to clipboard. Please try again.');
         }
       } else {
-        alert('No active VIP cases found.');
+        toast.info('No active VIP cases found.');
       }
     } catch (err: any) {
       console.error(err);
-      alert(`Error copying VIP cases: ${err.message}`);
+      toast.error(`Error copying VIP cases: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -1976,7 +1992,7 @@ export default function App() {
 
   const copyFormattedEntries = async () => {
     if (entryRows.length === 0) {
-      alert("No new admissions to copy.");
+      toast.info("No new admissions to copy.");
       return;
     }
     const header = `📋 *Detected New Admissions - Today's Entries* (${entryRows.length} Cases)\n` +
@@ -1989,9 +2005,9 @@ export default function App() {
     ).join("\n\n");
     const copied = await copyToClipboard(header + lines);
     if (copied) {
-      alert("New admissions copied to clipboard successfully!");
+      toast.success("New admissions copied to clipboard successfully!");
     } else {
-      alert("Could not copy to clipboard. Please try again.");
+      toast.error("Could not copy to clipboard. Please try again.");
     }
   };
 
@@ -2004,14 +2020,14 @@ export default function App() {
         body: JSON.stringify({ text: earlyDischargeRooms })
       });
       if (res.ok) {
-        alert('Early discharge rooms updated successfully!');
+        toast.success('Early discharge rooms updated successfully!');
         await fetchData(); // Refresh state and sheets
       } else {
-        alert('Failed to update early discharge rooms.');
+        toast.error('Failed to update early discharge rooms.');
       }
     } catch (err: any) {
       console.error(err);
-      alert(`Error saving early discharge rooms: ${err.message}`);
+      toast.error(`Error saving early discharge rooms: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2031,23 +2047,23 @@ export default function App() {
         
         let msg = '';
         if (data.dischargedCount > 0) {
-          msg += `Successfully discharged ${data.dischargedCount} patient(s):\n${data.dischargedNames.join('\n')}\n\nThey have been removed from the active sheets and added to the discharged patients database and statistics.`;
+          msg += `Successfully discharged ${data.dischargedCount} patient(s): ${data.dischargedNames.join(', ')}.`;
         } else {
           msg += 'No matching active patients found.';
         }
         
         if (data.unmatched && data.unmatched.length > 0) {
-          msg += `\n\nCould not find match for ${data.unmatched.length} name(s), which remain in the textbox:\n${data.unmatched.join('\n')}`;
+          msg += ` (${data.unmatched.length} unmatched remaining)`;
         }
         
-        alert(msg);
+        toast.success(msg);
         await fetchData(); // Refresh state and sheets
       } else {
-        alert('Failed to process pending discharge patients.');
+        toast.error('Failed to process pending discharge patients.');
       }
     } catch (err: any) {
       console.error(err);
-      alert(`Error processing pending discharges: ${err.message}`);
+      toast.error(`Error processing pending discharges: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2065,15 +2081,15 @@ export default function App() {
         body: JSON.stringify({ name, mrn })
       });
       if (res.ok) {
-        alert(`Successfully restored "${name}" to active sheets.`);
+        toast.success(`Successfully restored "${name}" to active sheets.`);
         await fetchData({ force: true }); // Refresh state and active sheets with fresh data
       } else {
         const errData = await res.json().catch(() => ({}));
-        alert(errData.error || 'Failed to restore patient.');
+        toast.error(errData.error || 'Failed to restore patient.');
       }
     } catch (err: any) {
       console.error(err);
-      alert(`Error during restore: ${err.message}`);
+      toast.error(`Error during restore: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2099,7 +2115,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2125,7 +2141,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2151,7 +2167,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2177,7 +2193,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2203,7 +2219,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2229,7 +2245,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2255,7 +2271,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2281,7 +2297,7 @@ export default function App() {
       a.remove();
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2328,7 +2344,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2375,7 +2391,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2401,7 +2417,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2427,7 +2443,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2453,7 +2469,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2479,7 +2495,7 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error(err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2491,10 +2507,10 @@ export default function App() {
       const res = await fetch(`/api/workflows/${endpoint}`, { method: 'POST' });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      alert(`${name} workflow completed successfully!`);
+      toast.success(`${name} workflow completed successfully!`);
     } catch (err: any) {
       console.error(err);
-      alert(`Workflow failed: ${err.message}`);
+      toast.error(`Workflow failed: ${err.message}`);
     } finally {
       setProcessing(null);
     }
@@ -2601,7 +2617,7 @@ export default function App() {
 
   const copyExceedingALOSPatients = useCallback(async () => {
     if (exceedingALOSPatients.length === 0) {
-      alert("No patients exceeding ALOS currently found or loaded.");
+      toast.info("No patients exceeding ALOS currently found or loaded.");
       return;
     }
     const header = "*Patients Exceeding Average Length Of Stay*";
@@ -2618,9 +2634,9 @@ export default function App() {
     const listText = [header, ...bodyLines].join('\n\n');
     const copied = await copyToClipboard(listText);
     if (copied) {
-      alert("Exceeding ALOS patients copied successfully!");
+      toast.success("Exceeding ALOS patients copied successfully!");
     } else {
-      alert("Could not copy to clipboard. Please try again.");
+      toast.error("Could not copy to clipboard. Please try again.");
     }
   }, [exceedingALOSPatients]);
 
@@ -3159,6 +3175,16 @@ export default function App() {
               </div>
             </header>
 
+            {fetchError && (
+              <ErrorBanner
+                title="Data Synchronization Notice"
+                message={fetchError}
+                onRetry={() => fetchData({ force: true })}
+                onDismiss={() => setFetchError(null)}
+                className="mb-6"
+              />
+            )}
+
           <AnimatePresence mode="wait">
             {currentView === 'dashboard' && (
               <motion.div 
@@ -3441,7 +3467,11 @@ export default function App() {
                         </h3>
                       </div>
                       {emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length === 0 ? (
-                        <p className="text-sm text-slate-500">No empty rooms detected in the current record.</p>
+                        <EmptyState
+                          icon={Hotel}
+                          title="No Vacant Inpatient Rooms"
+                          description="All standard inpatient rooms are currently occupied (100% capacity in general units)."
+                        />
                       ) : (
                         <div className="space-y-4 max-h-96 overflow-y-auto pr-2 pb-2">
                           {(() => {
@@ -4628,10 +4658,38 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/20 text-slate-800">
-                      {(() => {
-                        let currentGroup = '';
-                        let serial = 1;
-                        return filteredViewPatients.map((p, i) => {
+                      {filteredViewPatients.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-12 px-6">
+                            <EmptyState
+                              icon={Users}
+                              title="No Matching Patients Found"
+                              description={
+                                searchQuery.trim()
+                                  ? `No patients match the search query "${searchQuery}".`
+                                  : paymentFilter !== 'all'
+                                  ? `No patients found under payment category "${paymentFilter.toUpperCase()}".`
+                                  : 'No active patient occupancy records loaded.'
+                              }
+                              action={
+                                searchQuery.trim() || paymentFilter !== 'all'
+                                  ? {
+                                      label: 'Reset Filters',
+                                      onClick: () => {
+                                        setSearchQuery('');
+                                        setPaymentFilter('all');
+                                      },
+                                    }
+                                  : undefined
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ) : (
+                        (() => {
+                          let currentGroup = '';
+                          let serial = 1;
+                          return filteredViewPatients.map((p, i) => {
                           const group = getGroup(p.room);
                           const isNewGroup = group !== currentGroup;
                           if (isNewGroup) currentGroup = group;
@@ -4665,7 +4723,7 @@ export default function App() {
                             </React.Fragment>
                           );
                         });
-                      })()}
+                      })())}
                     </tbody>
                   </table>
                 </div>
@@ -5163,7 +5221,7 @@ export default function App() {
                       onReset={() => setOccupancyHistoryRefreshKey(k => k + 1)}
                     >
                       <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <OccupancyHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
+                        <OccupancyHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
                       </React.Suspense>
                     </ErrorBoundary>
                   </section>
@@ -5179,7 +5237,7 @@ export default function App() {
                       onReset={() => setOrHistoryRefreshKey(k => k + 1)}
                     >
                       <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <ORHistoryView onNotify={(msg) => alert(msg)} refreshTrigger={orHistoryRefreshKey} />
+                        <ORHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={orHistoryRefreshKey} />
                       </React.Suspense>
                     </ErrorBoundary>
                   </section>

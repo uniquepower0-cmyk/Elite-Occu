@@ -20,6 +20,10 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { formatDateDDMMYYYY } from './ORHistoryView';
+import { useToast } from '../context/ToastContext';
+import { EmptyState } from './ui/EmptyState';
+import { ErrorBanner } from './ui/ErrorBanner';
+import { TableSkeleton } from './ui/TableSkeleton';
 
 interface OccupancyHistoryViewProps {
   onNotify?: (msg: string) => void;
@@ -28,6 +32,7 @@ interface OccupancyHistoryViewProps {
 }
 
 export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
+  const toast = useToast();
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
@@ -145,16 +150,18 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
       });
       const data = await res.json();
       if (res.ok) {
-        if (onNotify) onNotify(`Snapshot successfully archived for ${formatDateDDMMYYYY(data.snapshot?.date) || 'today'}`);
+        const msg = `Snapshot successfully archived for ${formatDateDDMMYYYY(data.snapshot?.date) || 'today'}`;
+        toast.success(msg);
+        if (onNotify) onNotify(msg);
         await fetchDates();
         if (data.snapshot?.date) {
           setSelectedDate(data.snapshot.date);
         }
       } else {
-        alert(data.error || 'Failed to capture snapshot.');
+        toast.error(data.error || 'Failed to capture snapshot.');
       }
     } catch (err: any) {
-      alert('Error taking snapshot: ' + err.message);
+      toast.error('Error taking snapshot: ' + err.message);
     } finally {
       setTakingSnapshot(false);
     }
@@ -183,9 +190,10 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
       a.click();
       a.remove();
       window.URL.revokeObjectURL(blobUrl);
+      toast.success(`Downloaded ${label} successfully`);
     } catch (err: any) {
       console.error('Download error:', err);
-      alert(`Failed to download report: ${err.message}`);
+      toast.error(`Failed to download report: ${err.message}`);
     } finally {
       setDownloading(null);
     }
@@ -435,27 +443,14 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
       {/* Snapshot Details and Metric Counters */}
       {selectedDate && (
         <div className="space-y-6">
-          {loadingDetail ? (
-            <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-2xl p-12 text-center text-slate-500 text-sm font-bold flex flex-col items-center justify-center gap-3">
-              <RefreshCw size={24} className="animate-spin text-teal-600" />
-              Loading occupancy snapshot data for {formatDateDDMMYYYY(selectedDate)}...
-            </div>
+          {loadingDetail && !detailData ? (
+            <TableSkeleton rows={6} cols={7} />
           ) : detailError ? (
-            <div role="alert" className="bg-rose-50/90 border border-rose-200 rounded-2xl p-8 text-center text-rose-800 shadow-sm flex flex-col items-center gap-3">
-              <AlertTriangle className="w-8 h-8 text-rose-600" />
-              <div>
-                <h4 className="text-sm font-bold text-slate-900">Failed to load snapshot for {formatDateDDMMYYYY(selectedDate)}</h4>
-                <p className="text-xs text-rose-700 mt-1">{detailError}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => fetchDetail(selectedDate)}
-                className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-              >
-                <RefreshCw size={14} />
-                Retry Loading Snapshot
-              </button>
-            </div>
+            <ErrorBanner
+              title={`Failed to load snapshot for ${formatDateDDMMYYYY(selectedDate)}`}
+              message={detailError}
+              onRetry={() => fetchDetail(selectedDate)}
+            />
           ) : detailData ? (
             <>
               {/* Stat Cards */}
@@ -582,9 +577,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 {/* Tab: Inpatients */}
                 {activeTab === 'inpatients' && (
                   filteredPatients.length === 0 ? (
-                    <div className="text-center py-10 text-slate-400 text-xs font-bold">
-                      No matching inpatient records found in this snapshot.
-                    </div>
+                    <EmptyState
+                      icon={Users}
+                      title="No Matching Inpatients"
+                      description={searchFilter.trim() ? `No active inpatients found matching "${searchFilter}".` : "No inpatients found in this snapshot archive."}
+                      action={searchFilter.trim() ? { label: "Clear Filter", onClick: () => setSearchFilter("") } : undefined}
+                    />
                   ) : (
                     <div className="overflow-x-auto custom-scrollbar border border-teal-500/10 rounded-xl max-h-[420px] overflow-y-auto">
                       <table className="w-full text-left text-xs border-collapse min-w-[760px]">
@@ -624,9 +622,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 {/* Tab: Discharges */}
                 {activeTab === 'discharges' && (
                   filteredDischarges.length === 0 ? (
-                    <div className="text-center py-10 text-slate-400 text-xs font-bold">
-                      No matching discharged patient records found in this snapshot.
-                    </div>
+                    <EmptyState
+                      icon={LogOut}
+                      title="No Matching Discharges"
+                      description={searchFilter.trim() ? `No discharged patients found matching "${searchFilter}".` : "No discharged patient records found in this snapshot."}
+                      action={searchFilter.trim() ? { label: "Clear Filter", onClick: () => setSearchFilter("") } : undefined}
+                    />
                   ) : (
                     <div className="overflow-x-auto custom-scrollbar border border-rose-500/15 rounded-xl max-h-[420px] overflow-y-auto">
                       <table className="w-full text-left text-xs border-collapse min-w-[680px]">
@@ -673,9 +674,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                 {/* Tab: Transfers */}
                 {activeTab === 'transfers' && (
                   filteredTransfers.length === 0 ? (
-                    <div className="text-center py-10 text-slate-400 text-xs font-bold">
-                      No matching transfer records found in this snapshot.
-                    </div>
+                    <EmptyState
+                      icon={ArrowRightLeft}
+                      title="No Matching Transfers"
+                      description={searchFilter.trim() ? `No room transfer events found matching "${searchFilter}".` : "No room transfer records found in this snapshot."}
+                      action={searchFilter.trim() ? { label: "Clear Filter", onClick: () => setSearchFilter("") } : undefined}
+                    />
                   ) : (
                     <div className="overflow-x-auto custom-scrollbar border border-amber-500/20 rounded-xl max-h-[420px] overflow-y-auto">
                       <table className="w-full text-left text-xs border-collapse min-w-[760px]">
