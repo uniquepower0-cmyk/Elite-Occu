@@ -18,7 +18,7 @@ export interface WorkflowCardProps {
   tertiaryDisabled?: boolean;
 }
 
-export function WorkflowCard({ 
+export const WorkflowCard = React.memo(function WorkflowCard({ 
   title, 
   description, 
   icon, 
@@ -77,4 +77,4 @@ export function WorkflowCard({
       </div>
     </div>
   );
-}
+});

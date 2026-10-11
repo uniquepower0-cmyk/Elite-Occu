@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Calendar, 
   FileSpreadsheet, 
@@ -107,8 +107,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
   };
 
   useEffect(() => {
-    fetchStatus();
-    fetchDates();
+    Promise.all([fetchStatus(), fetchDates()]);
   }, []);
 
   useEffect(() => {
@@ -192,10 +191,11 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
     }
   };
 
-  const filteredPatients = (detailData?.patients || []).filter((p: any) => {
-    if (!searchFilter.trim()) return true;
+  const filteredPatients = useMemo(() => {
+    const list = detailData?.patients || [];
+    if (!searchFilter.trim()) return list;
     const q = searchFilter.toLowerCase();
-    return (
+    return list.filter((p: any) =>
       (p.name && p.name.toLowerCase().includes(q)) ||
       (p.room && p.room.toLowerCase().includes(q)) ||
       (p.doctor && p.doctor.toLowerCase().includes(q)) ||
@@ -203,34 +203,34 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
       (p.mrn && p.mrn.toLowerCase().includes(q)) ||
       (p.floor && p.floor.toLowerCase().includes(q))
     );
-  });
+  }, [detailData?.patients, searchFilter]);
 
   const dischargedList: any[] = detailData?.dischargedPatients || [];
 
-  const filteredDischarges = dischargedList.filter((p: any) => {
-    if (!searchFilter.trim()) return true;
+  const filteredDischarges = useMemo(() => {
+    if (!searchFilter.trim()) return dischargedList;
     const q = searchFilter.toLowerCase();
-    return (
+    return dischargedList.filter((p: any) =>
       (p.name && p.name.toLowerCase().includes(q)) ||
       (p.room && p.room.toLowerCase().includes(q)) ||
       (p.doctor && p.doctor.toLowerCase().includes(q)) ||
       (p.contractor && p.contractor.toLowerCase().includes(q))
     );
-  });
+  }, [dischargedList, searchFilter]);
 
   const transfersList: any[] = detailData?.transfers || [];
 
-  const filteredTransfers = transfersList.filter((t: any) => {
-    if (!searchFilter.trim()) return true;
+  const filteredTransfers = useMemo(() => {
+    if (!searchFilter.trim()) return transfersList;
     const q = searchFilter.toLowerCase();
-    return (
+    return transfersList.filter((t: any) =>
       (t.name && t.name.toLowerCase().includes(q)) ||
       (t.originalRoom && t.originalRoom.toLowerCase().includes(q)) ||
       (t.currentRoom && t.currentRoom.toLowerCase().includes(q)) ||
       (t.physician && t.physician.toLowerCase().includes(q)) ||
       (t.contractor && t.contractor.toLowerCase().includes(q))
     );
-  });
+  }, [transfersList, searchFilter]);
 
   return (
     <div className="space-y-6 animate-fade-in" id="occupancy-history-container">

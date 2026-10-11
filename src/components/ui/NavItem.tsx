@@ -9,7 +9,7 @@ export interface NavItemProps {
   badge?: string;
 }
 
-export function NavItem({ active, onClick, icon, label, highlighted, badge }: NavItemProps) {
+export const NavItem = React.memo(function NavItem({ active, onClick, icon, label, highlighted, badge }: NavItemProps) {
   return (
     <button 
       onClick={onClick}
@@ -42,4 +42,4 @@ export function NavItem({ active, onClick, icon, label, highlighted, badge }: Na
       </div>
     </button>
   );
-}
+});

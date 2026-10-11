@@ -7,7 +7,7 @@ export interface ActionButtonProps {
   loading?: boolean;
 }
 
-export function ActionButton({ icon, label, onClick, loading }: ActionButtonProps) {
+export const ActionButton = React.memo(function ActionButton({ icon, label, onClick, loading }: ActionButtonProps) {
   return (
     <button 
       onClick={onClick}
@@ -18,4 +18,4 @@ export function ActionButton({ icon, label, onClick, loading }: ActionButtonProp
       {label}
     </button>
   );
-}
+});

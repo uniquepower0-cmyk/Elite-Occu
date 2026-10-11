@@ -4,13 +4,20 @@
 
 export const KEYWORDS_TO_EXCLUDE = ["homecare", "home care", "wellbaby", "well baby", "dialysis", "diyalsis room", "diyalsis", "endoscopy operation theatre", "operation room", "cath lab operation theatre", "day case", "daycase"];
 
+const REGEX_OR_1 = /^or-\d+$/;
+const REGEX_OR_2 = /^or\d+$/;
+const REGEX_OR_WORD = /\bor\b/i;
+const REGEX_OR_NUM = /\bor\d+/i;
+const REGEX_OR_DASH = /\bor\s*-\s*\d+/i;
+const REGEX_SPACES = /\s+/g;
+
 export function isOperatingRoom(roomStr: string): boolean {
   if (!roomStr) return false;
   const bLower = String(roomStr).trim().toLowerCase();
-  const clean = bLower.replace(/\s+/g, "");
+  const clean = bLower.replace(REGEX_SPACES, "");
   
-  return /^or-\d+$/.test(clean) ||
-         /^or\d+$/.test(clean) ||
+  return REGEX_OR_1.test(clean) ||
+         REGEX_OR_2.test(clean) ||
          bLower === "or" ||
          bLower.startsWith("or ") ||
          bLower.startsWith("or-") ||
@@ -19,9 +26,9 @@ export function isOperatingRoom(roomStr: string): boolean {
          bLower.includes("operation room") ||
          bLower.includes("operating theatre") ||
          bLower.includes("recovery room") ||
-         /\bor\b/i.test(bLower) || 
-         /\bor\d+/i.test(bLower) || 
-         /\bor\s*-\s*\d+/i.test(bLower);
+         REGEX_OR_WORD.test(bLower) || 
+         REGEX_OR_NUM.test(bLower) || 
+         REGEX_OR_DASH.test(bLower);
 }
 
 export interface PatientRow {
@@ -83,44 +90,49 @@ export function extractDischargedPatients(oldData: PatientRow[], newData: Patien
   return oldData.filter(oldP => !currentNames.has(oldP.name.toLowerCase().trim()));
 }
 
-export function extractEmptyRooms(patients: PatientRow[]): string[] {
-  // Generate all possible rooms based on the zone configurations provided previously
-  const allRooms: string[] = [
-    // 1st Floor (Day Case split beds + Premium South whole rooms)
-    "102", "103", "106", "107",
-    "101 - 1", "101 - 2",
-    "104 - 1", "104 - 2",
-    "105 - 1", "105 - 2",
-    // Zone A (19 rooms: 301-319)
-    ...Array.from({ length: 19 }, (_, i) => `3${String(i + 1).padStart(2, '0')}`),
-    // Zone B (10 rooms: 320-329)
-    ...Array.from({ length: 10 }, (_, i) => `3${i + 20}`),
-    // Zone C (3 rooms: 330-332, with 330-331 having A/B variants)
-    "330 A", "330 B", "331 A", "331 B", "332",
-    // 4th Floor (22 rooms: 401-422, with 401-405 having A/B variants)
-    ...Array.from({ length: 22 }, (_, i) => {
-      const n = i + 1;
-      const num = 400 + n;
-      if (n <= 5) return [`${num} A`, `${num} B`];
-      return [`${num}`];
-    }).flat(),
-    // ICU & VIP (15 ICU + 6 VIP)
-    ...Array.from({ length: 15 }, (_, i) => `ICU ${i + 1}`),
-    ...Array.from({ length: 6 }, (_, i) => `VIP ICU ${i + 1}`),
-    // NICU (4 beds)
-    ...Array.from({ length: 4 }, (_, i) => `NICU ${i + 1}`),
-    // PICU (3 beds)
-    ...Array.from({ length: 3 }, (_, i) => `PICU ${i + 1}`),
-    // SICU (5 beds)
-    ...Array.from({ length: 5 }, (_, i) => `SICU ${i + 1}`),
-    // CCU (8 beds + 1 VIP CCU)
-    ...Array.from({ length: 8 }, (_, i) => `CCU ${i + 1}`),
-    "VIP CCU 1"
-  ];
+// Static hospital rooms list cached once at module load
+const STATIC_ALL_ROOMS: readonly string[] = Object.freeze([
+  // 1st Floor (Day Case split beds + Premium South whole rooms)
+  "102", "103", "106", "107",
+  "101 - 1", "101 - 2",
+  "104 - 1", "104 - 2",
+  "105 - 1", "105 - 2",
+  // Zone A (19 rooms: 301-319)
+  ...Array.from({ length: 19 }, (_, i) => `3${String(i + 1).padStart(2, '0')}`),
+  // Zone B (10 rooms: 320-329)
+  ...Array.from({ length: 10 }, (_, i) => `3${i + 20}`),
+  // Zone C (3 rooms: 330-332, with 330-331 having A/B variants)
+  "330 A", "330 B", "331 A", "331 B", "332",
+  // 4th Floor (22 rooms: 401-422, with 401-405 having A/B variants)
+  ...Array.from({ length: 22 }, (_, i) => {
+    const n = i + 1;
+    const num = 400 + n;
+    if (n <= 5) return [`${num} A`, `${num} B`];
+    return [`${num}`];
+  }).flat(),
+  // ICU & VIP (15 ICU + 6 VIP)
+  ...Array.from({ length: 15 }, (_, i) => `ICU ${i + 1}`),
+  ...Array.from({ length: 6 }, (_, i) => `VIP ICU ${i + 1}`),
+  // NICU (4 beds)
+  ...Array.from({ length: 4 }, (_, i) => `NICU ${i + 1}`),
+  // PICU (3 beds)
+  ...Array.from({ length: 3 }, (_, i) => `PICU ${i + 1}`),
+  // SICU (5 beds)
+  ...Array.from({ length: 5 }, (_, i) => `SICU ${i + 1}`),
+  // CCU (8 beds + 1 VIP CCU)
+  ...Array.from({ length: 8 }, (_, i) => `CCU ${i + 1}`),
+  "VIP CCU 1"
+]);
 
+const REGEX_ROOM_NUM = /\d+/;
+const REGEX_AB_VARIANT = /^(33[01]|40[1-5])\s*([AB])$/;
+const REGEX_AB_MATCH = /(33[01]|40[1-5])\s*[-/]?\s*([AB])/;
+const REGEX_1ST_FLOOR = /(10[145])\s*[-A-B1-2]?\s*([1-2])/;
+
+export function extractEmptyRooms(patients: PatientRow[]): string[] {
   const normalizeRoom = (roomStr: string) => {
     let r = roomStr.toUpperCase().trim();
-    const numMatch = r.match(/\d+/);
+    const numMatch = r.match(REGEX_ROOM_NUM);
     const num = numMatch ? numMatch[0] : "";
     
     if (r.includes("VIP CCU")) return `VIP CCU ${num}`;
@@ -133,17 +145,17 @@ export function extractEmptyRooms(patients: PatientRow[]): string[] {
     if (r.includes("VIP")) return `VIP ICU ${num}`; // Fallback for plain "VIP"
     
     // Check for 330-331 and 401-405 A/B variants
-    const abMatch = r.match(/(33[01]|40[1-5])\s*[-/]?\s*([AB])/);
+    const abMatch = r.match(REGEX_AB_MATCH);
     if (abMatch) return `${abMatch[1]} ${abMatch[2]}`;
 
     // For 101, 104, 105 A/B or -1/-2 variants
-    const firstFloorMatch = r.match(/(10[145])\s*[-A-B1-2]?\s*([1-2])/);
+    const firstFloorMatch = r.match(REGEX_1ST_FLOOR);
     if (firstFloorMatch) {
       return `${firstFloorMatch[1]} - ${firstFloorMatch[2]}`;
     }
 
     // Strip suffixes completely for 102, 103, 106, 107
-    if (["102", "103", "106", "107"].includes(num)) {
+    if (num === "102" || num === "103" || num === "106" || num === "107") {
       return num;
     }
 
@@ -157,12 +169,11 @@ export function extractEmptyRooms(patients: PatientRow[]): string[] {
 
   const vacantRoomsRaw: string[] = [];
 
-  allRooms.forEach(room => {
-    // Check if the room has an A/B variant (using regex on the room label, e.g. "401 A" or "402 B")
-    const match = room.match(/^(33[01]|40[1-5])\s*([AB])$/);
+  STATIC_ALL_ROOMS.forEach(room => {
+    const match = room.match(REGEX_AB_VARIANT);
     if (match) {
-      const base = match[1]; // "330", "331", "401", "402", ...
-      const variant = match[2]; // "A" or "B"
+      const base = match[1];
+      const variant = match[2];
       
       const isBaseOccupied = occupiedIdentifiers.has(base);
       const isAOccupied = occupiedIdentifiers.has(`${base} A`);
@@ -176,7 +187,6 @@ export function extractEmptyRooms(patients: PatientRow[]): string[] {
         }
       }
     } else {
-      // For any other normal/closed unit room
       const identifier = normalizeRoom(room);
       if (!occupiedIdentifiers.has(identifier)) {
         vacantRoomsRaw.push(room);
@@ -190,7 +200,7 @@ export function extractEmptyRooms(patients: PatientRow[]): string[] {
   const processedBases = new Set<string>();
 
   vacantRoomsRaw.forEach(room => {
-    const match = room.match(/^(33[01]|40[1-5])\s*([AB])$/);
+    const match = room.match(REGEX_AB_VARIANT);
     if (match) {
       const base = match[1];
       if (emptyRoomsSet.has(`${base} A`) && emptyRoomsSet.has(`${base} B`)) {
@@ -210,47 +220,47 @@ export function extractEmptyRooms(patients: PatientRow[]): string[] {
 }
 
 export function countTodaysEntries(patients: PatientRow[]): number {
+  const today = new Date();
+  const year = today.getFullYear();
+  const shortYear = year % 100;
+  const month = today.getMonth() + 1;
+  const day = today.getDate();
+  
+  const paddedMonth = month.toString().padStart(2, '0');
+  const paddedDay = day.toString().padStart(2, '0');
+
+  const possibleFormats = [
+    `${month}/${day}/${year}`,
+    `${month}/${day}/${shortYear}`,
+    `${paddedMonth}/${paddedDay}/${year}`,
+    `${paddedMonth}/${paddedDay}/${shortYear}`,
+    `${day}/${month}/${year}`,
+    `${day}/${month}/${shortYear}`,
+    `${paddedDay}/${paddedMonth}/${year}`,
+    `${paddedDay}/${paddedMonth}/${shortYear}`,
+    `${year}-${paddedMonth}-${paddedDay}`
+  ];
+
   return patients.filter(p => {
     const d = p.date.trim().toLowerCase();
     if (!d) return false;
 
     if (d.includes('اليوم')) return true;
 
-    const today = new Date();
-    const year = today.getFullYear();
-    const shortYear = year % 100;
-    const month = today.getMonth() + 1;
-    const day = today.getDate();
-    
-    const paddedMonth = month.toString().padStart(2, '0');
-    const paddedDay = day.toString().padStart(2, '0');
-
-    const possibleFormats = [
-      `${month}/${day}/${year}`,
-      `${month}/${day}/${shortYear}`,
-      `${paddedMonth}/${paddedDay}/${year}`,
-      `${paddedMonth}/${paddedDay}/${shortYear}`,
-      `${day}/${month}/${year}`,
-      `${day}/${month}/${shortYear}`,
-      `${paddedDay}/${paddedMonth}/${year}`,
-      `${paddedDay}/${paddedMonth}/${shortYear}`,
-      `${year}-${paddedMonth}-${paddedDay}`
-    ];
-
     if (possibleFormats.some(f => d.includes(f))) return true;
 
     try {
-        const parsedTime = Date.parse(d);
-        if (!isNaN(parsedTime)) {
-          const parsedDate = new Date(parsedTime);
-          if (
-            parsedDate.getFullYear() === year &&
-            parsedDate.getMonth() === today.getMonth() &&
-            parsedDate.getDate() === day
-          ) {
-            return true;
-          }
+      const parsedTime = Date.parse(d);
+      if (!isNaN(parsedTime)) {
+        const parsedDate = new Date(parsedTime);
+        if (
+          parsedDate.getFullYear() === year &&
+          parsedDate.getMonth() === today.getMonth() &&
+          parsedDate.getDate() === day
+        ) {
+          return true;
         }
+      }
     } catch(e) {}
     
     return false;
@@ -350,30 +360,41 @@ export function isCashPayment(payment: string): boolean {
   return p.includes('cash') || p.includes('كاش') || p.includes('نقد');
 }
 
+const REGEX_TITLES = /^(د\/|د\.|دكتور\/|دكتور|استاذ\/|أستاذ\/|السيد\/|السيد|السيدة\/|السيدة|م\/|مهندس\/|baby\s+of|baby|طفل|طفلة|ابن|ابنة|مولود|مولودة|twin\s*\d*)\s+/gi;
+const REGEX_DIACRITICS = /[\u064B-\u065F\u0670]/g;
+const REGEX_ALEF = /[أإآٱ]/g;
+const REGEX_TAA = /ة/g;
+const REGEX_YAA = /ى/g;
+const REGEX_ABD = /\bعبد\s+/g;
+const REGEX_ABU = /\bابو\s+/g;
+const REGEX_UMM = /\bام\s+/g;
+const REGEX_AL = /\bال([^\s]{3,})/g;
+const REGEX_NON_ALPHANUM_ARABIC = /[^a-z0-9\u0600-\u06FF\s]/g;
+
 export function normalizeArabicName(name: string): string {
   if (!name) return "";
   let n = name.trim().toLowerCase();
   
   // Remove titles & honorifics
-  n = n.replace(/^(د\/|د\.|دكتور\/|دكتور|استاذ\/|أستاذ\/|السيد\/|السيد|السيدة\/|السيدة|م\/|مهندس\/|baby\s+of|baby|طفل|طفلة|ابن|ابنة|مولود|مولودة|twin\s*\d*)\s+/gi, "");
+  n = n.replace(REGEX_TITLES, "");
 
   // Remove diacritics
-  n = n.replace(/[\u064B-\u065F\u0670]/g, "");
+  n = n.replace(REGEX_DIACRITICS, "");
   // Normalize alef variations
-  n = n.replace(/[أإآٱ]/g, "ا");
+  n = n.replace(REGEX_ALEF, "ا");
   // Normalize taa marbuta
-  n = n.replace(/ة/g, "ه");
+  n = n.replace(REGEX_TAA, "ه");
   // Normalize yaa
-  n = n.replace(/ى/g, "ي");
+  n = n.replace(REGEX_YAA, "ي");
   // Normalize common compound names
-  n = n.replace(/\bعبد\s+/g, "عبد");
-  n = n.replace(/\bابو\s+/g, "ابو");
-  n = n.replace(/\bام\s+/g, "ام");
+  n = n.replace(REGEX_ABD, "عبد");
+  n = n.replace(REGEX_ABU, "ابو");
+  n = n.replace(REGEX_UMM, "ام");
   // Normalize alif-lam prefix for common names (e.g. السيد -> سيد)
-  n = n.replace(/\bال([^\s]{3,})/g, "$1");
+  n = n.replace(REGEX_AL, "$1");
   // Remove special characters, symbols, and extra spaces
-  n = n.replace(/[^a-z0-9\u0600-\u06FF\s]/g, " ");
-  return n.replace(/\s+/g, " ").trim();
+  n = n.replace(REGEX_NON_ALPHANUM_ARABIC, " ");
+  return n.replace(REGEX_SPACES, " ").trim();
 }
 
 export function getNormalizedWords(name: string): string[] {

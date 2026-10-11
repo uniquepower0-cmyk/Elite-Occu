@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Calendar, 
   FileSpreadsheet, 
@@ -21,6 +21,9 @@ interface ORHistoryViewProps {
   refreshTrigger?: number;
 }
 
+const REGEX_YMD = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/;
+const REGEX_DMY = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/;
+
 /**
  * Format any date string to standard DD-MM-YYYY (day first, month second, year third)
  */
@@ -30,7 +33,7 @@ export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string =
   if (!s) return '';
 
   // 1. Check YYYY-MM-DD or YYYY/MM/DD
-  const ymdMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  const ymdMatch = s.match(REGEX_YMD);
   if (ymdMatch) {
     const yr = ymdMatch[1];
     const mo = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
@@ -39,7 +42,7 @@ export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string =
   }
 
   // 2. Check DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
-  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  const dmyMatch = s.match(REGEX_DMY);
   if (dmyMatch) {
     const n1 = parseInt(dmyMatch[1], 10);
     const n2 = parseInt(dmyMatch[2], 10);
@@ -154,8 +157,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
   };
 
   useEffect(() => {
-    fetchStatus();
-    fetchDates();
+    Promise.all([fetchStatus(), fetchDates()]);
   }, []);
 
   useEffect(() => {
@@ -261,10 +263,11 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
     }
   };
 
-  const filteredCases = (detailData?.orList || []).filter((c: any) => {
-    if (!searchFilter.trim()) return true;
+  const filteredCases = useMemo(() => {
+    const list = detailData?.orList || [];
+    if (!searchFilter.trim()) return list;
     const q = searchFilter.toLowerCase();
-    return (
+    return list.filter((c: any) =>
       (c.patientName && c.patientName.toLowerCase().includes(q)) ||
       (c.surgeon && c.surgeon.toLowerCase().includes(q)) ||
       (c.operation && c.operation.toLowerCase().includes(q)) ||
@@ -272,7 +275,7 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
       (c.mrn && String(c.mrn).toLowerCase().includes(q)) ||
       (c.room && c.room.toLowerCase().includes(q))
     );
-  });
+  }, [detailData?.orList, searchFilter]);
 
   return (
     <div className="space-y-6 animate-fade-in" id="or-history-container">

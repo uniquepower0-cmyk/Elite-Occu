@@ -12,7 +12,7 @@ export interface StatCardProps {
   highlighted?: boolean;
 }
 
-export function StatCard({ 
+export const StatCard = React.memo(function StatCard({ 
   label, 
   value, 
   subValue, 
@@ -141,4 +141,4 @@ export function StatCard({
       {renderMiniChart(label)}
     </div>
   );
-}
+});

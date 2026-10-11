@@ -80,15 +80,50 @@ const PatientTransfersTable = React.lazy(() => import('./components/PatientTrans
 const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
 const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then(m => ({ default: m.ORHistoryView })));
 const AuditLogsView = React.lazy(() => import('./components/AuditLogsView'));
+const MedicalDirectorView = React.lazy(() => import('./components/MedicalDirectorView').then(m => ({ default: m.MedicalDirectorView })));
+const DutyManagerView = React.lazy(() => import('./components/DutyManagerView').then(m => ({ default: m.DutyManagerView })));
 
-import { MedicalDirectorView } from './components/MedicalDirectorView';
-import { DutyManagerView } from './components/DutyManagerView';
 import { NavItem } from './components/ui/NavItem';
 import { ActionButton } from './components/ui/ActionButton';
 import { StatCard } from './components/ui/StatCard';
 import { WorkflowCard } from './components/ui/WorkflowCard';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { generateAndSendRefinedSheetsToWhatsApp } from './components/RefinedSheetsVisualRenderer';
+
+interface AutoFetchCountdownBadgeProps {
+  rate: string;
+  onFetch: () => void;
+}
+
+const AutoFetchCountdownBadge = React.memo(function AutoFetchCountdownBadge({ rate, onFetch }: AutoFetchCountdownBadgeProps) {
+  const [countdown, setCountdown] = useState<number>(1800);
+
+  useEffect(() => {
+    if (rate !== '30m') return;
+    const rateSeconds = 30 * 60;
+    setCountdown(rateSeconds);
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          onFetch();
+          return rateSeconds;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [rate, onFetch]);
+
+  if (rate !== '30m') return null;
+
+  return (
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 30m fetch">
+      <Clock className="h-3 w-3 text-emerald-600" />
+      <span>
+        {Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}
+      </span>
+    </div>
+  );
+});
 
 const ViewLoadingFallback = () => (
   <div className="flex flex-col items-center justify-center min-h-[300px] p-8 text-slate-500 gap-3" role="status" aria-live="polite">
@@ -239,21 +274,31 @@ const getORCaseType = (p: any): 'DC' | 'HC' => {
   return isDoctorCase(p) ? 'DC' : 'HC';
 };
 
+const REGEX_APP_DIACRITICS = /[\u064B-\u065F]/g;
+const REGEX_APP_NON_ALPHA = /[^a-zA-Z\u0600-\u06FF\s]/g;
+const REGEX_APP_SPACES = /\s+/g;
+const REGEX_APP_PREFIX = /^(ابن|ابنه|بنت|طفل|طفله|حاله|حالة)\s+/;
+const REGEX_APP_ALEF = /[أإآٱ]/g;
+const REGEX_APP_TAA = /ة/g;
+const REGEX_APP_YAA = /[ىيِ]/g;
+const REGEX_APP_WAW = /ؤ/g;
+const REGEX_APP_HAMZA = /ئ/g;
+const REGEX_APP_TIME = /^(\d{1,2}):(\d{2})(?:\s*(am|pm))?/;
+
 const normalizeArabicName = (name: string): string => {
   if (!name) return "";
   let clean = name.toLowerCase().trim();
-  clean = clean.replace(/[\u064B-\u065F]/g, "");
-  clean = clean.replace(/[^a-zA-Z\u0600-\u06FF\s]/g, " ");
-  clean = clean.replace(/\s+/g, " ").trim();
-  clean = clean.replace(/^(ابن|ابنه|بنت|طفل|طفله|حاله|حالة)\s+/, '');
+  clean = clean.replace(REGEX_APP_DIACRITICS, "");
+  clean = clean.replace(REGEX_APP_NON_ALPHA, " ");
+  clean = clean.replace(REGEX_APP_SPACES, " ").trim();
+  clean = clean.replace(REGEX_APP_PREFIX, '');
   return clean
-    .replace(/[أإآٱ]/g, 'ا')
-    .replace(/ة/g, 'ه')
-    .replace(/[ىيِ]/g, 'y')
-    .replace(/[ىي]/g, 'y')
-    .replace(/ؤ/g, 'و')
-    .replace(/ئ/g, 'y')
-    .replace(/\s+/g, ' ')
+    .replace(REGEX_APP_ALEF, 'ا')
+    .replace(REGEX_APP_TAA, 'ه')
+    .replace(REGEX_APP_YAA, 'y')
+    .replace(REGEX_APP_WAW, 'و')
+    .replace(REGEX_APP_HAMZA, 'y')
+    .replace(REGEX_APP_SPACES, ' ')
     .trim();
 };
 
@@ -266,7 +311,7 @@ const parseTimeToMinutes = (tStr: any): number | null => {
   const cleaned = String(tStr).toLowerCase().trim();
   
   // Try to match "HH:MM" or "H:MM"
-  const m = cleaned.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm))?/);
+  const m = cleaned.match(REGEX_APP_TIME);
   if (m) {
     let hours = parseInt(m[1], 10);
     const minutes = parseInt(m[2], 10);
@@ -415,7 +460,6 @@ export default function App() {
     const saved = localStorage.getItem('elite_auto_fetch_rate');
     return (saved === '30m' || saved === '5m') ? '30m' : 'off';
   });
-  const [nextFetchCountdown, setNextFetchCountdown] = useState<number>(1800);
   const [lastSyncedTimestamp, setLastSyncedTimestamp] = useState<number | null>(Date.now());
   const [cloudDatabaseUpdatedAt, setCloudDatabaseUpdatedAt] = useState<string | number | null>(null);
   const [isDbUpdatePulsing, setIsDbUpdatePulsing] = useState<boolean>(false);
@@ -778,28 +822,6 @@ export default function App() {
     const interval = setInterval(checkDbSyncStatus, pollIntervalMs);
     return () => clearInterval(interval);
   }, [isAuthenticated, realtimeConnected]);
-
-  // Scheduled Auto-Fetch Timer from Database on interval (30 minutes)
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    if (autoFetchScheduleRate !== '30m') return;
-
-    const rateSeconds = 30 * 60; // 30 minutes (1800 seconds)
-
-    setNextFetchCountdown(rateSeconds);
-
-    const timer = setInterval(() => {
-      setNextFetchCountdown((prev) => {
-        if (prev <= 1) {
-          fetchData({ silent: true });
-          return rateSeconds;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isAuthenticated, autoFetchScheduleRate]);
 
   const handleUpdateScheduleRate = (newRate: string) => {
     setAutoFetchScheduleRate(newRate);
@@ -1728,6 +1750,7 @@ export default function App() {
   const handleSendRefinedCombinedToWhatsApp = async () => {
     setProcessing('Initiating WhatsApp Report Broadcast');
     try {
+      const { generateAndSendRefinedSheetsToWhatsApp } = await import('./components/RefinedSheetsVisualRenderer');
       const res = await generateAndSendRefinedSheetsToWhatsApp((status) => {
         setProcessing(status);
       });
@@ -2500,6 +2523,72 @@ export default function App() {
     }));
   }, [rawOccupancyRows]);
 
+  const orStats = useMemo(() => {
+    let dcCount = 0;
+    let hcCount = 0;
+    let inCount = 0;
+    let outCount = 0;
+    let dischargedCount = 0;
+    let sicuCount = 0;
+
+    const dischargedNameSet = new Set<string>();
+    const dischargedMrnSet = new Set<string>();
+    for (const disc of dischargedPatients) {
+      if (disc.id) dischargedMrnSet.add(String(disc.id).trim());
+      if (disc.name) dischargedNameSet.add(normalizeArabicName(disc.name));
+    }
+
+    const checkIsDischarged = (p: any): boolean => {
+      if (p.mrn && dischargedMrnSet.has(String(p.mrn).trim())) return true;
+      const norm = normalizeArabicName(p.patientName || p.name || '');
+      if (norm && dischargedNameSet.has(norm)) return true;
+      return dischargedPatients.some(discPt => {
+        const nameMatch = isClientNameMatch(p.patientName || p.name || '', discPt.name);
+        const mrnMatch = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
+        return nameMatch || mrnMatch;
+      });
+    };
+
+    for (const p of orList) {
+      if (isDoctorCase(p)) dcCount++;
+      else hcCount++;
+
+      const isDischarged = checkIsDischarged(p);
+      if (isDischarged) {
+        dischargedCount++;
+      } else {
+        if (p.realStatus === 'IN') {
+          inCount++;
+        } else if (p.realStatus === 'OUT') {
+          outCount++;
+        } else {
+          const statusVal = String(p.column3 || p.vt || '').toUpperCase().trim();
+          if (statusVal.includes('IN')) inCount++;
+          else if (statusVal.includes('OUT')) outCount++;
+          else {
+            const combined = `${p.column3} ${p.vt} ${p.postC} ${p.flClassName}`.toUpperCase();
+            if (combined.includes('IN') && !combined.includes('OUT')) inCount++;
+            else outCount++;
+          }
+        }
+      }
+
+      if (String(p.postC || '').toUpperCase().includes('SICU')) {
+        sicuCount++;
+      }
+    }
+
+    return {
+      total: orList.length,
+      dcCount,
+      hcCount,
+      inCount: orList.length > 0 ? inCount : orOccupancyPatients.length,
+      outCount,
+      dischargedCount,
+      sicuCount
+    };
+  }, [orList, dischargedPatients, orOccupancyPatients]);
+
   const copyExceedingALOSPatients = async () => {
     if (exceedingALOSPatients.length === 0) {
       alert("No patients exceeding ALOS currently found or loaded.");
@@ -3226,14 +3315,10 @@ export default function App() {
                       </button>
                     </div>
 
-                    {autoFetchScheduleRate === '30m' && (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold font-mono" title="Time remaining until next 30m fetch">
-                        <Clock className="h-3 w-3 text-emerald-600" />
-                        <span>
-                          {Math.floor(nextFetchCountdown / 60)}:{(nextFetchCountdown % 60).toString().padStart(2, '0')}
-                        </span>
-                      </div>
-                    )}
+                    <AutoFetchCountdownBadge 
+                      rate={autoFetchScheduleRate} 
+                      onFetch={() => fetchData({ silent: true })} 
+                    />
 
                     <button
                       onClick={async () => {
