@@ -9453,8 +9453,7 @@ app.get('/api/database/auto-sync-status', async (req, res) => {
         const { data: node } = await supabaseAdmin
           .from('rtdb_nodes')
           .select('updated_at')
-          .order('updated_at', { ascending: false })
-          .limit(1)
+          .eq('path', 'state/metadata')
           .maybeSingle();
         if (node && node.updated_at) {
           const cloudUpdated = String(node.updated_at);
