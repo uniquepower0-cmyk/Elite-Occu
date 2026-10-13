@@ -1041,8 +1041,9 @@ def fetch_powerbi_and_sync() -> bool:
                             is_cash = False
 
                         if is_cash:
-                            cash_debts.append(debt_item)
-                        elif rec.remaining_debt > 0 or rec.total_invoice > 0:
+                            if rec.remaining_debt > 0:
+                                cash_debts.append(debt_item)
+                        elif rec.remaining_debt > 0:
                             insured_debts.append(debt_item)
 
                 # C. Dialysis Classification

@@ -1795,13 +1795,13 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
   const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
   const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
   const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
-  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22);
-  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], 22);
+  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
   const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
   const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11);
   const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
-  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25);
-  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27);
+  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], 25);
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], 27);
   const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33);
   const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], 34);
   const colUpdateDateIdx = findCol(["prograssnotes creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32);
@@ -2046,7 +2046,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       notes: p.notes
     });
 
-    return !isExcluded && p.colD.length > 0 && (p.valAB > 0 || p.valZ > 0);
+    return !isExcluded && p.colD.length > 0 && p.valAB > 0;
   });
 
   cumulativeInsuredDebts = rawDebts.filter(p => {
@@ -2063,7 +2063,7 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
       notes: p.notes
     });
 
-    return !isExcluded && p.colD.length > 0 && (p.valAB > 0 || p.valZ > 0);
+    return !isExcluded && p.colD.length > 0 && p.valAB > 0;
   });
 
   // 5. Extract Medical Plans
@@ -4031,17 +4031,30 @@ async function handleUnifiedUpload(req: any, res: any) {
     const deduplicatedPatients = extractRawPatientsFromRows(rows);
     processPatientTransfers(deduplicatedPatients, cairo.dateStr);
 
-    // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
-    if (isNewSheetLikelyEmpty && !hospitalData) {
-      try {
-        const todaySnap = await getOccupancySnapshot(cairo.dateStr);
-        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
-          hospitalData = todaySnap.hospitalData;
-          console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
-        }
-      } catch (_) {}
-    } else if (!isNewSheetLikelyEmpty || !hospitalData) {
-      hospitalData = rows;
+    // Dedicated Debts sheet guard: If the uploaded sheet is a dedicated debts sheet (less than 20 columns),
+    // extract debts without overwriting base occupancy hospitalData.
+    const maxRowWidth = Math.max(...rows.slice(0, 15).map(r => Array.isArray(r) ? r.length : 0));
+    const isDedicatedDebtsSheet = maxRowWidth < 22 && (
+      (bestSheetName && (bestSheetName.toLowerCase().includes('debt') || bestSheetName.includes('مديون'))) || 
+      req.originalUrl?.includes('upload-debts') || 
+      req.path?.includes('upload-debts')
+    );
+
+    if (isDedicatedDebtsSheet) {
+      console.log(`[Upload] Dedicated debts sheet detected (${maxRowWidth} cols). Preserving base occupancy hospitalData.`);
+    } else {
+      // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
+      if (isNewSheetLikelyEmpty && !hospitalData) {
+        try {
+          const todaySnap = await getOccupancySnapshot(cairo.dateStr);
+          if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
+            hospitalData = todaySnap.hospitalData;
+            console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
+          }
+        } catch (_) {}
+      } else if (!isNewSheetLikelyEmpty || !hospitalData) {
+        hospitalData = rows;
+      }
     }
 
     // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
@@ -4661,8 +4674,8 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
       for (const item of itemMetas) {
         if (!item.patientId) continue;
         const updatePayload: any = {
-          total_invoice: item.totalVal,
-          remaining_debt: item.remainingVal,
+          total_invoice: Math.max(0, item.totalVal),
+          remaining_debt: Math.max(0, item.remainingVal),
           updated_at: new Date().toISOString()
         };
         if (item.contractor) updatePayload.contractor_name = item.contractor;
@@ -4677,8 +4690,8 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
             patient_id: item.patientId,
             contractor_name: item.contractor,
             financial_status: item.financial,
-            total_invoice: item.totalVal,
-            remaining_debt: item.remainingVal,
+            total_invoice: Math.max(0, item.totalVal),
+            remaining_debt: Math.max(0, item.remainingVal),
             admission_date: item.d.colA ? (parseAdmissionDateToISO(item.d.colA) || new Date().toISOString()) : new Date().toISOString(),
             status: 'Admitted',
             source: 'manual'

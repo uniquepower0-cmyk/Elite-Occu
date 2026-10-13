@@ -191,8 +191,8 @@ BEGIN
     contractor_name = COALESCE(EXCLUDED.contractor_name, admissions.contractor_name),
     financial_status = COALESCE(EXCLUDED.financial_status, admissions.financial_status),
     source = EXCLUDED.source,
-    total_invoice = CASE WHEN EXCLUDED.total_invoice > 0 THEN EXCLUDED.total_invoice ELSE admissions.total_invoice END,
-    remaining_debt = CASE WHEN EXCLUDED.remaining_debt > 0 THEN EXCLUDED.remaining_debt ELSE admissions.remaining_debt END,
+    total_invoice = CASE WHEN EXCLUDED.total_invoice >= 0 THEN EXCLUDED.total_invoice ELSE admissions.total_invoice END,
+    remaining_debt = EXCLUDED.remaining_debt,
     notes = COALESCE(EXCLUDED.notes, admissions.notes),
     updated_at = NOW();
 
