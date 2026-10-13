@@ -94,7 +94,9 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
     setLoadingDetail(true);
     setDetailError(null);
     try {
-      const res = await fetch(`/api/history/occupancy/detail?date=${encodeURIComponent(dateStr)}`);
+      const res = await fetch(`/api/history/occupancy/detail?date=${encodeURIComponent(dateStr)}&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
       if (res.ok) {
         const data = await res.json();
         setDetailData(data);
@@ -453,6 +455,23 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
             />
           ) : detailData ? (
             <>
+              {/* Snapshot State Badge: Live vs Closed Archive */}
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  {detailData.isHistorical ? (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                      <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                      Closed Archive (23:59 Snapshot)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-sm">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Live Operational Census (In-Progress Before Rollover)
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {/* Stat Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 <div 

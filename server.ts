@@ -35,6 +35,8 @@ import {
 } from './historyManager.js';
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
+import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
+import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 
 process.env.DOTENV_CONFIG_QUIET = 'true';
 dotenv.config({ quiet: true });
@@ -1346,11 +1348,8 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
 }
 
 function getTodayRiyadhDateStr(): string {
-  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
-  const year = today.getFullYear();
-  const month = today.getMonth() + 1;
-  const day = today.getDate();
-  return `${month}/${day}/${year}`;
+  const cairo = getCairoDateTime();
+  return cairo.dateStr; // Guarantees canonical YYYY-MM-DD format
 }
 
 function getTodayRiyadhDateTimeStr(): string {
@@ -1810,16 +1809,9 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     });
   }
 
-  // 2. Extract Dialysis
-  const cCairoToday = getCairoDateTime().dateStr;
-  const dialRows = extractDialysisRowsFromData(rows, startIdx).filter(p => {
-    const pDate = p.date || p.admissionDate;
-    return !pDate || isToday(pDate, cCairoToday) || isToday((pDate || "").split(" ")[0], cCairoToday);
-  });
-  cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
-    const pDate = p.date || p.admissionDate;
-    return !pDate || isToday(pDate, cCairoToday) || isToday((pDate || "").split(" ")[0], cCairoToday);
-  });
+  // 2. Extract Dialysis (active cases present in current operational census)
+  const dialRows = extractDialysisRowsFromData(rows, startIdx);
+  if (!cumulativeDialysis) cumulativeDialysis = [];
   dialRows.forEach(p => {
     if (!cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name))) {
       cumulativeDialysis.push(p);
@@ -2629,10 +2621,6 @@ async function executeLoadData(force = false) {
     if (!p) return false;
     const r = String(p.room || "").trim().toLowerCase();
     if (r.includes("323")) return false;
-    const dDate = p.date || p.admissionDate;
-    if (dDate) {
-      return isToday(dDate, cairoLoadTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoLoadTodayStr);
-    }
     return true;
   }).map(p => {
     if (p && p.room) p.room = cleanRoomStr(p.room);
@@ -3982,18 +3970,11 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     // For Dialysis: Keep all dialysis cases cumulatively throughout the day
     if (!isNewSheetLikelyEmpty) {
-      cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
-        const pDate = p.date || p.admissionDate;
-        return !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
-      });
+      if (!cumulativeDialysis) cumulativeDialysis = [];
       dialRowsNew.forEach(p => {
-        const pDate = p.date || p.admissionDate;
-        const isDialToday = !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
-        if (isDialToday) {
-          const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
-          if (!alreadyExists) {
-            cumulativeDialysis.push(p);
-          }
+        const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+        if (!alreadyExists) {
+          cumulativeDialysis.push(p);
         }
       });
     }
@@ -7343,18 +7324,11 @@ async function updateHospitalState(rows: any[][]) {
 
   // For Dialysis: Keep all dialysis cases cumulatively throughout the day
   if (!isNewSheetLikelyEmpty) {
-    cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
-      const pDate = p.date || p.admissionDate;
-      return !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
-    });
+    if (!cumulativeDialysis) cumulativeDialysis = [];
     dialRowsNew.forEach(p => {
-      const pDate = p.date || p.admissionDate;
-      const isDialToday = !pDate || isToday(pDate, cairo.dateStr) || isToday((pDate || "").split(" ")[0], cairo.dateStr);
-      if (isDialToday) {
-        const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
-        if (!alreadyExists) {
-          cumulativeDialysis.push(p);
-        }
+      const alreadyExists = cumulativeDialysis.some(existing => isNameMatch(existing.name, p.name));
+      if (!alreadyExists) {
+        cumulativeDialysis.push(p);
       }
     });
   }
@@ -7730,12 +7704,11 @@ app.get('/api/occupancy/data', async (req, res) => {
     }
   });
 
-  // Dialysis cases count strictly patients having dialysis session today in Cairo
+  // Dialysis cases count all active patients having dialysis in current operational census
   const cleanDialysis = (cumulativeDialysis || []).filter(dialPt => {
-    const dialDate = dialPt.date || dialPt.admissionDate;
-    if (dialDate) {
-      return isToday(dialDate, cairoTodayStr) || isToday(dialDate) || isToday((dialDate || "").split(" ")[0], cairoTodayStr);
-    }
+    if (!dialPt) return false;
+    const r = String(dialPt.room || "").trim().toLowerCase();
+    if (r.includes("323")) return false;
     return true;
   });
 
@@ -8397,9 +8370,14 @@ async function takeOccupancySnapshotHelper(customDate?: string) {
     p.dischargeType === 'manual' || isManuallyDischarged(p.name)
   );
 
+  // Calculate today's entries if cumulativeEntries is empty but active patients have admissions today
+  const activePatients = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
+  const todayAdmissions = activePatients.filter(p => isToday(p.date, dateStr) || isToday(p.rawDate, dateStr));
+  const effectiveEntries = (cumulativeEntries && cumulativeEntries.length > 0) ? cumulativeEntries : todayAdmissions;
+
   const summary = {
     totalOccupancy: occBodyRows.length,
-    entriesCount: (cumulativeEntries || []).length,
+    entriesCount: (effectiveEntries || []).length,
     dischargesCount: (cumulativeDischarged || []).length,
     autoDischargesCount: autoList.length,
     manualDischargesCount: manualList.length,
@@ -8413,7 +8391,7 @@ async function takeOccupancySnapshotHelper(customDate?: string) {
     date: dateStr,
     hospitalData,
     previousHospitalData,
-    cumulativeEntries,
+    cumulativeEntries: effectiveEntries,
     cumulativeDialysis,
     cumulativeDebts,
     cumulativeInsuredDebts,
@@ -8481,13 +8459,17 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     }
   }
 
-  if (!reqDate || reqDate === 'current' || reqDate === 'today') {
-    const cairo = getCairoDateTime();
-    const cairoTodayStr = cairo.dateStr;
+  const cairo = getCairoDateTime();
+  const cairoTodayStr = cairo.dateStr;
+  const cleanDate = reqDate ? String(reqDate).trim() : cairoTodayStr;
+  const isRequestingToday = (!reqDate || cleanDate === 'current' || cleanDate === 'today' || cleanDate === cairoTodayStr);
+  const isTodayClosed = (lastEgyptianAutoResetDate === cairoTodayStr);
 
+  // If requesting today and today has NOT been closed/archived by the 23:59 rollover, ALWAYS serve live in-memory state!
+  if (isRequestingToday && !isTodayClosed) {
     const cleanDisc = (cumulativeDischarged || []).filter(p => {
       const dDate = p.dischargeDate || p.date;
-      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate)) : false;
+      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate)) : true;
     });
     const autoList = cleanDisc.filter(p => 
       p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
@@ -8495,15 +8477,27 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     const manualList = cleanDisc.filter(p => 
       p.dischargeType === 'manual' || isManuallyDischarged(p.name)
     );
-    const cleanDial = (cumulativeDialysis || []).filter(p => {
-      const dDate = p.date || p.admissionDate;
-      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoTodayStr)) : true;
-    });
-    const cleanEntries = (cumulativeEntries || []).filter(p => {
-      const dDate = p.date || p.rawDate;
-      return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate) || isToday((dDate || "").split(" ")[0], cairoTodayStr)) : false;
-    });
     const activeManualNames = manualList.map(p => p.name);
+
+    // Admissions: effectiveEntries from cumulativeEntries or raw patients admitted today
+    const rawActive = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
+    const activeEntriesToday = rawActive.filter(p => 
+      isToday(p.date, cairoTodayStr) || isToday(p.rawDate, cairoTodayStr)
+    );
+    const allEntries = [...(cumulativeEntries || []), ...activeEntriesToday];
+    const uniqueEntries: any[] = [];
+    allEntries.forEach(p => {
+      if (!uniqueEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+        uniqueEntries.push(p);
+      }
+    });
+
+    const cleanDial = (cumulativeDialysis || []).filter(dialPt => {
+      if (!dialPt) return false;
+      const r = String(dialPt.room || "").trim().toLowerCase();
+      if (r.includes("323")) return false;
+      return true;
+    });
 
     // Transfers strictly belonging to today's Cairo calendar date
     const cleanTransfers = (cumulativeTransfers || []).filter(t => {
@@ -8519,7 +8513,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       automaticallyDischarged: autoList,
       manuallyDischarged: manualList,
       manuallyDischargedNames: activeManualNames,
-      cumulativeEntries: cleanEntries,
+      cumulativeEntries: uniqueEntries,
       cumulativeDialysis: cleanDial,
       cumulativeDebts,
       cumulativeInsuredDebts,
@@ -8528,12 +8522,12 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       cumulativeLOS,
       cumulativeTransfers: cleanTransfers,
       vipCasesText,
-      dateLabel: cairo.dateStr,
-      isHistorical: false
+      dateLabel: cairoTodayStr,
+      isHistorical: false,
+      found: !!(hospitalData && hospitalData.length > 0)
     };
   }
 
-  const cleanDate = String(reqDate).trim();
   const snapshot = await getOccupancySnapshot(cleanDate);
   if (snapshot && snapshot.hospitalData) {
     const rawDisc = snapshot.cumulativeDischarged || [];
@@ -8562,44 +8556,8 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       cumulativeTransfers: snapshot.cumulativeTransfers || [],
       vipCasesText: snapshot.vipCasesText || vipCasesText || "",
       dateLabel: cleanDate,
-      isHistorical: true
-    };
-  }
-
-  // If requested date is today's Cairo date and live data exists
-  const cairoToday = getCairoDateTime().dateStr;
-  if (cleanDate === cairoToday) {
-    const autoList = (cumulativeDischarged || []).filter(p => 
-      p.dischargeType !== 'manual' && !isManuallyDischarged(p.name)
-    );
-    const manualList = (cumulativeDischarged || []).filter(p => 
-      p.dischargeType === 'manual' || isManuallyDischarged(p.name)
-    );
-    const cleanTransfersToday = (cumulativeTransfers || []).filter(t => {
-      const tDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : null);
-      if (!tDate) return false;
-      return isToday(tDate, cairoToday) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairoToday);
-    });
-
-    return {
-      hospitalData,
-      previousHospitalData,
-      cumulativeDischarged,
-      automaticallyDischarged: autoList,
-      manuallyDischarged: manualList,
-      manuallyDischargedNames,
-      cumulativeEntries,
-      cumulativeDialysis,
-      cumulativeDebts,
-      cumulativeInsuredDebts,
-      cumulativeMedicalPlans,
-      cumulativeCompanionStatus,
-      cumulativeLOS,
-      cumulativeTransfers: cleanTransfersToday,
-      vipCasesText,
-      dateLabel: cleanDate,
-      isHistorical: false,
-      found: !!(hospitalData && hospitalData.length > 0)
+      isHistorical: true,
+      found: true
     };
   }
 
@@ -8784,6 +8742,22 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
       }
     }
 
+    // 2.5. Record official daily census for cumulative (MTD) bed & OR occupancy
+    try {
+      const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+      if (occRows && occRows.length > 3) {
+        await cumulativeOccupancy.recordBedCensus(targetDate, occRows, 'rollover');
+      }
+      await cumulativeOccupancy.recordORCensus(targetDate, cumulativeORList || [], 'rollover');
+
+      if (isLastDayOfMonth(targetDate)) {
+        await cumulativeOccupancy.finalizeMonth(targetDate.slice(0, 7));
+      }
+      await cumulativeOccupancy.finalizeOverdueMonths(targetDate);
+    } catch (censusErr) {
+      console.error(`[Daily Rollover] Notice recording cumulative daily census for ${targetDate}:`, censusErr);
+    }
+
     // 3. Reset daily datasets (discharges, dialysis, transfers, OR list, entries, and transient text)
     cumulativeDischarged = [];
     manuallyDischargedNames = [];
@@ -8840,15 +8814,10 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
       console.warn('[Daily Rollover] Notice clearing state/or_list in database:', orClearErr);
     }
 
-    // 8. Establish clean baseline occupancy snapshot for the incoming new day immediately
-    if (hospitalData && hospitalData.length > 0) {
-      try {
-        await takeOccupancySnapshotHelper(newDayDateStr);
-        console.log(`[Daily Rollover] Baseline occupancy snapshot established immediately for new day ${newDayDateStr}.`);
-      } catch (baselineErr) {
-        console.error(`[Daily Rollover] Failed to save baseline occupancy snapshot for ${newDayDateStr}:`, baselineErr);
-      }
-    }
+    // 8. New Day Initialization: Do NOT write an empty snapshot file for newDayDateStr here.
+    // Daily snapshots are dynamically built from live operations throughout the new day
+    // and finalized at the next 23:59 rollover or on operational saves.
+    console.log(`[Daily Rollover] New day baseline initialized in memory & database for ${newDayDateStr}.`);
 
     console.log(`[Daily Rollover] Rollover completed successfully for closing date ${targetDate}. Inpatients retained in beds, daily datasets zeroed, baseline established for new day ${newDayDateStr}.`);
     return true;
@@ -8901,18 +8870,15 @@ async function checkEgyptianDailyReset() {
       const d = p.dischargeDate || p.date;
       return d && !isToday(d, cairo.dateStr) && !isToday(d);
     });
-    const hasStaleDialysis = (cumulativeDialysis || []).some(p => {
-      const d = p.date || p.admissionDate;
-      return d && !isToday(d, cairo.dateStr) && !isToday(d);
-    });
-
     if (
-      (hasStaleDischarges || hasStaleDialysis) &&
+      hasStaleDischarges &&
+      activeDate &&
+      activeDate < cairo.dateStr &&
       lastEgyptianAutoResetDate !== cairo.dateStr &&
       lastEgyptianAutoResetDate !== yesterdayDateStr
     ) {
       const rollTargetDate = (activeDate && activeDate < cairo.dateStr) ? activeDate : yesterdayDateStr;
-      console.log(`[Day-Rollover Catch-Up] Found stale daily records from previous day (${rollTargetDate}). Rolling over closing date ${rollTargetDate} into today ${cairo.dateStr}...`);
+      console.log(`[Day-Rollover Catch-Up] Found stale discharges from previous day (${rollTargetDate}). Rolling over closing date ${rollTargetDate} into today ${cairo.dateStr}...`);
       await performDailyRollover(rollTargetDate);
       return;
     }
@@ -9260,6 +9226,8 @@ app.get('/api/history/occupancy/detail', async (req, res) => {
 
     if (ds.isHistorical) {
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400');
+    } else {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 
     res.json({
@@ -9446,6 +9414,135 @@ app.get('/api/history/changelog', async (req, res) => {
   } catch (err: any) {
     console.error('Failed to get changelog entries:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Cumulative (Month-to-Date) Occupancy & OR Endpoints ──────────────────────
+
+/**
+ * GET /api/occupancy/cumulative?month=YYYY-MM
+ * Returns Month-to-date hospital bed occupancy rate, patient-days, and daily trend.
+ */
+app.get('/api/occupancy/cumulative', async (req, res) => {
+  try {
+    const cairo = getCairoDateTime();
+    const currentMonthStr = cairo.dateStr.slice(0, 7);
+    const requestedMonth = req.query.month ? String(req.query.month).trim() : currentMonthStr;
+
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth)) {
+      return res.status(400).json({ error: 'Invalid month format. Expected YYYY-MM' });
+    }
+
+    if (requestedMonth > currentMonthStr) {
+      return res.status(400).json({ error: 'Future month cannot have occupancy data.' });
+    }
+
+    if (!hospitalData) {
+      await loadData();
+    }
+
+    const liveRows = hospitalData ? getOccupancyRows(hospitalData) : null;
+    const isCurrentMonth = requestedMonth === currentMonthStr;
+    const todayStr = isCurrentMonth ? cairo.dateStr : undefined;
+
+    const data = await cumulativeOccupancy.getBedMonthToDate(requestedMonth, liveRows, todayStr);
+    res.json(data);
+  } catch (err: any) {
+    console.error('[API /api/occupancy/cumulative] Error:', err);
+    res.status(500).json({ error: 'Failed to retrieve cumulative bed occupancy: ' + (err?.message || 'Internal error') });
+  }
+});
+
+/**
+ * GET /api/occupancy/cumulative/history?limit=12
+ * Returns finalized past monthly bed summaries.
+ */
+app.get('/api/occupancy/cumulative/history', async (req, res) => {
+  try {
+    const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 12;
+    const limit = (isNaN(rawLimit) || rawLimit < 1 || rawLimit > 36) ? 12 : rawLimit;
+
+    const summaries = await cumulativeOccupancy.getBedHistory(limit);
+    res.json({ summaries });
+  } catch (err: any) {
+    console.error('[API /api/occupancy/cumulative/history] Error:', err);
+    res.status(500).json({ error: 'Failed to retrieve monthly bed history' });
+  }
+});
+
+/**
+ * GET /api/or/cumulative?month=YYYY-MM
+ * Returns Month-to-date OR time utilization, room utilization, and case volume.
+ */
+app.get('/api/or/cumulative', async (req, res) => {
+  try {
+    const cairo = getCairoDateTime();
+    const currentMonthStr = cairo.dateStr.slice(0, 7);
+    const requestedMonth = req.query.month ? String(req.query.month).trim() : currentMonthStr;
+
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth)) {
+      return res.status(400).json({ error: 'Invalid month format. Expected YYYY-MM' });
+    }
+
+    if (requestedMonth > currentMonthStr) {
+      return res.status(400).json({ error: 'Future month cannot have OR data.' });
+    }
+
+    if (!cumulativeORList || cumulativeORList.length === 0) {
+      await loadData();
+    }
+
+    const isCurrentMonth = requestedMonth === currentMonthStr;
+    const todayStr = isCurrentMonth ? cairo.dateStr : undefined;
+
+    const data = await cumulativeOccupancy.getORMonthToDate(requestedMonth, cumulativeORList, todayStr);
+    res.json(data);
+  } catch (err: any) {
+    console.error('[API /api/or/cumulative] Error:', err);
+    res.status(500).json({ error: 'Failed to retrieve cumulative OR utilization: ' + (err?.message || 'Internal error') });
+  }
+});
+
+/**
+ * GET /api/or/cumulative/history?limit=12
+ * Returns finalized past monthly OR summaries.
+ */
+app.get('/api/or/cumulative/history', async (req, res) => {
+  try {
+    const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 12;
+    const limit = (isNaN(rawLimit) || rawLimit < 1 || rawLimit > 36) ? 12 : rawLimit;
+
+    const summaries = await cumulativeOccupancy.getORHistory(limit);
+    res.json({ summaries });
+  } catch (err: any) {
+    console.error('[API /api/or/cumulative/history] Error:', err);
+    res.status(500).json({ error: 'Failed to retrieve monthly OR history' });
+  }
+});
+
+/**
+ * POST /api/cumulative/backfill
+ * Backfills a month from historical snapshots on disk or Supabase.
+ */
+app.post('/api/cumulative/backfill', async (req, res) => {
+  try {
+    const cairo = getCairoDateTime();
+    const targetMonth = req.body?.month ? String(req.body.month).trim() : cairo.dateStr.slice(0, 7);
+    const force = req.body?.force === true;
+
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth)) {
+      return res.status(400).json({ error: 'Invalid month format. Expected YYYY-MM' });
+    }
+
+    const result = await cumulativeOccupancy.backfillMonth(targetMonth, force);
+    res.json({
+      success: true,
+      month: targetMonth,
+      ...result,
+    });
+  } catch (err: any) {
+    console.error('[API /api/cumulative/backfill] Error:', err);
+    res.status(500).json({ error: 'Failed to execute backfill: ' + (err?.message || 'Internal error') });
   }
 });
 

@@ -354,6 +354,44 @@ export function calculateStats(patients: PatientRow[]): ZoneStats[] {
   }));
 }
 
+export const CLOSED_UNIT_ZONES = ["ICU & VIP", "NICU", "PICU", "SICU", "CCU"];
+
+export function excludeNonStatRooms(patients: PatientRow[]): PatientRow[] {
+  return patients.filter(p => {
+    const num = parseInt(p.room.trim().toUpperCase().match(/\d+/)?.at(0) || "0", 10);
+    return num !== 108;
+  });
+}
+
+export interface OccupancyCensusResult {
+  inpatientOccupied: number;
+  inpatientCapacity: number;
+  totalOccupied: number;
+  totalCapacity: number;
+  zones: ZoneStats[];
+}
+
+export function computeOccupancyCensus(rawRows: any[][]): OccupancyCensusResult {
+  const filtered = filterPatientData(rawRows);
+  const activePatients = excludeNonStatRooms(filtered);
+  const zones = calculateStats(activePatients);
+
+  const totalOccupied = activePatients.length;
+  const totalCapacity = zones.reduce((acc, s) => acc + s.total, 0);
+
+  const inpatientWards = zones.filter(s => !CLOSED_UNIT_ZONES.includes(s.name));
+  const inpatientOccupied = inpatientWards.reduce((acc, s) => acc + s.occupied, 0);
+  const inpatientCapacity = inpatientWards.reduce((acc, s) => acc + s.total, 0);
+
+  return {
+    inpatientOccupied,
+    inpatientCapacity,
+    totalOccupied,
+    totalCapacity,
+    zones
+  };
+}
+
 export function isCashPayment(payment: string): boolean {
   if (!payment) return false;
   const p = payment.toString().toLowerCase().trim();

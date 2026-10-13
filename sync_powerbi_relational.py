@@ -760,9 +760,63 @@ POWERBI_PAYLOAD_DICT: Final[dict[str, Any]] = {
                                     ],
                                     "OrderBy": [{"Direction": 2, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DischargeExpectedDate"}}}]
                                 },
-                                "Binding": {"Primary": {"Groupings": [{"Projections": list(range(42)), "Subtotal": 0}]}},
-                                "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
-                                "Version": 1
+                                "Binding": {
+                                    "Primary": {"Groupings": [{"Projections": list(range(42)), "Subtotal": 0}]},
+                                    "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
+                                    "Version": 1
+                                }
+                            }
+                        },
+                        {
+                            "ExportDataCommand": {
+                                "Columns": [
+                                    {"QueryName": "BedoCCupancy_Soussi.AdmissionDate", "Name": "AdmissionDate"},
+                                    {"QueryName": "BedoCCupancy_Soussi.BedName_EN", "Name": "Bed#"},
+                                    {"QueryName": "BedoCCupancy_Soussi.EnglishFullName", "Name": "Patient"},
+                                    {"QueryName": "BedoCCupancy_Soussi.FinancialStatusGUID", "Name": "Financial Status"},
+                                    {"QueryName": "BedoCCupancy_Soussi.FloorName_EN", "Name": "Floor Name"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Notes", "Name": "Notes"},
+                                    {"QueryName": "Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)", "Name": "Age"},
+                                    {"QueryName": "BedoCCupancy_Soussi.PatientBarcode", "Name": "MRN"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Count of Companions", "Name": "Companions #"},
+                                    {"QueryName": "BedoCCupancy_Soussi.PaymentBy", "Name": "PaymentBy"},
+                                    {"QueryName": "BedoCCupancy_Soussi.VisitTypeGUID", "Name": "Visit"},
+                                    {"QueryName": "BedoCCupancy_Soussi.ContractorName", "Name": "ContractorName"},
+                                    {"QueryName": "BedoCCupancy_Soussi.FloorStructureName_EN", "Name": "FloorStructureName_EN"},
+                                    {"QueryName": "BedoCCupancy_Soussi.DRG", "Name": "DRG"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Expr1", "Name": "Created by DIG"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Expr3", "Name": "DRG Diagnosis"},
+                                    {"QueryName": "Sum(BedoCCupancy_Soussi.LOS)", "Name": "LOS"},
+                                    {"QueryName": "BedoCCupancy_Soussi.GeometricMeanLOS", "Name": "GLOS"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Speciality", "Name": "Speciality"},
+                                    {"QueryName": "BedoCCupancy_Soussi.NewPatients", "Name": "Date Of Patients"},
+                                    {"QueryName": "BedoCCupancy_Soussi.ALOS", "Name": "ALOS"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Name", "Name": "ICD-10 Diagnosis"},
+                                    {"QueryName": "Sum(BedoCCupancy_Soussi.Payments)", "Name": "Sum of Payments"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Weight", "Name": "Weight"},
+                                    {"QueryName": "Sum(BedoCCupancy_Soussi.Difference)", "Name": "Remaining"},
+                                    {"QueryName": "Sum(BedoCCupancy_Soussi.FTotal)", "Name": "Sum of FTotal"},
+                                    {"QueryName": "BedoCCupancy_Soussi.1", "Name": "SSO"},
+                                    {"QueryName": "BedoCCupancy_Soussi.2", "Name": "LTC Weight"},
+                                    {"QueryName": "BedoCCupancy_Soussi.3", "Name": "LTC GLOS"},
+                                    {"QueryName": "BedoCCupancy_Soussi.PrograssNotes", "Name": "Handover"},
+                                    {"QueryName": "BedoCCupancy_Soussi.OR Notes", "Name": "OR Notes"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Operations", "Name": "Operations"},
+                                    {"QueryName": "BedoCCupancy_Soussi.DefaultMobile", "Name": "DefaultMobile"},
+                                    {"QueryName": "BedoCCupancy_Soussi.TreatingPhysicianName", "Name": "TreatingPhysicianName"},
+                                    {"QueryName": "BedoCCupancy_Soussi.PrograssNotes Creation Date", "Name": "PrograssNotes Creation Date"},
+                                    {"QueryName": "BedoCCupancy_Soussi.DischargeExpectedDate", "Name": "DischargeExpectedDate"},
+                                    {"QueryName": "BedoCCupancy_Soussi.Hand Over", "Name": "Prograssnotes"},
+                                    {"QueryName": "BedoCCupancy_Soussi.EliteALOS", "Name": "EliteALOS"},
+                                    {"QueryName": "BedoCCupancy_Soussi.EliteWeight", "Name": "EliteWeight"},
+                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.Medication Names", "Name": "Medication Names"},
+                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.IntialAssessment", "Name": "IntialAssessment"},
+                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.VTE Summary", "Name": "VTE Summary"}
+                                ],
+                                "Ordering": [
+                                    0, 1, 7, 2, 32, 3, 6, 4, 5, 8, 10, 9, 11, 12, 21, 13, 14, 15, 16, 17, 20, 23, 33, 18, 19, 25, 22, 24, 26, 27, 28, 35, 34, 29, 36, 30, 31, 37, 38, 39, 40, 41
+                                ],
+                                "FiltersDescription": "No filters applied"
                             }
                         }
                     ]
@@ -797,7 +851,13 @@ def fetch_powerbi_and_sync() -> bool:
                 auth=auth,
                 timeout=25
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as http_err:
+                server_detail = response.text.strip()
+                if server_detail:
+                    log(f"Power BI API response body: {server_detail[:500]}", level="error")
+                raise
 
             df = pd.read_excel(io.BytesIO(response.content))
             if df.empty:

@@ -38,7 +38,8 @@ import {
   Radio,
   Timer,
   Sparkles,
-  AlertTriangle
+  AlertTriangle,
+  TrendingUp
 } from 'lucide-react';
 import { 
   supabase, 
@@ -74,7 +75,9 @@ import {
   extractDischargedPatients,
   getAccommodationCategory,
   isOperatingRoom,
-  isPatientOnORList
+  isPatientOnORList,
+  CLOSED_UNIT_ZONES,
+  excludeNonStatRooms
 } from './logic/occupancy.ts';
 const PatientTransfersTable = React.lazy(() => import('./components/PatientTransfersTable').then(m => ({ default: m.PatientTransfersTable })));
 const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
@@ -92,6 +95,9 @@ import { ErrorBanner } from './components/ui/ErrorBanner';
 import { TableSkeleton } from './components/ui/TableSkeleton';
 import { useToast } from './context/ToastContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { useCumulativeBeds, useCumulativeOR } from './hooks/useCumulativeOccupancy';
+import { CumulativeOccupancyPanel } from './components/CumulativeOccupancyPanel';
+import { CumulativeORPanel } from './components/CumulativeORPanel';
 
 interface AutoFetchCountdownBadgeProps {
   rate: string;
@@ -476,6 +482,9 @@ export default function App() {
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
   const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
   const [orHistoryRefreshKey, setOrHistoryRefreshKey] = useState<number>(0);
+
+  const { data: cumulativeBedData, loading: cumulativeBedLoading, error: cumulativeBedError } = useCumulativeBeds(undefined, occupancyHistoryRefreshKey);
+  const { data: cumulativeORData, loading: cumulativeORLoading, error: cumulativeORError } = useCumulativeOR(undefined, orHistoryRefreshKey);
 
   const lastDbTimestampRef = useRef<string | null>(null);
   const realtimeDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -2517,10 +2526,7 @@ export default function App() {
   };
 
   const activeStatsPatients = useMemo(() => {
-    return patients.filter(p => {
-      const num = parseInt(p.room.trim().toUpperCase().match(/\d+/)?.at(0) || "0");
-      return num !== 108;
-    });
+    return excludeNonStatRooms(patients);
   }, [patients]);
 
   const stats = useMemo(() => calculateStats(activeStatsPatients), [activeStatsPatients]);
@@ -2644,9 +2650,8 @@ export default function App() {
   const totalSlots = stats.reduce((acc, s) => acc + s.total, 0);
   const totalOccupancyRate = totalSlots > 0 ? ((totalOccupied / totalSlots) * 100).toFixed(1) : '0';
 
-  const closedUnitZoneNames = ["ICU & VIP", "NICU", "PICU", "SICU", "CCU"];
   const inpatientWardStats = useMemo(() => {
-    return stats.filter(s => !closedUnitZoneNames.includes(s.name));
+    return stats.filter(s => !CLOSED_UNIT_ZONES.includes(s.name));
   }, [stats]);
 
   const inpatientOccupied = useMemo(() => {
@@ -3383,7 +3388,7 @@ export default function App() {
                   <>
 
                 {/* Metrics Bar */}
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10 gap-4 shrink-0">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 shrink-0">
                   <StatCard label="Total Occupied" value={`${totalOccupied} / ${totalSlots}`} subValue="Active patient beds" icon={<Users className="text-indigo-600" />} />
                   <StatCard label="Cash Cases" value={`${cashCount}`} subValue="Self-pay mode" icon={<CreditCard className="text-teal-600" />} color="teal" />
                   <StatCard label="Insured Cases" value={`${insuredCount}`} subValue="Insurance covered" icon={<ShieldCheck className="text-[#0284c7]" />} color="sky" />
@@ -3411,6 +3416,14 @@ export default function App() {
                     color="teal" 
                     highlighted={true}
                   />
+                  <StatCard 
+                    label="Cumulative Occupancy" 
+                    value={cumulativeBedData ? `${cumulativeBedData.inpatient.rate.toFixed(1)}%` : '—'} 
+                    subValue={cumulativeBedData ? `MTD · ${cumulativeBedData.inpatient.patientDays.toLocaleString()} pt-days · Tot ${cumulativeBedData.total.rate.toFixed(1)}%` : 'Month-to-Date Rate'} 
+                    icon={<TrendingUp className="text-emerald-700" />} 
+                    color="emerald" 
+                    highlighted={true}
+                  />
                   <StatCard label="Critical Zones" value={`${criticalZonesCount}`} subValue="> 80% capacity" icon={<AlertCircle className="text-amber-600" />} color="amber" />
                   <StatCard 
                     label="VIP Cases" 
@@ -3430,6 +3443,13 @@ export default function App() {
                     onCopy={copyExceedingALOSPatients}
                   />
                 </div>
+
+                {/* Cumulative Occupancy Analytics Drawer */}
+                <CumulativeOccupancyPanel
+                  data={cumulativeBedData}
+                  loading={cumulativeBedLoading}
+                  error={cumulativeBedError}
+                />
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                   <div className="lg:col-span-2 space-y-8">
@@ -3812,7 +3832,7 @@ export default function App() {
                         })()}
 
                         {/* Stats Section with elegant cards */}
-                        <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                           <StatCard 
                             label=" Formal TOTAL OR List" 
                             value={`${orStats.total}`} 
@@ -3849,6 +3869,22 @@ export default function App() {
                             color="teal" 
                           />
                           <StatCard 
+                            label="Cumulative OR Time Use" 
+                            value={cumulativeORData ? `${cumulativeORData.timeUtilization.toFixed(1)}%` : '—'} 
+                            subValue={cumulativeORData ? `MTD 24h · ${Math.round(cumulativeORData.bookedMinutes / 60)}h booked · ${cumulativeORData.daysRecorded}/${cumulativeORData.daysInMonth}d` : 'Month-to-Date 24h'} 
+                            icon={<Clock className="text-indigo-600" />} 
+                            color="indigo" 
+                            highlighted={true}
+                          />
+                          <StatCard 
+                            label="Cumulative OR Room Use" 
+                            value={cumulativeORData ? `${cumulativeORData.roomUtilization.toFixed(1)}%` : '—'} 
+                            subValue={cumulativeORData ? `MTD · ${cumulativeORData.casesTotal} cases · DC ${cumulativeORData.dcCount} / HC ${cumulativeORData.hcCount}` : 'Theatres utilized MTD'} 
+                            icon={<Building2 className="text-purple-600" />} 
+                            color="purple" 
+                            highlighted={true}
+                          />
+                          <StatCard 
                             label="Discharged OR Patients" 
                             value={`${orStats.dischargedCount}`} 
                             subValue="Discharged OR Patients" 
@@ -3870,6 +3906,13 @@ export default function App() {
                             color="orange" 
                           />
                         </div>
+
+                        {/* Cumulative OR Utilization Analytics Drawer */}
+                        <CumulativeORPanel
+                          data={cumulativeORData}
+                          loading={cumulativeORLoading}
+                          error={cumulativeORError}
+                        />
 
                         {/* Downloadable Sheet Buttons Container just under Stats squares */}
                         <div className="bg-white/60 backdrop-blur-md p-4 rounded-2xl border border-white/40 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
