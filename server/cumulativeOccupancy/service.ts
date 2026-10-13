@@ -181,10 +181,17 @@ export class CumulativeOccupancyService {
 
     try {
       const storedBeds = await getDailyBedCensusForMonth(monthStr);
-      const existingBedDates = new Set(storedBeds.map(b => b.date));
+      // Valid records that are not corrupted (totalOccupied > 0 while inpatientOccupied == 0)
+      const existingBedDates = force
+        ? new Set<string>()
+        : new Set(
+            storedBeds
+              .filter(b => b.inpatientOccupied > 0 || (b.totalOccupied === 0 && b.inpatientOccupied === 0))
+              .map(b => b.date)
+          );
 
       const storedOR = await getDailyORCensusForMonth(monthStr);
-      const existingORDates = new Set(storedOR.map(o => o.date));
+      const existingORDates = force ? new Set<string>() : new Set(storedOR.map(o => o.date));
 
       const dates = listMonthDates(monthStr);
 
@@ -238,12 +245,14 @@ export class CumulativeOccupancyService {
     liveRows?: any[][] | null,
     todayDateStr?: string
   ) {
-    // If not yet backfilled in this process, trigger backfill in background
-    if (!backfilledMonths.has(monthStr)) {
-      this.backfillMonth(monthStr).catch(() => {});
-    }
+    let storedDays = await getDailyBedCensusForMonth(monthStr);
+    const hasCorruptDays = storedDays.some(b => b.totalOccupied > 0 && b.inpatientOccupied === 0);
 
-    const storedDays = await getDailyBedCensusForMonth(monthStr);
+    // If not yet backfilled in this process or has corrupted 0-inpatient days, run backfill
+    if (!backfilledMonths.has(monthStr) || hasCorruptDays) {
+      await this.backfillMonth(monthStr, hasCorruptDays);
+      storedDays = await getDailyBedCensusForMonth(monthStr);
+    }
 
     let provisional: DailyBedCensus | null = null;
     if (

@@ -91,7 +91,8 @@ export function isProcedureOrTemporaryRoom(room: string): boolean {
   return isOperatingRoom(room) ||
          isOrXRoom(room) ||
          isDialysisRoom(room) ||
-         low.includes("er") ||
+         /\b(er|ed)\b/i.test(low) ||
+         low.includes("emergency") ||
          low.includes("طوارئ") ||
          low.includes("cath") ||
          low.includes("قسطرة") ||

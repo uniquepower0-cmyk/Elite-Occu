@@ -1395,13 +1395,35 @@ function isProcedureOrTemporaryRoom(room: string): boolean {
          low.includes("dialysis") ||
          low.includes("diyalsis") ||
          low.includes("endoscopy") ||
-         low.includes("recovery");
+         low.includes("recovery") ||
+         /\b(er|ed)\b/i.test(low) ||
+         low.includes("طوارئ") ||
+         low.includes("emergency");
 }
 
 function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }[] {
   if (!data || !Array.isArray(data)) return [];
   let startIdx = 0;
+  let headerBedIdx = -1;
+  let headerMrnIdx = -1;
+  let headerNameIdx = -1;
+  let headerDateIdx = -1;
+  let headerPhysicianIdx = -1;
+  let headerContractorIdx = -1;
+
   for (let i = 0; i < Math.min(data.length, 10); i++) {
+    const r = data[i];
+    if (Array.isArray(r)) {
+      r.forEach((cell, idx) => {
+        const c = String(cell || "").toLowerCase().trim();
+        if (c === "bed#" || c === "bed" || c === "room" || c === "الغرفة" || c === "غرفة" || c === "السرير" || c === "سرير") headerBedIdx = idx;
+        if (c === "mrn" || c === "patientbarcode" || c === "patient id" || c === "رقم المريض" || c === "الملف") headerMrnIdx = idx;
+        if (c === "patient" || c === "englishfullname" || c === "patient name" || c === "المريض" || c === "اسم المريض" || c === "الاسم") headerNameIdx = idx;
+        if (c === "admissiondate" || c === "admission date" || c === "تاريخ الدخول" || c === "التاريخ") headerDateIdx = idx;
+        if (c === "treatingphysicianname" || c === "physician" || c === "consultantname_en" || c === "الطبيب" || c === "الطبيب المعالج") headerPhysicianIdx = idx;
+        if (c === "contractorname" || c === "contractor" || c === "جهة التعاقد" || c === "الجهة") headerContractorIdx = idx;
+      });
+    }
     const r0 = String(data[i][0] || "").toLowerCase();
     const r1 = String(data[i][1] || "").toLowerCase();
     const r3 = String(data[i][3] || "").toLowerCase();
@@ -1425,12 +1447,19 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
 
     // Detect layout: 39-column unified format vs 5/6-column formatted occupancy
     if (r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))))) {
-      rawDateStr = String(r[0] || "").trim();
-      rawRoom = cleanRoomStr(String(r[1] || "").trim());
-      rawMrn = String(r[2] || "").trim().replace(/^0+/, "");
-      rawName = String(r[3] || "").trim();
-      rawContractor = String(r[12] || "").trim();
-      rawPhysician = String(r[22] || "").trim();
+      const bedCol = headerBedIdx >= 0 ? headerBedIdx : 1;
+      const mrnCol = headerMrnIdx >= 0 ? headerMrnIdx : 2;
+      const nameCol = headerNameIdx >= 0 ? headerNameIdx : 3;
+      const dateCol = headerDateIdx >= 0 ? headerDateIdx : 0;
+      const physCol = headerPhysicianIdx >= 0 ? headerPhysicianIdx : 22;
+      const contCol = headerContractorIdx >= 0 ? headerContractorIdx : 12;
+
+      rawDateStr = String(r[dateCol] || "").trim();
+      rawRoom = cleanRoomStr(String(r[bedCol] || "").trim());
+      rawMrn = String(r[mrnCol] || "").trim().replace(/^0+/, "");
+      rawName = String(r[nameCol] || "").trim();
+      rawContractor = String(r[contCol] || "").trim();
+      rawPhysician = String(r[physCol] || "").trim();
     } else {
       rawRoom = cleanRoomStr(String(r[0] || "").trim());
       rawName = String(r[1] || "").trim();
@@ -1438,6 +1467,14 @@ function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string;
       rawContractor = String(r[3] || "").trim();
       rawDateStr = String(r[4] || "").trim();
       rawMrn = String(r[5] || "").trim().replace(/^0+/, "");
+    }
+
+    // Heuristic inversion safeguard:
+    // If rawMrn contains Arabic characters and rawName contains digits or is empty, swap them
+    if (/[\u0600-\u06FF]/.test(rawMrn) && (/^\d+$/.test(rawName.replace(/^0+/, '')) || !rawName)) {
+      const temp = rawMrn;
+      rawMrn = rawName.replace(/^0+/, '');
+      rawName = temp;
     }
 
     const cleanDate = cleanAdmissionDateStr(rawDateStr);
@@ -4406,22 +4443,29 @@ async function syncTransfersToRelationalSchema(transfers: any[]) {
       notes: string;
     }> = [];
 
-    // Filter valid transfer candidates (last 50)
+    // Filter valid transfer candidates (last 50 patients, capturing all journey steps)
     for (const t of transfers.slice(0, 50)) {
-      const lastStep = Array.isArray(t.history) && t.history.length > 0 ? t.history[t.history.length - 1] : null;
-      const fromRoom = lastStep ? lastStep.fromRoom : (t.initialRoom || t.fromRoom || '');
-      const toRoom = lastStep ? lastStep.toRoom : (t.currentRoom || t.toRoom || '');
-      if (!toRoom || !fromRoom || fromRoom === toRoom) continue;
-
       const mrn = t.mrn ? String(t.mrn).replace(/^0+/, '') : null;
       const patName = t.patientName || t.name || null;
-      candidates.push({
-        fromRoom,
-        toRoom,
-        mrn,
-        patName,
-        notes: t.notes || `Moved from ${fromRoom} to ${toRoom}`
-      });
+
+      const steps: Array<{ fromRoom: string; toRoom: string; notes?: string }> = 
+        Array.isArray(t.history) && t.history.length > 0
+          ? t.history
+          : [{ fromRoom: t.initialRoom || t.fromRoom || '', toRoom: t.currentRoom || t.toRoom || '', notes: t.notes }];
+
+      for (const step of steps) {
+        const fromRoom = String(step.fromRoom || '').trim();
+        const toRoom = String(step.toRoom || '').trim();
+        if (!toRoom || !fromRoom || fromRoom === toRoom) continue;
+
+        candidates.push({
+          fromRoom,
+          toRoom,
+          mrn,
+          patName,
+          notes: step.notes || t.notes || `Moved from ${fromRoom} to ${toRoom}`
+        });
+      }
     }
 
     if (candidates.length === 0) return;
@@ -10121,20 +10165,17 @@ app.post('/api/transfers/sync-from-occupancy', async (req, res) => {
     }
 
     // Populate registry with previous baseline if registry was empty
-    const baselineRows = getOccupancyRows(sourceData).slice(3);
-    for (const r of baselineRows) {
-      const room = String(r[0] || '').trim();
-      const name = String(r[1] || '').trim();
-      const doctor = String(r[2] || '').trim();
-      const contractor = String(r[3] || '').trim();
-      if (name && room) {
-        const normKey = normalizeArabicName(name);
+    const baselinePatients = extractRawPatientsFromRows(sourceData);
+    for (const p of baselinePatients) {
+      if (p.name && p.room) {
+        const normKey = p.mrn ? `mrn:${p.mrn}` : `name:${normalizeArabicName(p.name)}`;
         if (!patientRoomRegistry[normKey]) {
           patientRoomRegistry[normKey] = {
-            name,
-            lastRoom: room,
-            physician: doctor,
-            contractor,
+            name: p.name,
+            mrn: p.mrn,
+            lastRoom: p.room,
+            physician: p.physician || '',
+            contractor: p.contractor || '',
             date: sourceDateStr || getCairoDateTime().dateStr
           };
         }
@@ -10142,13 +10183,7 @@ app.post('/api/transfers/sync-from-occupancy', async (req, res) => {
     }
 
     // Now process current hospitalData patients against registry
-    const currentRows = getOccupancyRows(hospitalData).slice(3);
-    const currentPatients = currentRows.map((r: any) => ({
-      room: String(r[0] || '').trim(),
-      name: String(r[1] || '').trim(),
-      doctor: String(r[2] || '').trim(),
-      contractor: String(r[3] || '').trim()
-    })).filter((p: any) => p.name && p.room);
+    const currentPatients = extractRawPatientsFromRows(hospitalData);
 
     const cairo = getCairoDateTime();
     const transfersModified = processPatientTransfers(currentPatients, cairo.dateStr);

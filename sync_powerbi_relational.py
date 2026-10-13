@@ -1121,19 +1121,53 @@ def fetch_powerbi_and_sync() -> bool:
                 # Patient Transfer Detection
                 prev_rooms: dict[str, dict[str, Any]] = {}
                 for r in (existing.get("occupancy_current") or []):
+                    b, m, n = "", "", ""
+                    physician, contractor = "", ""
                     if isinstance(r, dict):
                         b = str(r.get("Unnamed: 1") or "").strip()
-                        m = str(r.get("Unnamed: 2") or "").strip().lstrip("0")
-                        n = str(r.get("Unnamed: 3") or "").strip()
-                        if b and n and b.lower() != "bed":
-                            key = m if m else n.lower()
-                            prev_rooms[key] = {"room": b, "physician": str(r.get("Unnamed: 22") or "").strip(), "contractor": str(r.get("Unnamed: 12") or "").strip()}
+                        cell2 = str(r.get("Unnamed: 2") or "").strip()
+                        cell3 = str(r.get("Unnamed: 3") or "").strip()
+                        if any("\u0600" <= ch <= "\u06FF" for ch in cell2):
+                            n, m = cell2, cell3.lstrip("0")
+                        else:
+                            m, n = cell2.lstrip("0"), cell3
+                        physician = str(r.get("Unnamed: 22") or "").strip()
+                        contractor = str(r.get("Unnamed: 12") or "").strip()
+                    elif isinstance(r, (list, tuple)) and len(r) >= 4:
+                        b = str(r[1] or "").strip()
+                        cell2 = str(r[2] or "").strip()
+                        cell3 = str(r[3] or "").strip()
+                        if any("\u0600" <= ch <= "\u06FF" for ch in cell2):
+                            n, m = cell2, cell3.lstrip("0")
+                        else:
+                            m, n = cell2.lstrip("0"), cell3
+                        physician = str(r[22] if len(r) > 22 else "") or ""
+                        contractor = str(r[12] if len(r) > 12 else "") or ""
+
+                    if b and n and b.lower() not in ("bed", "bed#", "room", "الغرفة", "غرفة", "unnamed: 1"):
+                        norm_n = normalize_arabic_name(n)
+                        key = m if m else norm_n
+                        prev_rooms[key] = {
+                            "room": b,
+                            "mrn": m,
+                            "name": n,
+                            "physician": physician,
+                            "contractor": contractor
+                        }
 
                 cumulative_transfers = list(existing.get("transfers") or [])
                 for rec in active_records:
-                    key = rec.clean_mrn if rec.clean_mrn else rec.name.lower()
-                    if key in prev_rooms:
-                        prev = prev_rooms[key]
+                    norm_rec_name = normalize_arabic_name(rec.name)
+                    key = rec.clean_mrn if rec.clean_mrn else norm_rec_name
+                    matched_prev = prev_rooms.get(key)
+                    if not matched_prev and norm_rec_name:
+                        for pk, pv in prev_rooms.items():
+                            if is_name_match(pv.get("name"), rec.name):
+                                matched_prev = pv
+                                break
+
+                    if matched_prev:
+                        prev = matched_prev
                         prev_r = prev["room"].strip()
                         curr_r = rec.bed.strip()
                         if (
@@ -1146,8 +1180,8 @@ def fetch_powerbi_and_sync() -> bool:
                             existing_rec: Optional[dict[str, Any]] = None
                             for t in cumulative_transfers:
                                 t_mrn = str(t.get("mrn", "")).strip().lstrip("0")
-                                t_name = str(t.get("name", "")).strip().lower()
-                                if (rec.clean_mrn and t_mrn and rec.clean_mrn == t_mrn) or (rec.name.lower() == t_name):
+                                t_name = str(t.get("name", "")).strip()
+                                if (rec.clean_mrn and t_mrn and rec.clean_mrn == t_mrn) or is_name_match(rec.name, t_name):
                                     existing_rec = t
                                     break
 

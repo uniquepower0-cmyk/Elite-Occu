@@ -42,31 +42,87 @@ export interface PatientRow {
   notes?: string;
 }
 
+export function cleanRoomStr(s: string): string {
+  if (!s) return "";
+  return String(s)
+    .toUpperCase()
+    .replace(/ROOM/g, "")
+    .replace(/BED/g, "")
+    .replace(/الغرفة/g, "")
+    .replace(/غرفة/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function filterPatientData(rawData: any[][]): PatientRow[] {
-  // STRICTLY matching Google Apps Script logic:
-  // row[0] (Col A) -> Room/Bed
-  // row[1] (Col B) -> Patient Name
-  // row[2] (Col C) -> Treating Physician
-  // row[3] (Col D) -> Contractor
-  // row[4] (Col E) -> Admission Date
-  
   if (!rawData || rawData.length === 0) return [];
-  
-  // Apps Script starts at row 4 (index 3)
-  const data = rawData.slice(3);
- 
+
+  // Detect header row location (skip up to 5 rows if headers match common column names)
+  let startIdx = 3;
+  for (let i = 0; i < Math.min(rawData.length, 5); i++) {
+    const row = rawData[i];
+    if (!row || !Array.isArray(row)) continue;
+    const r0 = String(row[0] || "").toLowerCase().trim();
+    const r1 = String(row[1] || "").toLowerCase().trim();
+    const r3 = String(row[3] || "").toLowerCase().trim();
+    const isHeaderRow =
+      r0 === "admissiondate" ||
+      r0 === "admission date" ||
+      r0 === "تاريخ الدخول" ||
+      r0.startsWith("admission") ||
+      r1 === "bed#" ||
+      r1 === "bed" ||
+      r1 === "room" ||
+      r1 === "room#" ||
+      r1 === "غرفة" ||
+      r1 === "الغرفة" ||
+      r1 === "patient" ||
+      r1 === "patient name" ||
+      r1 === "المريض" ||
+      r3 === "patient" ||
+      r3 === "patient name" ||
+      r3 === "المريض" ||
+      r3 === "name" ||
+      r3 === "اسم المريض";
+    if (isHeaderRow) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+
+  const data = rawData.slice(startIdx);
+
   return data
     .map((row): PatientRow | null => {
-      if (!row) return null; // Ensure row exists
-      
+      if (!row || !Array.isArray(row)) return null;
+
+      // Detect layout: Raw unified/PowerBI layout (>= 10 cols) vs Formatted occupancy (5-6 cols)
+      const isMultiCol = row.length >= 10;
+      const rawRoom = isMultiCol ? row[1] : row[0];
+      let rawName = isMultiCol ? row[3] : row[1];
+      const rawDoctor = isMultiCol ? row[22] : row[2];
+      const rawPayment = isMultiCol ? row[12] : row[3];
+      const rawDate = isMultiCol ? row[0] : row[4];
+      let rawId = isMultiCol ? row[2] : row[5];
+
+      // Heuristic check: if rawId has Arabic characters and rawName is numeric, swap them
+      if (/[\u0600-\u06FF]/.test(String(rawId || '')) && (/^\d+$/.test(String(rawName || '').replace(/^0+/, '')) || !rawName)) {
+        const tmp = rawId;
+        rawId = rawName;
+        rawName = tmp;
+      }
+
+      const room = cleanRoomStr(String(rawRoom || "").trim());
+      const name = String(rawName || "").trim();
+
       return {
-        room: String(row[0] || "").trim(),
-        id: "", // ID removed from source mapping
-        name: String(row[1] || "").trim(),
-        type: "", 
-        doctor: String(row[2] || "").trim(),
-        payment: String(row[3] || "").trim(),
-        date: String(row[4] || "").trim(),
+        room,
+        id: String(rawId || "").trim(),
+        name,
+        type: "",
+        doctor: String(rawDoctor || "").trim(),
+        payment: String(rawPayment || "").trim(),
+        date: String(rawDate || "").trim(),
         notes: "",
       };
     })
@@ -75,7 +131,17 @@ export function filterPatientData(rawData: any[][]): PatientRow[] {
       const rowValues = [p.room, p.name, p.doctor, p.payment, p.date].filter(Boolean);
       const rowAsString = rowValues.join(" ").toLowerCase();
       const isExcluded = KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
-      const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
+      const lowRoom = p.room.toLowerCase();
+      const lowName = p.name.toLowerCase();
+      const isHeader =
+        lowRoom === "bed" ||
+        lowRoom === "room" ||
+        p.room === "الغرفة" ||
+        p.room === "غرفة" ||
+        lowName === "patient" ||
+        p.name === "المريض" ||
+        lowName === "name" ||
+        p.name === "اسم المريض";
       const isOR = isOperatingRoom(p.room);
       return !isExcluded && !isHeader && !isOR;
     });

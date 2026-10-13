@@ -85,7 +85,8 @@ export function aggregateBedMonth(
 
   let includesProvisional = false;
   if (provisional && provisional.date.startsWith(monthStr)) {
-    if (!daysMap.has(provisional.date)) {
+    const existing = daysMap.get(provisional.date);
+    if (!existing || existing.source === 'provisional') {
       daysMap.set(provisional.date, { ...provisional, source: 'provisional' });
       includesProvisional = true;
     }

@@ -202,7 +202,26 @@ export function extractRawPatientsFromRows(
 ): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }[] {
   if (!data || !Array.isArray(data)) return [];
   let startIdx = 0;
+  let headerBedIdx = -1;
+  let headerMrnIdx = -1;
+  let headerNameIdx = -1;
+  let headerDateIdx = -1;
+  let headerPhysicianIdx = -1;
+  let headerContractorIdx = -1;
+
   for (let i = 0; i < Math.min(data.length, 10); i++) {
+    const r = data[i];
+    if (Array.isArray(r)) {
+      r.forEach((cell, idx) => {
+        const c = String(cell || "").toLowerCase().trim();
+        if (c === "bed#" || c === "bed" || c === "room" || c === "الغرفة" || c === "غرفة" || c === "السرير" || c === "سرير") headerBedIdx = idx;
+        if (c === "mrn" || c === "patientbarcode" || c === "patient id" || c === "رقم المريض" || c === "الملف") headerMrnIdx = idx;
+        if (c === "patient" || c === "englishfullname" || c === "patient name" || c === "المريض" || c === "اسم المريض" || c === "الاسم") headerNameIdx = idx;
+        if (c === "admissiondate" || c === "admission date" || c === "تاريخ الدخول" || c === "التاريخ") headerDateIdx = idx;
+        if (c === "treatingphysicianname" || c === "physician" || c === "consultantname_en" || c === "الطبيب" || c === "الطبيب المعالج") headerPhysicianIdx = idx;
+        if (c === "contractorname" || c === "contractor" || c === "جهة التعاقد" || c === "الجهة") headerContractorIdx = idx;
+      });
+    }
     const r0 = String(data[i][0] || "").toLowerCase();
     const r1 = String(data[i][1] || "").toLowerCase();
     const r3 = String(data[i][3] || "").toLowerCase();
@@ -224,12 +243,19 @@ export function extractRawPatientsFromRows(
 
     // Detect layout: 39-column unified format vs 5/6-column formatted occupancy
     if (r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))))) {
-      rawDateStr = String(r[0] || "").trim();
-      rawRoom = cleanRoomStr(String(r[1] || "").trim());
-      rawMrn = String(r[2] || "").trim().replace(/^0+/, "");
-      rawName = String(r[3] || "").trim();
-      rawContractor = String(r[12] || "").trim();
-      rawPhysician = String(r[22] || "").trim();
+      const bedCol = headerBedIdx >= 0 ? headerBedIdx : 1;
+      const mrnCol = headerMrnIdx >= 0 ? headerMrnIdx : 2;
+      const nameCol = headerNameIdx >= 0 ? headerNameIdx : 3;
+      const dateCol = headerDateIdx >= 0 ? headerDateIdx : 0;
+      const physCol = headerPhysicianIdx >= 0 ? headerPhysicianIdx : 22;
+      const contCol = headerContractorIdx >= 0 ? headerContractorIdx : 12;
+
+      rawDateStr = String(r[dateCol] || "").trim();
+      rawRoom = cleanRoomStr(String(r[bedCol] || "").trim());
+      rawMrn = String(r[mrnCol] || "").trim().replace(/^0+/, "");
+      rawName = String(r[nameCol] || "").trim();
+      rawContractor = String(r[contCol] || "").trim();
+      rawPhysician = String(r[physCol] || "").trim();
     } else {
       rawRoom = cleanRoomStr(String(r[0] || "").trim());
       rawName = String(r[1] || "").trim();
@@ -237,6 +263,14 @@ export function extractRawPatientsFromRows(
       rawContractor = String(r[3] || "").trim();
       rawDateStr = String(r[4] || "").trim();
       rawMrn = String(r[5] || "").trim().replace(/^0+/, "");
+    }
+
+    // Heuristic inversion safeguard:
+    // If rawMrn contains Arabic characters and rawName contains digits or is empty, swap them
+    if (/[\u0600-\u06FF]/.test(rawMrn) && (/^\d+$/.test(rawName.replace(/^0+/, '')) || !rawName)) {
+      const temp = rawMrn;
+      rawMrn = rawName.replace(/^0+/, '');
+      rawName = temp;
     }
 
     const cleanDate = cleanAdmissionDateStr(rawDateStr);

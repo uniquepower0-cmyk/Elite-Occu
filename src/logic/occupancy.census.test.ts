@@ -57,4 +57,38 @@ describe('computeOccupancyCensus & Bed Census Logic', () => {
     expect(icuZone?.occupied).toBe(1);
     expect(CLOSED_UNIT_ZONES).toContain('ICU & VIP');
   });
+
+  it('computes inpatient and total occupancy from raw 42-column hospital data (PowerBI/snapshot format)', () => {
+    const rawMultiCol = [
+      ['No filters applied'],
+      [''],
+      ['AdmissionDate', 'Bed#', 'MRN', 'Patient', 'DefaultMobile', 'Financial Status', 'Age', 'Floor Name', 'Notes', 'Companions #', 'Visit', 'PaymentBy', 'ContractorName', 'FloorStructureName_EN', 'ICD-10 Diagnosis', 'DRG', 'Created by DIG', 'DRG Diagnosis', 'LOS', 'GLOS', 'ALOS', 'Weight', 'TreatingPhysicianName'],
+      // 1st Floor (Room 102)
+      ['10/01/26 10:00', 'Room 102', '123', 'Patient 1', '', 'Cash', '30', '1st Floor', '', '0', '', '', 'Cash', '1st Fl', '', '', '', '', '1', '1', '1', '1', 'Dr. Alpha'],
+      // Zone A (Room 305)
+      ['10/01/26 10:00', 'Room 305', '124', 'Patient 2', '', 'Insured', '45', '3rd Floor', '', '0', '', '', 'Bupa', 'Zone A', '', '', '', '', '1', '1', '1', '1', 'Dr. Beta'],
+      // Zone B (Room 325)
+      ['10/01/26 10:00', 'Room 325', '125', 'Patient 3', '', 'Cash', '50', '3rd Floor', '', '0', '', '', 'Cash', 'Zone B', '', '', '', '', '1', '1', '1', '1', 'Dr. Gamma'],
+      // 4th Floor (Room 415)
+      ['10/01/26 10:00', 'Room 415', '126', 'Patient 4', '', 'Cash', '60', '4th Floor', '', '0', '', '', 'Cash', '4th Fl', '', '', '', '', '1', '1', '1', '1', 'Dr. Delta'],
+      // ICU Room 6 (closed unit)
+      ['10/01/26 10:00', 'ICU Room 6', '127', 'Patient 5', '', 'Insured', '70', '2nd Floor', '', '0', '', '', 'GlobeMed', 'ICU', '', '', '', '', '1', '1', '1', '1', 'Dr. Epsilon'],
+    ];
+
+    const census = computeOccupancyCensus(rawMultiCol);
+
+    // Total occupied: 5 patients
+    expect(census.totalOccupied).toBe(5);
+    expect(census.totalCapacity).toBe(110);
+
+    // Inpatient: Room 102 (1st Fl) + Room 305 (Zone A) + Room 325 (Zone B) + Room 415 (4th Fl) = 4
+    expect(census.inpatientOccupied).toBe(4);
+    expect(census.inpatientCapacity).toBe(68);
+
+    // Verify zone counts
+    const zoneA = census.zones.find(z => z.name === 'Zone A');
+    expect(zoneA?.occupied).toBe(1);
+    const icu = census.zones.find(z => z.name === 'ICU & VIP');
+    expect(icu?.occupied).toBe(1);
+  });
 });
