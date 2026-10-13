@@ -948,6 +948,16 @@ function getOccupancyRows(data: any[][] | null): any[][] {
   }
 
   const body = data.slice(startIdx).map(row => {
+    if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
+      return [
+        String(row[0] || "").trim(),
+        String(row[1] || "").trim(),
+        String(row[2] || "").trim(),
+        String(row[3] || "").trim(),
+        String(row[4] || "").trim(),
+        String(row[5] || "").trim(),
+      ];
+    }
     return [
       String(row[1] || "").trim(),  // Col B -> Col A (Room)
       String(row[3] || "").trim(),  // Col D -> Col B (Patient Name)
@@ -992,6 +1002,16 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
   }
 
   const body = data.slice(startIdx).map(row => {
+    if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
+      return [
+        String(row[0] || "").trim(),
+        String(row[1] || "").trim(),
+        String(row[2] || "").trim(),
+        String(row[3] || "").trim(),
+        String(row[4] || "").trim(),
+        String(row[5] || "").trim(),
+      ];
+    }
     return [
       String(row[1] || "").trim(),  // Col B -> Col A (Room)
       String(row[3] || "").trim(),  // Col D -> Col B (Patient Name)
@@ -1774,6 +1794,237 @@ function sanitizeAndDeduplicateTransfers(): boolean {
   return changed;
 }
 
+function hasCashIndicator(text: string): boolean {
+  const t = (text || "").toLowerCase();
+  return t.includes("cash") || t.includes("كاش") || t.includes("نقدي") || t.includes("نقدى");
+}
+
+function isCashPatient(contractor: string, financialStatus: string): boolean {
+  const c = (contractor || "").toLowerCase().trim();
+  const f = (financialStatus || "").toLowerCase().trim();
+
+  // Consider ANY patient with the word "Cash" / "كاش" included as cash patients
+  if (hasCashIndicator(c) || hasCashIndicator(f)) {
+    return true;
+  }
+
+  // Default cash if contractor is empty/elite/individuals/self and financial status is not corporate/insured
+  if (c === "" || c === "elite" || c === "بدون جهة" || c === "بدون جهه" || c === "عميل" || c === "افراد" || c === "أفراد" || c === "self" || c === "private" || c === "personal") {
+    const isExplicitInsured = f.includes("insured") || f.includes("تأمين") || f.includes("تامين") || f.includes("تعاقد");
+    return !isExplicitInsured;
+  }
+
+  return false;
+}
+
+function isExcludedDebtCase(p: {
+  room: string;
+  patientName: string;
+  financialStatus: string;
+  contractor: string;
+  paymentBy: string;
+  physician?: string;
+  notes?: string;
+}): boolean {
+  if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room)) return true;
+
+  const fLower = (p.financialStatus || "").toLowerCase().trim();
+  const mLower = (p.contractor || "").toLowerCase().trim();
+  const lLower = (p.paymentBy || "").toLowerCase().trim();
+  const nLower = (p.notes || "").toLowerCase().trim();
+  const dLower = (p.patientName || "").toLowerCase().trim();
+  const physLower = (p.physician || "").toLowerCase().trim();
+
+  // Exclude header rows
+  if (dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name") return true;
+
+  // Exclude Home Care
+  if (mLower.includes("home care") || mLower.includes("homecare") || fLower.includes("home care") || fLower.includes("homecare")) return true;
+
+  // 1. Exclude if payment is by physician
+  if (
+    lLower.includes("physician") ||
+    lLower.includes("طبيب") ||
+    lLower.includes("فيزيشن") ||
+    lLower.includes("doctor") ||
+    lLower.includes("دكتور") ||
+    lLower.includes("other ex")
+  ) {
+    return true;
+  }
+
+  // Direct physician/doctor contractor or financial status
+  if (
+    mLower === "طبيب" || mLower === "physician" || mLower === "doctor" || mLower === "دكتور" ||
+    mLower.startsWith("د/") || mLower.startsWith("د.") || mLower.startsWith("dr.") || mLower.startsWith("dr ") ||
+    fLower === "طبيب" || fLower === "physician" || fLower === "doctor" || fLower === "دكتور"
+  ) {
+    return true;
+  }
+
+  // If PaymentBy is specified and NOT the patient/cash, it indicates payment by physician or external party
+  if (lLower && lLower !== "patient" && lLower !== "مريض" && lLower !== "cash" && lLower !== "نقدي" && lLower !== "نقدى" && lLower !== "self") {
+    if (physLower && isNameMatch(lLower, physLower)) {
+      return true;
+    }
+    if (!isNameMatch(lLower, dLower)) {
+      return true;
+    }
+  }
+
+  // Notes or remarks indicating payment by physician
+  if (
+    nLower.includes("حساب الطبيب") || nLower.includes("حساب الدكتور") ||
+    nLower.includes("دفع بواسطة الطبيب") || nLower.includes("على حساب الطبيب") ||
+    nLower.includes("payment by physician") || nLower.includes("paid by doctor") ||
+    nLower.includes("physician payment")
+  ) {
+    return true;
+  }
+
+  // 2. Exclude Doctor Cases / حالات الأطباء
+  const doctorCaseKeywords = [
+    "doctor case", "doctor_case", "doctorcase", "doctor-case",
+    "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
+    "cash doctor", "كاش طبيب", "كاش دكتور",
+    "doctor case surgery",
+    "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
+    "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
+    "خصم دكتور", "خصم طبيب"
+  ];
+  for (const kw of doctorCaseKeywords) {
+    if (lLower.includes(kw) || fLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
+      return true;
+    }
+  }
+
+  // Check for standalone DC / D.C. abbreviation
+  const combined = ` ${lLower} ${fLower} ${mLower} ${nLower} `;
+  if (/\b(dc|d\.c\.|d\.c)\b/i.test(combined)) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractDebtsOnlyFromRows(rows: any[][]) {
+  if (!rows || rows.length < 2) return { cashDebts: [], insuredDebts: [] };
+
+  let startIdx = 3;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const r1 = String(rows[i][1] || "").toLowerCase();
+    const r3 = String(rows[i][3] || "").toLowerCase();
+    if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة") {
+      startIdx = i + 1;
+      break;
+    }
+  }
+
+  const { findCol } = buildColumnIndexResolver(rows);
+
+  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1);
+  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "id", "patient mrn", "رقم المريض", "الملف"], 2);
+  const colNameIdx = findCol(["patient", "englishfullname", "patient name", "name", "المريض", "اسم المريض", "الاسم"], 3);
+  const colAdmIdx = findCol(["admissiondate", "admission date", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0);
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], 22);
+  const colContractorIdx = findCol(["contractorname", "contractor name", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12);
+  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5);
+  const colPaymentByIdx = findCol(["paymentby", "payment by", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11);
+  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8);
+  const colTotalIdx = findCol(["sum of ftotal", "ftotal", "total invoice", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], 25);
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], 27);
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4);
+
+  const rawDebts = rows.slice(startIdx).map(row => {
+    const rawZ = row[colTotalIdx];
+    const rawAB = row[colRemainingIdx];
+    const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
+    const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
+    let mobile = cleanPhoneStr(row[colMobileIdx]);
+    if (!mobile && colMobileIdx !== 4 && row[4]) {
+      const mob4 = cleanPhoneStr(row[4]);
+      if (mob4.length >= 7) mobile = mob4;
+    }
+    if (!mobile && colMobileIdx !== 32 && row[32]) {
+      const mob32 = cleanPhoneStr(row[32]);
+      if (mob32.length >= 7) mobile = mob32;
+    }
+
+    const admDate = cleanAdmissionDateStr(
+      (row[colAdmIdx] !== undefined && row[colAdmIdx] !== null && String(row[colAdmIdx]).trim() !== "") 
+        ? row[colAdmIdx] 
+        : row[0]
+    );
+    const payBy = String(row[colPaymentByIdx] || row[11] || "").trim();
+    const remarks = String(row[colRemarksIdx] || "").trim();
+    const contractorVal = String(row[colContractorIdx] || "").trim();
+    const financialVal = String(row[colFinancialIdx] || "").trim();
+    const physicianVal = String(row[colPhysIdx] || "").trim();
+
+    return {
+      colA: admDate,
+      date: admDate,
+      admissionDate: admDate,
+      room: cleanRoomStr(String(row[colRoomIdx] || "").trim()),
+      mrn: String(row[colMrnIdx] || "").trim(),
+      colD: String(row[colNameIdx] || "").trim(),
+      colF: financialVal,
+      financialStatus: financialVal,
+      colM: contractorVal,
+      contractor: contractorVal,
+      colL: payBy,
+      paymentBy: payBy,
+      notes: remarks,
+      physician: physicianVal,
+      colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
+      colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
+      valZ,
+      valAB,
+      totalInvoice: valZ,
+      remainingAmount: valAB,
+      mobile: mobile || undefined,
+      phone: mobile || undefined
+    };
+  });
+
+  const cashDebts = rawDebts.filter(p => {
+    const isCash = isCashPatient(p.colM, p.colF);
+    if (!isCash) return false;
+
+    // Must not be excluded debt case (doctor cases, payment by physician, OR/procedure room, home care, etc.)
+    const isExcluded = isExcludedDebtCase({
+      room: p.room,
+      patientName: p.colD,
+      financialStatus: p.colF,
+      contractor: p.colM,
+      paymentBy: p.colL,
+      physician: p.physician,
+      notes: p.notes
+    });
+
+    return !isExcluded && p.colD.length > 0 && (p.valAB !== 0 || p.valZ > 0);
+  });
+
+  const insuredDebts = rawDebts.filter(p => {
+    const isCash = isCashPatient(p.colM, p.colF);
+    if (isCash) return false;
+
+    const isExcluded = isExcludedDebtCase({
+      room: p.room,
+      patientName: p.colD,
+      financialStatus: p.colF,
+      contractor: p.colM,
+      paymentBy: p.colL,
+      physician: p.physician,
+      notes: p.notes
+    });
+
+    return !isExcluded && p.colD.length > 0 && (p.valAB > 0 || p.valZ > 0);
+  });
+
+  return { cashDebts, insuredDebts };
+}
+
 function extractSubsheetsFromHospitalData(rows: any[][]) {
   if (!rows || rows.length < 2) return;
 
@@ -1855,216 +2106,10 @@ function extractSubsheetsFromHospitalData(rows: any[][]) {
     }
   });
 
-  const isExcludedDebtCase = (p: {
-    room: string;
-    patientName: string;
-    financialStatus: string;
-    contractor: string;
-    paymentBy: string;
-    physician?: string;
-    notes?: string;
-  }): boolean => {
-    if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room)) return true;
-
-    const fLower = (p.financialStatus || "").toLowerCase().trim();
-    const mLower = (p.contractor || "").toLowerCase().trim();
-    const lLower = (p.paymentBy || "").toLowerCase().trim();
-    const nLower = (p.notes || "").toLowerCase().trim();
-    const dLower = (p.patientName || "").toLowerCase().trim();
-    const physLower = (p.physician || "").toLowerCase().trim();
-
-    // Exclude header rows
-    if (dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name") return true;
-
-    // Exclude Home Care
-    if (mLower.includes("home care") || mLower.includes("homecare") || fLower.includes("home care") || fLower.includes("homecare")) return true;
-
-    // 1. Exclude if payment is by physician
-    if (
-      lLower.includes("physician") ||
-      lLower.includes("طبيب") ||
-      lLower.includes("فيزيشن") ||
-      lLower.includes("doctor") ||
-      lLower.includes("دكتور") ||
-      lLower.includes("other ex")
-    ) {
-      return true;
-    }
-
-    // Direct physician/doctor contractor or financial status
-    if (
-      mLower === "طبيب" || mLower === "physician" || mLower === "doctor" || mLower === "دكتور" ||
-      mLower.startsWith("د/") || mLower.startsWith("د.") || mLower.startsWith("dr.") || mLower.startsWith("dr ") ||
-      fLower === "طبيب" || fLower === "physician" || fLower === "doctor" || fLower === "دكتور"
-    ) {
-      return true;
-    }
-
-    // If PaymentBy is specified and NOT the patient/cash, it indicates payment by physician or external party
-    if (lLower && lLower !== "patient" && lLower !== "مريض" && lLower !== "cash" && lLower !== "نقدي" && lLower !== "نقدى" && lLower !== "self") {
-      // If it matches the treating physician
-      if (physLower && isNameMatch(lLower, physLower)) {
-        return true;
-      }
-      // If PaymentBy is any non-patient name/text
-      if (!isNameMatch(lLower, dLower)) {
-        return true;
-      }
-    }
-
-    // Notes or remarks indicating payment by physician
-    if (
-      nLower.includes("حساب الطبيب") || nLower.includes("حساب الدكتور") ||
-      nLower.includes("دفع بواسطة الطبيب") || nLower.includes("على حساب الطبيب") ||
-      nLower.includes("payment by physician") || nLower.includes("paid by doctor") ||
-      nLower.includes("physician payment")
-    ) {
-      return true;
-    }
-
-    // 2. Exclude Doctor Cases / حالات الأطباء
-    const doctorCaseKeywords = [
-      "doctor case", "doctor_case", "doctorcase", "doctor-case",
-      "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
-      "cash doctor", "كاش طبيب", "كاش دكتور",
-      "doctor case surgery",
-      "طرف دكتور", "طرف د.", "تبع دكتور", "تبع د.",
-      "توصية دكتور", "توصيه دكتور", "مجاملة دكتور", "مجامله دكتور",
-      "خصم دكتور", "خصم طبيب"
-    ];
-    for (const kw of doctorCaseKeywords) {
-      if (lLower.includes(kw) || fLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
-        return true;
-      }
-    }
-
-    // Check for standalone DC / D.C. abbreviation
-    const combined = ` ${lLower} ${fLower} ${mLower} ${nLower} `;
-    if (/\b(dc|d\.c\.|d\.c)\b/i.test(combined)) {
-      return true;
-    }
-
-    return false;
-  };
-
-  // 3. Extract Raw Debts
-  const rawDebts = rows.slice(startIdx).map(row => {
-    const rawZ = row[colTotalIdx];
-    const rawAB = row[colRemainingIdx];
-    const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
-    const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
-    let mobile = cleanPhoneStr(row[colMobileIdx]);
-    if (!mobile && colMobileIdx !== 4 && row[4]) {
-      const mob4 = cleanPhoneStr(row[4]);
-      if (mob4.length >= 7) mobile = mob4;
-    }
-    if (!mobile && colMobileIdx !== 32 && row[32]) {
-      const mob32 = cleanPhoneStr(row[32]);
-      if (mob32.length >= 7) mobile = mob32;
-    }
-
-    const admDate = cleanAdmissionDateStr(
-      (row[colAdmIdx] !== undefined && row[colAdmIdx] !== null && String(row[colAdmIdx]).trim() !== "") 
-        ? row[colAdmIdx] 
-        : row[0]
-    );
-    const payBy = String(row[colPaymentByIdx] || row[11] || "").trim();
-    const remarks = String(row[colRemarksIdx] || "").trim();
-    const contractorVal = String(row[colContractorIdx] || "").trim();
-    const financialVal = String(row[colFinancialIdx] || "").trim();
-    const physicianVal = String(row[colPhysIdx] || "").trim();
-
-    return {
-      colA: admDate,
-      date: admDate,
-      admissionDate: admDate,
-      room: cleanRoomStr(String(row[colRoomIdx] || "").trim()),
-      mrn: String(row[colMrnIdx] || "").trim(),
-      colD: String(row[colNameIdx] || "").trim(),
-      colF: financialVal,
-      financialStatus: financialVal,
-      colM: contractorVal,
-      contractor: contractorVal,
-      colL: payBy,
-      paymentBy: payBy,
-      notes: remarks,
-      physician: physicianVal,
-      colZ: valZ > 0 ? String(valZ) : String(rawZ || "").trim(),
-      colAB: valAB > 0 ? String(valAB) : String(rawAB || "").trim(),
-      valZ,
-      valAB,
-      totalInvoice: valZ,
-      remainingAmount: valAB,
-      mobile: mobile || undefined,
-      phone: mobile || undefined
-    };
-  });
-
-  const hasCashIndicator = (text: string) => {
-    const t = (text || "").toLowerCase();
-    return t.includes("cash") || t.includes("كاش") || t.includes("نقدي") || t.includes("نقدى");
-  };
-
-  const nonCashKeywords = [
-    "insured", "تأمين", "تامين", "شركات", "شركة", "شركه", "company", "co.",
-    "نقابة", "نقابه", "syndicate", "نادي", "نادى", "club",
-    "هيئة", "هيئه", "authority", "بنك", "bank", "مؤسسة", "مؤسسه",
-    "عقد", "contract", "تعاقد", "اجل", "آجل"
-  ];
-
-  const isCashPatient = (contractor: string, financialStatus: string) => {
-    const c = (contractor || "").toLowerCase().trim();
-    const f = (financialStatus || "").toLowerCase().trim();
-
-    // Per user instruction: Consider ANY patient with the word "Cash" / "كاش" included
-    // (like "نقابة اطباء Cash", "نقابة مهندسين Cash", "خصم نادي سبورتنج كاش", "Cash") as cash patients
-    if (hasCashIndicator(c) || hasCashIndicator(f)) {
-      return true;
-    }
-
-    // Default cash if contractor is empty/elite/individuals/self and financial status is not corporate/insured
-    if (c === "" || c === "elite" || c === "بدون جهة" || c === "بدون جهه" || c === "عميل" || c === "افراد" || c === "أفراد" || c === "self" || c === "private" || c === "personal") {
-      const isExplicitInsured = f.includes("insured") || f.includes("تأمين") || f.includes("تامين") || f.includes("تعاقد");
-      return !isExplicitInsured;
-    }
-
-    return false;
-  };
-
-  cumulativeDebts = rawDebts.filter(p => {
-    const isCash = isCashPatient(p.colM, p.colF);
-    if (!isCash) return false;
-
-    // Must not be excluded debt case (doctor cases, payment by physician, OR/procedure room, home care, etc.)
-    const isExcluded = isExcludedDebtCase({
-      room: p.room,
-      patientName: p.colD,
-      financialStatus: p.colF,
-      contractor: p.colM,
-      paymentBy: p.colL,
-      physician: p.physician,
-      notes: p.notes
-    });
-
-    return !isExcluded && p.colD.length > 0 && p.valAB > 0;
-  });
-
-  cumulativeInsuredDebts = rawDebts.filter(p => {
-    const isCash = isCashPatient(p.colM, p.colF);
-    if (isCash) return false;
-
-    const isExcluded = isExcludedDebtCase({
-      room: p.room,
-      patientName: p.colD,
-      financialStatus: p.colF,
-      contractor: p.colM,
-      paymentBy: p.colL,
-      physician: p.physician,
-      notes: p.notes
-    });
-
-    return !isExcluded && p.colD.length > 0 && p.valAB > 0;
-  });
+  // 3. Extract Debts (Cash & Insured)
+  const debtsResult = extractDebtsOnlyFromRows(rows);
+  cumulativeDebts = debtsResult.cashDebts;
+  cumulativeInsuredDebts = debtsResult.insuredDebts;
 
   // 5. Extract Medical Plans
   const medicalPlansRaw = rows.slice(startIdx).map(row => {
@@ -3840,6 +3885,50 @@ async function handleUnifiedUpload(req: any, res: any) {
         }
     }
 
+    const origName = String(req.file?.originalname || "").toLowerCase();
+    const sheetName = String(bestSheetName || "").toLowerCase();
+    const isDebtsRoute = Boolean(req.originalUrl?.includes('upload-debts') || req.path?.includes('upload-debts'));
+    const isDebtsFileName = origName.includes('debt') || origName.includes('مديون') || origName.includes('مطالب');
+    const isDebtsSheetName = sheetName.includes('debt') || sheetName.includes('مديون') || sheetName.includes('مطالب');
+
+    const isDedicatedDebtsUpload = isDebtsRoute || isDebtsFileName || isDebtsSheetName;
+
+    if (isDedicatedDebtsUpload) {
+      console.log(`[Upload] Dedicated debts upload detected (Route: ${isDebtsRoute}, File: "${req.file?.originalname}", Sheet: "${bestSheetName}"). Preserving base occupancy census and auto-discharge baseline.`);
+
+      const { cashDebts, insuredDebts } = extractDebtsOnlyFromRows(rows);
+      cumulativeDebts = cashDebts;
+      cumulativeInsuredDebts = insuredDebts;
+
+      const cairo = getCairoDateTime();
+      uploadedAt = Date.now();
+      lastActiveDate = cairo.dateStr;
+      setSaveChangeType('upload');
+      await saveData();
+
+      const postUploadOccRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+      const postUploadBodyRows = postUploadOccRows.length > 3 ? postUploadOccRows.slice(3) : [];
+      const totalOccupancy = postUploadBodyRows.length;
+
+      return res.json({
+        success: true,
+        isDedicatedDebts: true,
+        uploadedAt,
+        lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
+        count: cumulativeDebts.length,
+        insuredDebtsCount: cumulativeInsuredDebts.length,
+        medicalPlansCount: (cumulativeMedicalPlans || []).length,
+        companionStatusCount: (cumulativeCompanionStatus || []).length,
+        losCount: (cumulativeLOS || []).length,
+        countOccupancy: totalOccupancy,
+        totalOccupancy,
+        entriesCount: (cumulativeEntries || []).length,
+        dischargesCount: (cumulativeDischarged || []).length,
+        dialysisCount: (cumulativeDialysis || []).length,
+        sheet: bestSheetName
+      });
+    }
+
     // CRITICAL: manuallyDischargedNames and manual discharges are persistent and must NOT be wiped or reverted when uploading a sheet
     const headerRow = rows.slice(0, startIdx);
     const dataRowsFiltered = rows.slice(startIdx).filter(row => {
@@ -4031,30 +4120,17 @@ async function handleUnifiedUpload(req: any, res: any) {
     const deduplicatedPatients = extractRawPatientsFromRows(rows);
     processPatientTransfers(deduplicatedPatients, cairo.dateStr);
 
-    // Dedicated Debts sheet guard: If the uploaded sheet is a dedicated debts sheet (less than 20 columns),
-    // extract debts without overwriting base occupancy hospitalData.
-    const maxRowWidth = Math.max(...rows.slice(0, 15).map(r => Array.isArray(r) ? r.length : 0));
-    const isDedicatedDebtsSheet = maxRowWidth < 22 && (
-      (bestSheetName && (bestSheetName.toLowerCase().includes('debt') || bestSheetName.includes('مديون'))) || 
-      req.originalUrl?.includes('upload-debts') || 
-      req.path?.includes('upload-debts')
-    );
-
-    if (isDedicatedDebtsSheet) {
-      console.log(`[Upload] Dedicated debts sheet detected (${maxRowWidth} cols). Preserving base occupancy hospitalData.`);
-    } else {
-      // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
-      if (isNewSheetLikelyEmpty && !hospitalData) {
-        try {
-          const todaySnap = await getOccupancySnapshot(cairo.dateStr);
-          if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
-            hospitalData = todaySnap.hospitalData;
-            console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
-          }
-        } catch (_) {}
-      } else if (!isNewSheetLikelyEmpty || !hospitalData) {
-        hospitalData = rows;
-      }
+    // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
+    if (isNewSheetLikelyEmpty && !hospitalData) {
+      try {
+        const todaySnap = await getOccupancySnapshot(cairo.dateStr);
+        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
+          hospitalData = todaySnap.hospitalData;
+          console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
+        }
+      } catch (_) {}
+    } else if (!isNewSheetLikelyEmpty || !hospitalData) {
+      hospitalData = rows;
     }
 
     // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
@@ -4674,8 +4750,8 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
       for (const item of itemMetas) {
         if (!item.patientId) continue;
         const updatePayload: any = {
-          total_invoice: Math.max(0, item.totalVal),
-          remaining_debt: Math.max(0, item.remainingVal),
+          total_invoice: item.totalVal,
+          remaining_debt: item.remainingVal,
           updated_at: new Date().toISOString()
         };
         if (item.contractor) updatePayload.contractor_name = item.contractor;
@@ -4690,8 +4766,8 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
             patient_id: item.patientId,
             contractor_name: item.contractor,
             financial_status: item.financial,
-            total_invoice: Math.max(0, item.totalVal),
-            remaining_debt: Math.max(0, item.remainingVal),
+            total_invoice: item.totalVal,
+            remaining_debt: item.remainingVal,
             admission_date: item.d.colA ? (parseAdmissionDateToISO(item.d.colA) || new Date().toISOString()) : new Date().toISOString(),
             status: 'Admitted',
             source: 'manual'
@@ -10338,7 +10414,8 @@ app.get('/api/elite-logo-transparent', (req, res) => {
 
 
 app.get('/api/reports/entry_formatted', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
   try {
     const occRowsUnfiltered = hospitalData ? getOccupancyRowsUnfiltered(hospitalData) : [];
     const todayEntries = (cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]));
@@ -10364,7 +10441,8 @@ app.get('/api/reports/entry_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/dialysis_formatted', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'No data available.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'No data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
     addDialysisSheet(workbook, cumulativeDialysis);
@@ -10379,7 +10457,8 @@ app.get('/api/reports/dialysis_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/debts_formatted', async (req, res) => {
-  if (cumulativeDebts.length === 0) return res.status(400).json({ error: 'No debts data available. Please upload the debts source sheet first.' });
+  if (!cumulativeDebts || cumulativeDebts.length === 0) await loadData();
+  if (!cumulativeDebts || cumulativeDebts.length === 0) return res.status(400).json({ error: 'No debts data available. Please upload the debts source sheet first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedDebtsSheet(workbook, cumulativeDebts);
@@ -10394,7 +10473,8 @@ app.get('/api/reports/debts_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/insured_debts_formatted', async (req, res) => {
-  if (cumulativeInsuredDebts.length === 0) return res.status(400).json({ error: 'No insured debts data available. Please upload the debts source sheet first.' });
+  if (!cumulativeInsuredDebts || cumulativeInsuredDebts.length === 0) await loadData();
+  if (!cumulativeInsuredDebts || cumulativeInsuredDebts.length === 0) return res.status(400).json({ error: 'No insured debts data available. Please upload the debts source sheet first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
@@ -10409,6 +10489,7 @@ app.get('/api/reports/insured_debts_formatted', async (req, res) => {
 });
 
 app.get('/api/reports/insured_non_cash_formatted', async (req, res) => {
+  if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'No occupancy data available. Please upload the source sheet first.' });
   try {
     const workbook = new ExcelJS.Workbook();
@@ -11181,7 +11262,8 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
 }
 
 app.get('/api/reports/inpatient_occupancy_by_floor_accommodation', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addGridOccupancyWithAccommodationSheet(workbook, getOccupancyRows(hospitalData));
@@ -11196,7 +11278,8 @@ app.get('/api/reports/inpatient_occupancy_by_floor_accommodation', async (req, r
 });
 
 app.get('/api/reports/vacant_by_category', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addVacantRoomsByCategorySheet(workbook, getOccupancyRows(hospitalData));
@@ -11211,7 +11294,8 @@ app.get('/api/reports/vacant_by_category', async (req, res) => {
 });
 
 app.get('/api/reports/vacant_rooms_ascending', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addVacantRoomsAscendingSheet(workbook, getOccupancyRows(hospitalData));
@@ -12132,6 +12216,8 @@ function generateStackedBarChartSvg(
 
 app.get('/api/reports/occupancy_charts_dashboard', async (req, res) => {
   try {
+    if (!hospitalData || hospitalData.length === 0) await loadData();
+    if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
     const rows = getOccupancyRowsUnfiltered(hospitalData);
     
     // Parse patient details dynamically from the sheet
@@ -12700,7 +12786,8 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
 }
 
 app.get('/api/reports/early_discharge_cases', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addEarlyDischargeCasesSheet(workbook, getOccupancyRows(hospitalData), earlyDischargeRoomsText);
@@ -15681,7 +15768,8 @@ app.get('/api/reports/or_admissions', async (req, res) => {
 });
 
 app.get('/api/reports/exceeding_alos_refined', async (req, res) => {
-  if (cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
+  if (!cumulativeLOS || cumulativeLOS.length === 0) await loadData();
+  if (!cumulativeLOS || cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedExceedingALOSSheet(workbook, cumulativeLOS);
@@ -15696,7 +15784,8 @@ app.get('/api/reports/exceeding_alos_refined', async (req, res) => {
 });
 
 app.get('/api/reports/companion_status_refined', async (req, res) => {
-  if (cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
+  if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) await loadData();
+  if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedCompanionStatusSheet(workbook, cumulativeCompanionStatus);
@@ -15711,7 +15800,8 @@ app.get('/api/reports/companion_status_refined', async (req, res) => {
 });
 
 app.get('/api/reports/companion_status', async (req, res) => {
-  if (cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
+  if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) await loadData();
+  if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
     addCompanionStatusSheet(workbook, cumulativeCompanionStatus);
@@ -16040,7 +16130,8 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
 }
 
 app.get('/api/reports/los_sheet', async (req, res) => {
-  if (cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
+  if (!cumulativeLOS || cumulativeLOS.length === 0) await loadData();
+  if (!cumulativeLOS || cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
   try {
     const workbook = new ExcelJS.Workbook();
     await addLOSSheet(workbook, cumulativeLOS);
@@ -16462,7 +16553,8 @@ app.get('/api/reports/closed_units_summary', async (req, res) => {
 });
 
 app.get('/api/reports/inpatient_summary', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     addInpatientSummarySheet(workbook, getOccupancyRows(hospitalData));
@@ -16477,7 +16569,8 @@ app.get('/api/reports/inpatient_summary', async (req, res) => {
 });
 
 app.get('/api/reports/exit_formatted', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload a sheet first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload a sheet first.' });
   try {
     const activePatients = extractRawPatientsFromRows(hospitalData);
     const cairoExitTodayStr = getCairoDateTime().dateStr;
