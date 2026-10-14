@@ -2,6 +2,9 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
+import { normalizeRowsArray } from './src/logic/occupancy.ts';
+
+export { normalizeRowsArray };
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -463,8 +466,8 @@ export async function saveOccupancySnapshot(
     date: dateStr,
     timestamp: Date.now(),
     cairoTime: cairo.fullStr,
-    hospitalData: data.hospitalData,
-    previousHospitalData: data.previousHospitalData,
+    hospitalData: data.hospitalData ? normalizeRowsArray(data.hospitalData) : null,
+    previousHospitalData: data.previousHospitalData ? normalizeRowsArray(data.previousHospitalData) : null,
     cumulativeEntries: data.cumulativeEntries || [],
     cumulativeDialysis: data.cumulativeDialysis || [],
     cumulativeDebts: data.cumulativeDebts || [],
@@ -569,6 +572,10 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
     try {
       const raw = await fsPromises.readFile(filePath, 'utf-8');
       snapshot = JSON.parse(raw) as OccupancySnapshot;
+      if (snapshot) {
+        if (snapshot.hospitalData) snapshot.hospitalData = normalizeRowsArray(snapshot.hospitalData);
+        if (snapshot.previousHospitalData) snapshot.previousHospitalData = normalizeRowsArray(snapshot.previousHospitalData);
+      }
     } catch (err) {
       console.error(`[OccupancyHistory] Failed to parse local snapshot for ${cleanDate}:`, err);
     }
@@ -597,8 +604,8 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
           date: cleanDate,
           timestamp: settings.timestamp || Date.now(),
           cairoTime: settings.cairoTime || `${cleanDate} 00:00:00`,
-          hospitalData: nodeMap['hospital_data'] || null,
-          previousHospitalData: null,
+          hospitalData: nodeMap['hospital_data'] ? normalizeRowsArray(nodeMap['hospital_data']) : null,
+          previousHospitalData: nodeMap['previous_hospital_data'] ? normalizeRowsArray(nodeMap['previous_hospital_data']) : null,
           cumulativeEntries: Array.isArray(nodeMap['entries']) ? nodeMap['entries'] : [],
           cumulativeDialysis: Array.isArray(nodeMap['dialysis']) ? nodeMap['dialysis'] : [],
           cumulativeDebts: Array.isArray(nodeMap['debts']) ? nodeMap['debts'] : [],
@@ -630,6 +637,10 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
 
         if (legacyNode && legacyNode.data) {
           snapshot = legacyNode.data as OccupancySnapshot;
+          if (snapshot) {
+            if (snapshot.hospitalData) snapshot.hospitalData = normalizeRowsArray(snapshot.hospitalData);
+            if (snapshot.previousHospitalData) snapshot.previousHospitalData = normalizeRowsArray(snapshot.previousHospitalData);
+          }
           try {
             await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
           } catch (e) {}
@@ -641,6 +652,12 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
   }
 
   if (snapshot) {
+    if (snapshot.hospitalData) {
+      snapshot.hospitalData = normalizeRowsArray(snapshot.hospitalData);
+    }
+    if (snapshot.previousHospitalData) {
+      snapshot.previousHospitalData = normalizeRowsArray(snapshot.previousHospitalData);
+    }
     // Ensure automatic and manual discharged breakdown lists exist
     const rawDischarged = snapshot.cumulativeDischarged || [];
     const manualNames = snapshot.manuallyDischargedNames || [];

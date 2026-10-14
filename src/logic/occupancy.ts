@@ -54,13 +54,100 @@ export function cleanRoomStr(s: string): string {
     .trim();
 }
 
-export function filterPatientData(rawData: any[][]): PatientRow[] {
-  if (!rawData || rawData.length === 0) return [];
+export function normalizeRowsArray(rows: any): any[][] {
+  if (!rows) return [];
+  if (typeof rows === 'string') {
+    try {
+      rows = JSON.parse(rows);
+    } catch (_) {
+      return [];
+    }
+  }
+  if (!Array.isArray(rows)) {
+    if (rows && typeof rows === 'object') {
+      if (Array.isArray(rows.rows)) rows = rows.rows;
+      else if (Array.isArray(rows.data)) rows = rows.data;
+      else if (Array.isArray(rows.current)) rows = rows.current;
+      else if (Array.isArray(rows.beds)) rows = rows.beds;
+      else return [];
+    } else {
+      return [];
+    }
+  }
+  if (rows.length === 0) return [];
+
+  // If already a 2D array of arrays, return as is
+  if (Array.isArray(rows[0])) {
+    return rows;
+  }
+
+  // Determine max column index across items
+  let maxCol = 41;
+  for (let i = 0; i < Math.min(rows.length, 100); i++) {
+    const item = rows[i];
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      for (const k of Object.keys(item)) {
+        const m = k.match(/^Unnamed:\s*(\d+)$/i);
+        if (m) {
+          const idx = parseInt(m[1], 10);
+          if (idx > maxCol) maxCol = idx;
+        }
+      }
+    }
+  }
+
+  return rows.map((item: any) => {
+    if (Array.isArray(item)) return item;
+    if (item && typeof item === 'object') {
+      const arr: any[] = new Array(maxCol + 1).fill('');
+
+      // 1. Check Unnamed / RTDB keys
+      if (item['No filters applied'] !== undefined && item['No filters applied'] !== null) {
+        arr[0] = item['No filters applied'];
+      }
+      for (const [k, v] of Object.entries(item)) {
+        const m = k.match(/^Unnamed:\s*(\d+)$/i);
+        if (m) {
+          const idx = parseInt(m[1], 10);
+          arr[idx] = (v !== undefined && v !== null) ? v : '';
+        }
+      }
+
+      // 2. Map standard named keys if positional keys were missing
+      if (!arr[1] && (item.room || item.bed || item.Bed || item.Room)) {
+        arr[1] = item.room || item.bed || item.Bed || item.Room || '';
+      }
+      if (!arr[2] && (item.mrn || item.MRN || item.id || item.patientBarcode)) {
+        arr[2] = item.mrn || item.MRN || item.id || item.patientBarcode || '';
+      }
+      if (!arr[3] && (item.name || item.patient || item.Patient || item.englishFullName)) {
+        arr[3] = item.name || item.patient || item.Patient || item.englishFullName || '';
+      }
+      if (!arr[0] && (item.date || item.admissionDate || item.AdmissionDate)) {
+        arr[0] = item.date || item.admissionDate || item.AdmissionDate || '';
+      }
+      if (!arr[12] && (item.contractor || item.contractorName || item.ContractorName)) {
+        arr[12] = item.contractor || item.contractorName || item.ContractorName || '';
+      }
+      if (!arr[22] && (item.doctor || item.physician || item.treatingPhysicianName || item.TreatingPhysicianName)) {
+        arr[22] = item.doctor || item.physician || item.treatingPhysicianName || item.TreatingPhysicianName || '';
+      }
+
+      return arr;
+    }
+    return [];
+  });
+}
+
+export function filterPatientData(rawData: any): PatientRow[] {
+  if (!rawData) return [];
+  const normalizedData = normalizeRowsArray(rawData);
+  if (!normalizedData || normalizedData.length === 0) return [];
 
   // Detect header row location (skip up to 5 rows if headers match common column names)
   let startIdx = 3;
-  for (let i = 0; i < Math.min(rawData.length, 5); i++) {
-    const row = rawData[i];
+  for (let i = 0; i < Math.min(normalizedData.length, 5); i++) {
+    const row = normalizedData[i];
     if (!row || !Array.isArray(row)) continue;
     const r0 = String(row[0] || "").toLowerCase().trim();
     const r1 = String(row[1] || "").toLowerCase().trim();
@@ -90,20 +177,39 @@ export function filterPatientData(rawData: any[][]): PatientRow[] {
     }
   }
 
-  const data = rawData.slice(startIdx);
+  const data = normalizedData.slice(startIdx);
 
   return data
-    .map((row): PatientRow | null => {
-      if (!row || !Array.isArray(row)) return null;
+    .map((row: any): PatientRow | null => {
+      if (!row) return null;
 
-      // Detect layout: Raw unified/PowerBI layout (>= 10 cols) vs Formatted occupancy (5-6 cols)
-      const isMultiCol = row.length >= 10;
-      const rawRoom = isMultiCol ? row[1] : row[0];
-      let rawName = isMultiCol ? row[3] : row[1];
-      const rawDoctor = isMultiCol ? row[22] : row[2];
-      const rawPayment = isMultiCol ? row[12] : row[3];
-      const rawDate = isMultiCol ? row[0] : row[4];
-      let rawId = isMultiCol ? row[2] : row[5];
+      let rawRoom: any = "";
+      let rawName: any = "";
+      let rawDoctor: any = "";
+      let rawPayment: any = "";
+      let rawDate: any = "";
+      let rawId: any = "";
+
+      if (Array.isArray(row)) {
+        // Detect layout: Raw unified/PowerBI layout (>= 10 cols) vs Formatted occupancy (5-6 cols)
+        const isMultiCol = row.length >= 10;
+        rawRoom = isMultiCol ? row[1] : row[0];
+        rawName = isMultiCol ? row[3] : row[1];
+        rawDoctor = isMultiCol ? row[22] : row[2];
+        rawPayment = isMultiCol ? row[12] : row[3];
+        rawDate = isMultiCol ? row[0] : row[4];
+        rawId = isMultiCol ? row[2] : row[5];
+      } else if (row && typeof row === 'object') {
+        const rObj = row as Record<string, any>;
+        rawRoom = rObj.room || rObj.bed || rObj.Bed || rObj.Room || rObj['Unnamed: 1'] || '';
+        rawName = rObj.name || rObj.patient || rObj.Patient || rObj['Unnamed: 3'] || '';
+        rawDoctor = rObj.doctor || rObj.physician || rObj.treatingPhysicianName || rObj['Unnamed: 22'] || '';
+        rawPayment = rObj.payment || rObj.contractor || rObj['Unnamed: 12'] || '';
+        rawDate = rObj.date || rObj.admissionDate || rObj['No filters applied'] || rObj['Unnamed: 0'] || '';
+        rawId = rObj.id || rObj.mrn || rObj.MRN || rObj['Unnamed: 2'] || '';
+      } else {
+        return null;
+      }
 
       // Heuristic check: if rawId has Arabic characters and rawName is numeric, swap them
       if (/[\u0600-\u06FF]/.test(String(rawId || '')) && (/^\d+$/.test(String(rawName || '').replace(/^0+/, '')) || !rawName)) {

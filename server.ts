@@ -32,6 +32,7 @@ import {
   getChangeLogForDate,
   getChangeLogDates,
   type ChangeType,
+  normalizeRowsArray,
 } from './historyManager.js';
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
@@ -926,13 +927,17 @@ function deduplicateZoneC(body: any[][]): any[][] {
 
 function getOccupancyRows(data: any[][] | null): any[][] {
   if (!data) return [];
+  const normalizedData = normalizeRowsArray(data);
+  if (!normalizedData || normalizedData.length === 0) return [];
+  data = normalizedData;
   
   // Find startIdx
   let startIdx = 3; // default
   for(let i = 0; i < Math.min(data.length, 10); i++) {
+      const r0 = String(data[i][0] || "").toLowerCase();
       const r1 = String(data[i][1] || "").toLowerCase();
       const r3 = String(data[i][3] || "").toLowerCase();
-      if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name")) {
+      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name") {
           startIdx = i + 1;
           break;
       }
@@ -980,13 +985,17 @@ function getOccupancyRows(data: any[][] | null): any[][] {
 
 function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
   if (!data) return [];
+  const normalizedData = normalizeRowsArray(data);
+  if (!normalizedData || normalizedData.length === 0) return [];
+  data = normalizedData;
   
   // Find startIdx
   let startIdx = 3; // default
   for(let i = 0; i < Math.min(data.length, 10); i++) {
+      const r0 = String(data[i][0] || "").toLowerCase();
       const r1 = String(data[i][1] || "").toLowerCase();
       const r3 = String(data[i][3] || "").toLowerCase();
-      if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name")) {
+      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name") {
           startIdx = i + 1;
           break;
       }
@@ -1421,8 +1430,11 @@ function isProcedureOrTemporaryRoom(room: string): boolean {
          low.includes("emergency");
 }
 
-function extractRawPatientsFromRows(data: any[][]): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }[] {
-  if (!data || !Array.isArray(data)) return [];
+function extractRawPatientsFromRows(data: any): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }[] {
+  if (!data) return [];
+  const normalizedData = normalizeRowsArray(data);
+  if (!normalizedData || !Array.isArray(normalizedData) || normalizedData.length === 0) return [];
+  data = normalizedData;
   let startIdx = 0;
   let headerBedIdx = -1;
   let headerMrnIdx = -1;
@@ -2025,8 +2037,11 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
   return { cashDebts, insuredDebts };
 }
 
-function extractSubsheetsFromHospitalData(rows: any[][]) {
-  if (!rows || rows.length < 2) return;
+function extractSubsheetsFromHospitalData(rows: any) {
+  if (!rows) return;
+  const normalized = normalizeRowsArray(rows);
+  if (!normalized || normalized.length < 2) return;
+  rows = normalized;
 
   // Dynamically find where data starts
   let startIdx = 3;
@@ -2262,8 +2277,8 @@ async function executeLoadData(force = false) {
       try {
         const raw = fs.readFileSync(DATA_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        hospitalData = parsed.current || null;
-        previousHospitalData = parsed.previous || null;
+        hospitalData = parsed.current ? normalizeRowsArray(parsed.current) : null;
+        previousHospitalData = parsed.previous ? normalizeRowsArray(parsed.previous) : null;
         cumulativeDischarged = parsed.discharged || [];
         cumulativeEntries = parsed.entries || [];
         cumulativeDialysis = parsed.dialysis || [];
@@ -2309,36 +2324,6 @@ async function executeLoadData(force = false) {
         try { return JSON.parse(val); } catch (e) { return val; }
       }
       return val;
-    };
-
-    const normalizeRowsArray = (rows: any): any[][] | null => {
-      const raw = parseMaybeJson(rows);
-      if (!raw || !Array.isArray(raw) || raw.length === 0) return null;
-
-      // If it's already a 2D array of arrays, return as is
-      if (Array.isArray(raw[0])) {
-        return raw;
-      }
-
-      // If items are objects with "No filters applied", "Unnamed: 1", etc. (RTDB format), map to 2D array
-      const keys = [
-        "No filters applied", "Unnamed: 1", "Unnamed: 2", "Unnamed: 3", "Unnamed: 4",
-        "Unnamed: 5", "Unnamed: 6", "Unnamed: 7", "Unnamed: 8", "Unnamed: 9",
-        "Unnamed: 10", "Unnamed: 11", "Unnamed: 12", "Unnamed: 13", "Unnamed: 14",
-        "Unnamed: 15", "Unnamed: 16", "Unnamed: 17", "Unnamed: 18", "Unnamed: 19",
-        "Unnamed: 20", "Unnamed: 21", "Unnamed: 22", "Unnamed: 23", "Unnamed: 24",
-        "Unnamed: 25", "Unnamed: 26", "Unnamed: 27", "Unnamed: 28", "Unnamed: 29",
-        "Unnamed: 30", "Unnamed: 31", "Unnamed: 32", "Unnamed: 33", "Unnamed: 34",
-        "Unnamed: 35", "Unnamed: 36", "Unnamed: 37", "Unnamed: 38"
-      ];
-
-      return raw.map(item => {
-        if (Array.isArray(item)) return item;
-        if (item && typeof item === 'object') {
-          return keys.map(k => (item[k] !== undefined && item[k] !== null) ? item[k] : "");
-        }
-        return [];
-      });
     };
 
     // Query granular state nodes using a 2-stage egress-optimized fetch:
@@ -2651,6 +2636,7 @@ async function executeLoadData(force = false) {
 
   // Clean loaded data room strings for Room 307
   if (hospitalData) {
+    hospitalData = normalizeRowsArray(hospitalData);
     hospitalData = hospitalData.map(row => {
       if (row && row[1]) {
         row[1] = cleanRoomStr(String(row[1]));
@@ -2659,6 +2645,7 @@ async function executeLoadData(force = false) {
     });
   }
   if (previousHospitalData) {
+    previousHospitalData = normalizeRowsArray(previousHospitalData);
     previousHospitalData = previousHospitalData.map(row => {
       if (row && row[1]) {
         row[1] = cleanRoomStr(String(row[1]));
@@ -4145,12 +4132,12 @@ async function handleUnifiedUpload(req: any, res: any) {
       try {
         const todaySnap = await getOccupancySnapshot(cairo.dateStr);
         if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 1) {
-          hospitalData = todaySnap.hospitalData;
+          hospitalData = normalizeRowsArray(todaySnap.hospitalData);
           console.log(`[Upload] Preserved active occupancy snapshot fallback for empty upload.`);
         }
       } catch (_) {}
     } else if (!isNewSheetLikelyEmpty || !hospitalData) {
-      hospitalData = rows;
+      hospitalData = normalizeRowsArray(rows);
     }
 
     // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
@@ -7526,7 +7513,7 @@ async function updateHospitalState(rows: any[][]) {
 
   // Only update hospitalData if it has actual data, to avoid overwriting with blank sheets
   if (!isNewSheetLikelyEmpty || !hospitalData) {
-      hospitalData = rows;
+      hospitalData = normalizeRowsArray(rows);
   }
 
   // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
@@ -7547,13 +7534,17 @@ async function updateHospitalState(rows: any[][]) {
 
 function getNormalizedPatientRows(rows: any[][] | null): string[] {
   if (!rows) return [];
+  const normalized = normalizeRowsArray(rows);
+  if (!normalized || normalized.length === 0) return [];
+  rows = normalized;
   
   // Find where data starts
   let startIdx = 1; // default
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const r0 = String(rows[i][0] || "").toLowerCase();
     const r1 = String(rows[i][1] || "").toLowerCase();
     const r3 = String(rows[i][3] || "").toLowerCase();
-    if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة")) {
+    if ((r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة")) {
       startIdx = i + 1;
       break;
     }
@@ -8618,8 +8609,10 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
   const isRequestingToday = (!reqDate || cleanDate === 'current' || cleanDate === 'today' || cleanDate === cairoTodayStr);
   const isTodayClosed = (lastEgyptianAutoResetDate === cairoTodayStr);
 
-  // If requesting today and today has NOT been closed/archived by the 23:59 rollover, ALWAYS serve live in-memory state!
-  if (isRequestingToday && !isTodayClosed) {
+  // If requesting today and today has NOT been closed/archived (or live patients exist in memory), ALWAYS serve live in-memory state!
+  if (isRequestingToday && (!isTodayClosed || (hospitalData && hospitalData.length > 0))) {
+    const liveOccRows = hospitalData ? normalizeRowsArray(hospitalData) : null;
+    const livePrevRows = previousHospitalData ? normalizeRowsArray(previousHospitalData) : null;
     const cleanDisc = (cumulativeDischarged || []).filter(p => {
       const dDate = p.dischargeDate || p.date;
       return dDate ? (isToday(dDate, cairoTodayStr) || isToday(dDate)) : true;
@@ -8633,7 +8626,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     const activeManualNames = manualList.map(p => p.name);
 
     // Admissions: effectiveEntries from cumulativeEntries or raw patients admitted today
-    const rawActive = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
+    const rawActive = liveOccRows ? extractRawPatientsFromRows(liveOccRows) : [];
     const activeEntriesToday = rawActive.filter(p => 
       isToday(p.date, cairoTodayStr) || isToday(p.rawDate, cairoTodayStr)
     );
@@ -8660,8 +8653,8 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     });
 
     return {
-      hospitalData,
-      previousHospitalData,
+      hospitalData: liveOccRows,
+      previousHospitalData: livePrevRows,
       cumulativeDischarged: cleanDisc,
       automaticallyDischarged: autoList,
       manuallyDischarged: manualList,
@@ -8677,12 +8670,14 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
       vipCasesText,
       dateLabel: cairoTodayStr,
       isHistorical: false,
-      found: !!(hospitalData && hospitalData.length > 0)
+      found: !!(liveOccRows && liveOccRows.length > 0)
     };
   }
 
   const snapshot = await getOccupancySnapshot(cleanDate);
   if (snapshot && snapshot.hospitalData) {
+    const snapOccData = normalizeRowsArray(snapshot.hospitalData);
+    const snapPrevData = snapshot.previousHospitalData ? normalizeRowsArray(snapshot.previousHospitalData) : null;
     const rawDisc = snapshot.cumulativeDischarged || [];
     const manualNames = snapshot.manuallyDischargedNames || [];
     const autoList = snapshot.automaticallyDischarged || rawDisc.filter(p => 
@@ -8693,8 +8688,8 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     );
 
     return {
-      hospitalData: snapshot.hospitalData,
-      previousHospitalData: snapshot.previousHospitalData,
+      hospitalData: snapOccData,
+      previousHospitalData: snapPrevData,
       cumulativeDischarged: rawDisc,
       automaticallyDischarged: autoList,
       manuallyDischarged: manualList,

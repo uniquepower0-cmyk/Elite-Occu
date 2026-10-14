@@ -9,6 +9,7 @@ import {
   normalizeArabicName,
   isClientNameMatch,
   getAccommodationCategory,
+  normalizeRowsArray,
   PatientRow,
 } from './occupancy';
 
@@ -193,6 +194,82 @@ describe('Hospital Occupancy Business Logic', () => {
       expect(getAccommodationCategory('330 A')).toBe('مميز جنوبي');
       expect(getAccommodationCategory('101 - 1')).toBe('Day Case');
       expect(getAccommodationCategory('102')).toBe('مميز جنوبي');
+    });
+  });
+
+  describe('normalizeRowsArray', () => {
+    it('handles empty, null, or malformed inputs safely', () => {
+      expect(normalizeRowsArray(null)).toEqual([]);
+      expect(normalizeRowsArray(undefined)).toEqual([]);
+      expect(normalizeRowsArray([])).toEqual([]);
+      expect(normalizeRowsArray('')).toEqual([]);
+      expect(normalizeRowsArray('invalid json')).toEqual([]);
+    });
+
+    it('preserves existing 2D array of arrays', () => {
+      const arr = [
+        ['AdmissionDate', 'Bed', 'MRN', 'Patient'],
+        ['2026-10-14', 'Room 301', '12345', 'John Doe']
+      ];
+      expect(normalizeRowsArray(arr)).toBe(arr);
+    });
+
+    it('normalizes Supabase/RTDB object array with Unnamed columns', () => {
+      const objArray = [
+        { 'No filters applied': 'AdmissionDate', 'Unnamed: 1': 'Bed', 'Unnamed: 2': 'MRN', 'Unnamed: 3': 'Patient' },
+        { 'No filters applied': '2026-10-14', 'Unnamed: 1': 'Room 401 A', 'Unnamed: 2': '0000267465', 'Unnamed: 3': 'عزه حسن' }
+      ];
+      const normalized = normalizeRowsArray(objArray);
+      expect(Array.isArray(normalized)).toBe(true);
+      expect(normalized.length).toBe(2);
+      expect(Array.isArray(normalized[0])).toBe(true);
+      expect(normalized[0][0]).toBe('AdmissionDate');
+      expect(normalized[0][1]).toBe('Bed');
+      expect(normalized[0][2]).toBe('MRN');
+      expect(normalized[0][3]).toBe('Patient');
+      expect(normalized[1][0]).toBe('2026-10-14');
+      expect(normalized[1][1]).toBe('Room 401 A');
+      expect(normalized[1][2]).toBe('0000267465');
+      expect(normalized[1][3]).toBe('عزه حسن');
+    });
+
+    it('normalizes named object properties into positional columns', () => {
+      const namedObjs = [
+        { room: 'Room 305', mrn: '9876', name: 'Ahmed Ali', doctor: 'Dr. Tarek', date: '2026-10-14' }
+      ];
+      const normalized = normalizeRowsArray(namedObjs);
+      expect(normalized.length).toBe(1);
+      expect(normalized[0][1]).toBe('Room 305');
+      expect(normalized[0][2]).toBe('9876');
+      expect(normalized[0][3]).toBe('Ahmed Ali');
+      expect(normalized[0][22]).toBe('Dr. Tarek');
+      expect(normalized[0][0]).toBe('2026-10-14');
+    });
+
+    it('unwraps nested payload objects (e.g., { current: [...] })', () => {
+      const nested = {
+        current: [
+          ['2026-10-14', '302', '111', 'Sara']
+        ]
+      };
+      const normalized = normalizeRowsArray(nested);
+      expect(normalized.length).toBe(1);
+      expect(normalized[0][1]).toBe('302');
+    });
+  });
+
+  describe('filterPatientData with object arrays (boundary resilience)', () => {
+    it('successfully extracts patients from Supabase object array', () => {
+      const objData = [
+        { 'No filters applied': 'AdmissionDate', 'Unnamed: 1': 'Bed', 'Unnamed: 2': 'MRN', 'Unnamed: 3': 'Patient' },
+        { 'No filters applied': '2026-10-14', 'Unnamed: 1': 'Room 401 A', 'Unnamed: 2': '0000267465', 'Unnamed: 3': 'عزه حسن' },
+        { 'No filters applied': '2026-10-14', 'Unnamed: 1': 'OR - 1', 'Unnamed: 2': '0000999999', 'Unnamed: 3': 'مريض عمليات' }
+      ];
+      const patients = filterPatientData(objData);
+      expect(patients.length).toBe(1);
+      expect(patients[0].room).toBe('401 A');
+      expect(patients[0].id).toBe('0000267465');
+      expect(patients[0].name).toBe('عزه حسن');
     });
   });
 });
