@@ -56,6 +56,35 @@ export async function upsertDailyBedCensus(
   }
 }
 
+export async function getDailyBedCensus(
+  dateStr: string,
+  client?: SupabaseClient
+): Promise<DailyBedCensus | null> {
+  const sb = getSupabaseClient(client);
+  const { data, error } = await sb
+    .from('occupancy_daily_census')
+    .select('*')
+    .eq('census_date', dateStr)
+    .maybeSingle();
+
+  if (error) {
+    throw new CumulativeOccupancyError(`Failed to query daily bed census for ${dateStr}`, error);
+  }
+
+  if (!data) return null;
+
+  return {
+    date: data.census_date,
+    inpatientOccupied: data.inpatient_occupied,
+    inpatientCapacity: data.inpatient_capacity,
+    totalOccupied: data.total_occupied,
+    totalCapacity: data.total_capacity,
+    zoneBreakdown: data.zone_breakdown,
+    source: data.source,
+    capturedAt: data.captured_at,
+  };
+}
+
 export async function getDailyBedCensusForMonth(
   monthStr: string, // YYYY-MM
   client?: SupabaseClient
@@ -206,6 +235,42 @@ export async function upsertDailyORCensus(
   if (error) {
     throw new CumulativeOccupancyError(`Failed to upsert daily OR census for ${record.date}`, error);
   }
+}
+
+export async function getDailyORCensus(
+  dateStr: string,
+  client?: SupabaseClient
+): Promise<DailyORCensus | null> {
+  const sb = getSupabaseClient(client);
+  const { data, error } = await sb
+    .from('or_daily_census')
+    .select('*')
+    .eq('census_date', dateStr)
+    .maybeSingle();
+
+  if (error) {
+    throw new CumulativeOccupancyError(`Failed to query daily OR census for ${dateStr}`, error);
+  }
+
+  if (!data) return null;
+
+  return {
+    date: data.census_date,
+    roomsAvailable: data.rooms_available,
+    minutesPerRoom: data.minutes_per_room,
+    bookedMinutes: data.booked_minutes,
+    roomsUsed: data.rooms_used,
+    casesTotal: data.cases_total,
+    dcCount: data.dc_count,
+    hcCount: data.hc_count,
+    inCount: data.in_count,
+    outCount: data.out_count,
+    sicuCount: data.sicu_count,
+    excludedCases: data.excluded_cases,
+    roomBreakdown: data.room_breakdown || {},
+    source: data.source,
+    capturedAt: data.captured_at,
+  };
 }
 
 export async function getDailyORCensusForMonth(

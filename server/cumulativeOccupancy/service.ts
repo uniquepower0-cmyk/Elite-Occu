@@ -1,4 +1,10 @@
-import { computeOccupancyCensus } from '../../src/logic/occupancy.js';
+import {
+  computeOccupancyCensus,
+  filterPatientData,
+  cleanRoomStr,
+  OccupancyCensusResult,
+  ZoneStats,
+} from '../../src/logic/occupancy.js';
 import {
   aggregateBedMonth,
   DailyBedCensus,
@@ -11,7 +17,9 @@ import {
   DailyORCensus,
 } from './orCalculator.js';
 import {
+  getDailyBedCensus,
   getDailyBedCensusForMonth,
+  getDailyORCensus,
   getDailyORCensusForMonth,
   getMonthlyBedSummaries,
   getMonthlyBedSummary,
@@ -29,7 +37,187 @@ const backfilledMonths = new Set<string>();
 
 export class CumulativeOccupancyService {
   /**
+   * Records peak daily bed census for a hospital date by detecting the maximum admitted patients
+   * across active occupants, patients discharged today, and existing daytime database records.
+   * Guarantees that evening discharges do not downgrade the true peak of the day at rollover.
+   */
+  async recordPeakBedCensus(
+    dateStr: string,
+    rawRows: any[][] | null | undefined,
+    dischargedPatients?: any[] | null,
+    source: 'rollover' | 'backfill' | 'manual' | 'provisional' = 'rollover'
+  ): Promise<DailyBedCensus | null> {
+    const hasRawRows = Array.isArray(rawRows) && rawRows.length > 0;
+    let activeCensus: OccupancyCensusResult | null = null;
+    if (hasRawRows) {
+      try {
+        activeCensus = computeOccupancyCensus(rawRows!);
+      } catch (e) {
+        console.warn(`[CumulativeService] Notice computing active census for ${dateStr}:`, e);
+      }
+    }
+
+    // Build combined rows taking into account patients discharged on this date
+    let combinedCensus: OccupancyCensusResult | null = null;
+    if (Array.isArray(dischargedPatients) && dischargedPatients.length > 0) {
+      try {
+        const activeFiltered = hasRawRows ? filterPatientData(rawRows!) : [];
+        const occupiedRooms = new Set(activeFiltered.map(p => cleanRoomStr(p.room).toUpperCase()));
+        const activeNames = new Set(activeFiltered.map(p => (p.name || '').trim().toLowerCase()));
+
+        const additionalRows: any[][] = [];
+        for (const dp of dischargedPatients) {
+          const rawRoom = dp.room || dp.lastRoom || dp.colA || '';
+          const room = cleanRoomStr(String(rawRoom || '').trim());
+          const name = String(dp.name || dp.patientName || dp.colB || dp.colD || '').trim();
+          if (!room || !name) continue;
+
+          if (activeNames.has(name.toLowerCase())) continue;
+          if (occupiedRooms.has(room.toUpperCase())) continue;
+
+          // Room was occupied earlier today by an inpatient who discharged before rollover
+          occupiedRooms.add(room.toUpperCase());
+          activeNames.add(name.toLowerCase());
+          additionalRows.push([
+            room,
+            name,
+            dp.doctor || dp.physician || '',
+            dp.payment || dp.contractor || '',
+            dp.date || dp.dischargeDate || '',
+          ]);
+        }
+
+        if (additionalRows.length > 0 || hasRawRows) {
+          const baseRows = hasRawRows ? rawRows! : [];
+          combinedCensus = computeOccupancyCensus([...baseRows, ...additionalRows]);
+        }
+      } catch (e) {
+        console.warn(`[CumulativeService] Notice computing combined census for ${dateStr}:`, e);
+      }
+    }
+
+    let existing: DailyBedCensus | null = null;
+    try {
+      existing = await getDailyBedCensus(dateStr);
+    } catch (err) {
+      console.warn(`[CumulativeService] Notice fetching existing bed census for ${dateStr}:`, err);
+    }
+
+    // Determine peak counts across active, combined, and existing records
+    const activeInpatient = activeCensus?.inpatientOccupied || 0;
+    const combinedInpatient = combinedCensus?.inpatientOccupied || 0;
+    const existingInpatient = existing?.inpatientOccupied || 0;
+
+    const activeTotal = activeCensus?.totalOccupied || 0;
+    const combinedTotal = combinedCensus?.totalOccupied || 0;
+    const existingTotal = existing?.totalOccupied || 0;
+
+    const peakInpatient = Math.max(activeInpatient, combinedInpatient, existingInpatient);
+    const peakTotal = Math.max(activeTotal, combinedTotal, existingTotal);
+
+    if (peakInpatient === 0 && peakTotal === 0 && !existing) {
+      console.warn(`[CumulativeService] recordPeakBedCensus skipped for ${dateStr}: empty counts and no existing record`);
+      return null;
+    }
+
+    // Choose the breakdown that corresponds to the peak
+    let chosenZones: ZoneStats[] = [];
+    let chosenInpatientCap = activeCensus?.inpatientCapacity || existing?.inpatientCapacity || 68;
+    let chosenTotalCap = activeCensus?.totalCapacity || existing?.totalCapacity || 110;
+
+    if (combinedInpatient === peakInpatient && combinedCensus) {
+      chosenZones = combinedCensus.zones;
+      chosenInpatientCap = combinedCensus.inpatientCapacity;
+      chosenTotalCap = combinedCensus.totalCapacity;
+    } else if (activeInpatient === peakInpatient && activeCensus) {
+      chosenZones = activeCensus.zones;
+      chosenInpatientCap = activeCensus.inpatientCapacity;
+      chosenTotalCap = activeCensus.totalCapacity;
+    } else if (existing) {
+      chosenZones = existing.zoneBreakdown || [];
+      chosenInpatientCap = existing.inpatientCapacity;
+      chosenTotalCap = existing.totalCapacity;
+    }
+
+    const record: DailyBedCensus = {
+      date: dateStr,
+      inpatientOccupied: peakInpatient,
+      inpatientCapacity: chosenInpatientCap,
+      totalOccupied: peakTotal,
+      totalCapacity: chosenTotalCap,
+      zoneBreakdown: chosenZones,
+      source: source === 'rollover' ? 'rollover' : (existing?.source === 'rollover' ? 'rollover' : source),
+    };
+
+    await upsertDailyBedCensus(record);
+    console.log(`[CumulativeService] Peak bed census recorded for ${dateStr} (${record.inpatientOccupied}/${record.inpatientCapacity} inpatient, ${record.totalOccupied}/${record.totalCapacity} total, source: ${record.source})`);
+    return record;
+  }
+
+  /**
+   * Records peak daily OR census for a closing date, preserving maximum booked minutes,
+   * rooms used, and total cases across daytime updates and rollover.
+   */
+  async recordPeakORCensus(
+    dateStr: string,
+    orList: any[] | null | undefined,
+    source: 'rollover' | 'backfill' | 'manual' | 'provisional' = 'rollover'
+  ): Promise<DailyORCensus> {
+    const candidate = computeORCensus(orList, dateStr);
+    candidate.source = source;
+
+    let existing: DailyORCensus | null = null;
+    try {
+      existing = await getDailyORCensus(dateStr);
+    } catch (err) {
+      console.warn(`[CumulativeService] Notice checking existing OR census for ${dateStr}:`, err);
+    }
+
+    let finalRecord: DailyORCensus;
+    if (!existing) {
+      finalRecord = candidate;
+    } else {
+      const candidateHigher =
+        (candidate.bookedMinutes > existing.bookedMinutes) ||
+        (candidate.bookedMinutes === existing.bookedMinutes && candidate.casesTotal > existing.casesTotal);
+
+      if (candidateHigher) {
+        finalRecord = {
+          ...candidate,
+          roomsUsed: Math.max(candidate.roomsUsed, existing.roomsUsed),
+          casesTotal: Math.max(candidate.casesTotal, existing.casesTotal),
+          bookedMinutes: Math.max(candidate.bookedMinutes, existing.bookedMinutes),
+          dcCount: Math.max(candidate.dcCount, existing.dcCount),
+          hcCount: Math.max(candidate.hcCount, existing.hcCount),
+          inCount: Math.max(candidate.inCount, existing.inCount),
+          outCount: Math.max(candidate.outCount, existing.outCount),
+          sicuCount: Math.max(candidate.sicuCount, existing.sicuCount),
+          source: source === 'rollover' ? 'rollover' : (existing.source === 'rollover' ? 'rollover' : source),
+        };
+      } else {
+        finalRecord = {
+          ...existing,
+          roomsUsed: Math.max(candidate.roomsUsed, existing.roomsUsed),
+          casesTotal: Math.max(candidate.casesTotal, existing.casesTotal),
+          bookedMinutes: Math.max(candidate.bookedMinutes, existing.bookedMinutes),
+          dcCount: Math.max(candidate.dcCount, existing.dcCount),
+          hcCount: Math.max(candidate.hcCount, existing.hcCount),
+          inCount: Math.max(candidate.inCount, existing.inCount),
+          outCount: Math.max(candidate.outCount, existing.outCount),
+          sicuCount: Math.max(candidate.sicuCount, existing.sicuCount),
+          source: source === 'rollover' ? 'rollover' : existing.source,
+        };
+      }
+    }
+
+    await upsertDailyORCensus(finalRecord);
+    console.log(`[CumulativeService] Peak OR census recorded for ${dateStr} (${finalRecord.bookedMinutes} booked mins, ${finalRecord.roomsUsed}/${finalRecord.roomsAvailable} rooms, ${finalRecord.casesTotal} cases, source: ${finalRecord.source})`);
+    return finalRecord;
+  }
+
+  /**
    * Records the official daily bed census for a closing hospital date.
+   * Delegates to recordPeakBedCensus to preserve peak occupancy.
    */
   async recordBedCensus(
     dateStr: string,
@@ -40,37 +228,19 @@ export class CumulativeOccupancyService {
       console.warn(`[CumulativeService] recordBedCensus skipped for ${dateStr}: empty rawRows`);
       return null;
     }
-
-    const census = computeOccupancyCensus(rawRows);
-    const record: DailyBedCensus = {
-      date: dateStr,
-      inpatientOccupied: census.inpatientOccupied,
-      inpatientCapacity: census.inpatientCapacity,
-      totalOccupied: census.totalOccupied,
-      totalCapacity: census.totalCapacity,
-      zoneBreakdown: census.zones,
-      source,
-    };
-
-    await upsertDailyBedCensus(record);
-    console.log(`[CumulativeService] Bed census recorded for ${dateStr} (${record.inpatientOccupied}/${record.inpatientCapacity} inpatient, ${record.totalOccupied}/${record.totalCapacity} total, source: ${source})`);
-    return record;
+    return this.recordPeakBedCensus(dateStr, rawRows, null, source);
   }
 
   /**
    * Records the official daily OR census for a closing date.
+   * Delegates to recordPeakORCensus to preserve peak utilization.
    */
   async recordORCensus(
     dateStr: string,
     orList: any[] | null | undefined,
     source: 'rollover' | 'backfill' | 'manual' = 'rollover'
   ): Promise<DailyORCensus> {
-    const record = computeORCensus(orList, dateStr);
-    record.source = source;
-
-    await upsertDailyORCensus(record);
-    console.log(`[CumulativeService] OR census recorded for ${dateStr} (${record.bookedMinutes} booked mins, ${record.roomsUsed}/${record.roomsAvailable} rooms, ${record.casesTotal} cases, source: ${source})`);
-    return record;
+    return this.recordPeakORCensus(dateStr, orList, source);
   }
 
   /**
@@ -243,7 +413,8 @@ export class CumulativeOccupancyService {
   async getBedMonthToDate(
     monthStr: string,
     liveRows?: any[][] | null,
-    todayDateStr?: string
+    todayDateStr?: string,
+    dischargedPatients?: any[] | null
   ) {
     let storedDays = await getDailyBedCensusForMonth(monthStr);
     const hasCorruptDays = storedDays.some(b => b.totalOccupied > 0 && b.inpatientOccupied === 0);
@@ -257,21 +428,49 @@ export class CumulativeOccupancyService {
     let provisional: DailyBedCensus | null = null;
     if (
       todayDateStr &&
-      todayDateStr.startsWith(monthStr) &&
-      liveRows &&
-      liveRows.length > 3
+      todayDateStr.startsWith(monthStr)
     ) {
       try {
-        const liveCensus = computeOccupancyCensus(liveRows);
-        provisional = {
-          date: todayDateStr,
-          inpatientOccupied: liveCensus.inpatientOccupied,
-          inpatientCapacity: liveCensus.inpatientCapacity,
-          totalOccupied: liveCensus.totalOccupied,
-          totalCapacity: liveCensus.totalCapacity,
-          zoneBreakdown: liveCensus.zones,
-          source: 'provisional',
-        };
+        const hasLiveRows = liveRows && liveRows.length > 3;
+        const activeFiltered = hasLiveRows ? filterPatientData(liveRows!) : [];
+        const occupiedRooms = new Set(activeFiltered.map(p => cleanRoomStr(p.room).toUpperCase()));
+        const activeNames = new Set(activeFiltered.map(p => (p.name || '').trim().toLowerCase()));
+
+        const additionalRows: any[][] = [];
+        if (Array.isArray(dischargedPatients)) {
+          for (const dp of dischargedPatients) {
+            const rawRoom = dp.room || dp.lastRoom || dp.colA || '';
+            const room = cleanRoomStr(String(rawRoom || '').trim());
+            const name = String(dp.name || dp.patientName || dp.colB || dp.colD || '').trim();
+            if (!room || !name) continue;
+            if (activeNames.has(name.toLowerCase())) continue;
+            if (occupiedRooms.has(room.toUpperCase())) continue;
+
+            occupiedRooms.add(room.toUpperCase());
+            activeNames.add(name.toLowerCase());
+            additionalRows.push([
+              room,
+              name,
+              dp.doctor || dp.physician || '',
+              dp.payment || dp.contractor || '',
+              dp.date || dp.dischargeDate || '',
+            ]);
+          }
+        }
+
+        const combinedRows = [...(hasLiveRows ? liveRows! : []), ...additionalRows];
+        if (combinedRows.length > 3) {
+          const liveCensus = computeOccupancyCensus(combinedRows);
+          provisional = {
+            date: todayDateStr,
+            inpatientOccupied: liveCensus.inpatientOccupied,
+            inpatientCapacity: liveCensus.inpatientCapacity,
+            totalOccupied: liveCensus.totalOccupied,
+            totalCapacity: liveCensus.totalCapacity,
+            zoneBreakdown: liveCensus.zones,
+            source: 'provisional',
+          };
+        }
       } catch (err) {
         console.warn('[CumulativeService] Failed to compute live provisional bed census:', err);
       }

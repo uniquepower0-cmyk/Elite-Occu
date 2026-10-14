@@ -256,8 +256,29 @@ export function aggregateORMonth(
 
   let includesProvisional = false;
   if (provisional && provisional.date.startsWith(monthStr)) {
-    if (!daysMap.has(provisional.date)) {
+    const existing = daysMap.get(provisional.date);
+    if (!existing) {
       daysMap.set(provisional.date, { ...provisional, source: 'provisional' });
+      includesProvisional = true;
+    } else if (existing.source === 'provisional') {
+      // Pick peak OR utilization between existing provisional and new live provisional
+      const peakBookedMinutes = Math.max(existing.bookedMinutes || 0, provisional.bookedMinutes || 0);
+      const peakCases = Math.max(existing.casesTotal || 0, provisional.casesTotal || 0);
+      const peakRooms = Math.max(existing.roomsUsed || 0, provisional.roomsUsed || 0);
+      const useProvisional = (provisional.bookedMinutes || 0) >= (existing.bookedMinutes || 0);
+
+      daysMap.set(provisional.date, {
+        ...(useProvisional ? provisional : existing),
+        bookedMinutes: peakBookedMinutes,
+        casesTotal: peakCases,
+        roomsUsed: peakRooms,
+        dcCount: Math.max(existing.dcCount || 0, provisional.dcCount || 0),
+        hcCount: Math.max(existing.hcCount || 0, provisional.hcCount || 0),
+        inCount: Math.max(existing.inCount || 0, provisional.inCount || 0),
+        outCount: Math.max(existing.outCount || 0, provisional.outCount || 0),
+        sicuCount: Math.max(existing.sicuCount || 0, provisional.sicuCount || 0),
+        source: 'provisional',
+      });
       includesProvisional = true;
     }
   }

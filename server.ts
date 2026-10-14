@@ -3595,6 +3595,26 @@ async function saveData() {
             console.log(`Automatic OR list database snapshot saved for date ${targetOrDate}.`);
           }
         }
+
+        // Continuously capture peak daily bed & OR occupancy in Supabase
+        if (activeDateStr !== lastEgyptianAutoResetDate) {
+          const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+          if (occRows && occRows.length > 3) {
+            cumulativeOccupancy.recordPeakBedCensus(activeDateStr, occRows, cumulativeDischarged || [], 'provisional').catch(err => {
+              console.warn(`[CumulativeService] Notice capturing peak bed census for ${activeDateStr}:`, err?.message || err);
+            });
+          }
+        }
+        if (cumulativeORList && cumulativeORList.length > 0) {
+          const rawOrDate = cumulativeORList[0]?.orListDate || '';
+          const targetOrDate = normalizeToISODate(rawOrDate) || activeDateStr;
+          if (targetOrDate !== lastEgyptianAutoResetDate) {
+            cumulativeOccupancy.recordPeakORCensus(targetOrDate, cumulativeORList, 'provisional').catch(err => {
+              console.warn(`[CumulativeService] Notice capturing peak OR census for ${targetOrDate}:`, err?.message || err);
+            });
+          }
+        }
+
         if (hospitalData && hospitalData.length > 0) {
           syncOccupancyToRelationalSchema(hospitalData).catch(err => console.error('[Relational Occupancy Sync Error]:', err?.message || err));
         }
@@ -8878,10 +8898,8 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     // 2.5. Record official daily census for cumulative (MTD) bed & OR occupancy
     try {
       const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-      if (occRows && occRows.length > 3) {
-        await cumulativeOccupancy.recordBedCensus(targetDate, occRows, 'rollover');
-      }
-      await cumulativeOccupancy.recordORCensus(targetDate, cumulativeORList || [], 'rollover');
+      await cumulativeOccupancy.recordPeakBedCensus(targetDate, occRows, cumulativeDischarged || [], 'rollover');
+      await cumulativeOccupancy.recordPeakORCensus(targetDate, cumulativeORList || [], 'rollover');
 
       if (isLastDayOfMonth(targetDate)) {
         await cumulativeOccupancy.finalizeMonth(targetDate.slice(0, 7));
@@ -9578,7 +9596,7 @@ app.get('/api/occupancy/cumulative', async (req, res) => {
     const isCurrentMonth = requestedMonth === currentMonthStr;
     const todayStr = isCurrentMonth ? cairo.dateStr : undefined;
 
-    const data = await cumulativeOccupancy.getBedMonthToDate(requestedMonth, liveRows, todayStr);
+    const data = await cumulativeOccupancy.getBedMonthToDate(requestedMonth, liveRows, todayStr, cumulativeDischarged);
     res.json(data);
   } catch (err: any) {
     console.error('[API /api/occupancy/cumulative] Error:', err);

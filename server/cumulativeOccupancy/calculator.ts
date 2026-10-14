@@ -86,8 +86,24 @@ export function aggregateBedMonth(
   let includesProvisional = false;
   if (provisional && provisional.date.startsWith(monthStr)) {
     const existing = daysMap.get(provisional.date);
-    if (!existing || existing.source === 'provisional') {
+    if (!existing) {
       daysMap.set(provisional.date, { ...provisional, source: 'provisional' });
+      includesProvisional = true;
+    } else if (existing.source === 'provisional') {
+      // Pick peak occupancy between existing provisional and new live provisional
+      const peakInpatient = Math.max(existing.inpatientOccupied || 0, provisional.inpatientOccupied || 0);
+      const peakTotal = Math.max(existing.totalOccupied || 0, provisional.totalOccupied || 0);
+      const useProvisional = (provisional.inpatientOccupied || 0) >= (existing.inpatientOccupied || 0);
+
+      daysMap.set(provisional.date, {
+        date: provisional.date,
+        inpatientOccupied: peakInpatient,
+        inpatientCapacity: useProvisional ? provisional.inpatientCapacity : existing.inpatientCapacity,
+        totalOccupied: peakTotal,
+        totalCapacity: useProvisional ? provisional.totalCapacity : existing.totalCapacity,
+        zoneBreakdown: useProvisional ? provisional.zoneBreakdown : existing.zoneBreakdown,
+        source: 'provisional',
+      });
       includesProvisional = true;
     }
   }
