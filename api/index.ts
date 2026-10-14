@@ -33,7 +33,6 @@ let appError: Error | null = null;
 function getApp() {
   if (!appPromise) {
     appPromise = import('../server.js')
-      .catch(() => import('../server'))
       .then(m => m.default || m)
       .catch(err => {
         appError = err;

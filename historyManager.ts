@@ -2,9 +2,90 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
-import { normalizeRowsArray } from './src/logic/occupancy.ts';
+export function normalizeRowsArray(rows: any): any[][] {
+  if (!rows) return [];
+  if (typeof rows === 'string') {
+    try {
+      rows = JSON.parse(rows);
+    } catch (_) {
+      return [];
+    }
+  }
+  if (!Array.isArray(rows)) {
+    if (rows && typeof rows === 'object') {
+      if (Array.isArray(rows.rows)) rows = rows.rows;
+      else if (Array.isArray(rows.data)) rows = rows.data;
+      else if (Array.isArray(rows.current)) rows = rows.current;
+      else if (Array.isArray(rows.beds)) rows = rows.beds;
+      else return [];
+    } else {
+      return [];
+    }
+  }
+  if (rows.length === 0) return [];
 
-export { normalizeRowsArray };
+  // If already a 2D array of arrays, return as is
+  if (Array.isArray(rows[0])) {
+    return rows;
+  }
+
+  // Determine max column index across items
+  let maxCol = 41;
+  for (let i = 0; i < Math.min(rows.length, 100); i++) {
+    const item = rows[i];
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      for (const k of Object.keys(item)) {
+        const m = k.match(/^Unnamed:\s*(\d+)$/i);
+        if (m) {
+          const idx = parseInt(m[1], 10);
+          if (idx > maxCol) maxCol = idx;
+        }
+      }
+    }
+  }
+
+  return rows.map((item: any) => {
+    if (Array.isArray(item)) return item;
+    if (item && typeof item === 'object') {
+      const arr: any[] = new Array(maxCol + 1).fill('');
+
+      // 1. Check Unnamed / RTDB keys
+      if (item['No filters applied'] !== undefined && item['No filters applied'] !== null) {
+        arr[0] = item['No filters applied'];
+      }
+      for (const [k, v] of Object.entries(item)) {
+        const m = k.match(/^Unnamed:\s*(\d+)$/i);
+        if (m) {
+          const idx = parseInt(m[1], 10);
+          arr[idx] = (v !== undefined && v !== null) ? v : '';
+        }
+      }
+
+      // 2. Map standard named keys if positional keys were missing
+      if (!arr[1] && (item.room || item.bed || item.Bed || item.Room)) {
+        arr[1] = item.room || item.bed || item.Bed || item.Room || '';
+      }
+      if (!arr[2] && (item.mrn || item.MRN || item.id || item.patientBarcode)) {
+        arr[2] = item.mrn || item.MRN || item.id || item.patientBarcode || '';
+      }
+      if (!arr[3] && (item.name || item.patient || item.Patient || item.englishFullName)) {
+        arr[3] = item.name || item.patient || item.Patient || item.englishFullName || '';
+      }
+      if (!arr[0] && (item.date || item.admissionDate || item.AdmissionDate)) {
+        arr[0] = item.date || item.admissionDate || item.AdmissionDate || '';
+      }
+      if (!arr[12] && (item.contractor || item.contractorName || item.ContractorName)) {
+        arr[12] = item.contractor || item.contractorName || item.ContractorName || '';
+      }
+      if (!arr[22] && (item.doctor || item.physician || item.treatingPhysicianName || item.TreatingPhysicianName)) {
+        arr[22] = item.doctor || item.physician || item.treatingPhysicianName || item.TreatingPhysicianName || '';
+      }
+
+      return arr;
+    }
+    return [];
+  });
+}
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://uuvomcxbgldgtmuqtymk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
