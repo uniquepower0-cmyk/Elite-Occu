@@ -30,7 +30,23 @@ import {
   upsertDailyBedCensus,
   upsertDailyORCensus,
 } from './repository.js';
-import { getOccupancySnapshot, getORSnapshot } from '../../historyManager.js';
+import { getAvailableDates, getOccupancySnapshot, getORSnapshot } from '../../historyManager.js';
+
+function getTodayCairoDateStr(): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch (e) {}
+  return new Date().toISOString().slice(0, 10);
+}
 
 // Cache track of months that were already backfilled during current process lifetime
 const backfilledMonths = new Set<string>();
@@ -393,6 +409,7 @@ export class CumulativeOccupancyService {
     let orBackfilled = 0;
 
     try {
+      const todayCairoStr = getTodayCairoDateStr();
       const storedBeds = await getDailyBedCensusForMonth(monthStr);
       // Valid records that are not corrupted (totalOccupied > 0 while inpatientOccupied == 0)
       const validBedMap = new Map(
@@ -408,11 +425,28 @@ export class CumulativeOccupancyService {
       const validORMap = new Map(storedOR.map(o => [o.date, o]));
       const existingORDates = force ? new Set<string>() : new Set(validORMap.keys());
 
-      const dates = listMonthDates(monthStr);
+      const allDates = listMonthDates(monthStr);
+      // Never backfill future dates beyond today in Cairo time
+      const dates = allDates.filter(d => d <= todayCairoStr);
+
+      let availableOccDateSet: Set<string> | null = null;
+      let availableOrDateSet: Set<string> | null = null;
+      try {
+        const occIndex = await getAvailableDates('occupancy');
+        if (Array.isArray(occIndex) && occIndex.length > 0) {
+          availableOccDateSet = new Set(occIndex.map((x: any) => typeof x === 'string' ? x : x.date));
+        }
+      } catch (e) {}
+      try {
+        const orIndex = await getAvailableDates('or');
+        if (Array.isArray(orIndex) && orIndex.length > 0) {
+          availableOrDateSet = new Set(orIndex.map((x: any) => typeof x === 'string' ? x : x.date));
+        }
+      } catch (e) {}
 
       for (const d of dates) {
-        // 1. Backfill Beds
-        if (!existingBedDates.has(d)) {
+        // 1. Backfill Beds (only query snapshot if index confirms it exists or index wasn't available)
+        if (!existingBedDates.has(d) && (!availableOccDateSet || availableOccDateSet.has(d))) {
           try {
             const snap = await getOccupancySnapshot(d);
             if (snap && snap.hospitalData && snap.hospitalData.length > 3) {
@@ -427,17 +461,19 @@ export class CumulativeOccupancyService {
         // 2. Backfill OR (Never overwrite an already recorded OR census with 0 if raw snapshot was pruned after 30 days)
         if (!existingORDates.has(d)) {
           try {
-            const orSnap = await getORSnapshot(d);
+            const orSnap = (!availableOrDateSet || availableOrDateSet.has(d))
+              ? await getORSnapshot(d)
+              : null;
             if (orSnap && Array.isArray(orSnap.orList)) {
               await this.recordORCensus(d, orSnap.orList, 'backfill');
               orBackfilled++;
-            } else if (!validORMap.has(d)) {
-              // Calendar-day rule: only record 0 minutes if no OR census record exists yet for this date
+            } else if (!validORMap.has(d) && d < todayCairoStr) {
+              // Calendar-day rule: only record 0 minutes for completed past days if no OR census record exists yet
               await this.recordORCensus(d, [], 'backfill');
               orBackfilled++;
             }
           } catch (orSnapErr) {
-            if (!validORMap.has(d)) {
+            if (!validORMap.has(d) && d < todayCairoStr) {
               await this.recordORCensus(d, [], 'backfill');
               orBackfilled++;
             }

@@ -123,7 +123,7 @@ SUPABASE_HEADERS: Final[dict[str, str]] = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "Prefer": "resolution=merge-duplicates,return=representation"
+    "Prefer": "resolution=merge-duplicates,return=minimal"
 }
 
 _sb_session: Optional[requests.Session] = None
@@ -830,9 +830,10 @@ POWERBI_PAYLOAD_DICT: Final[dict[str, Any]] = {
 }
 
 
-def fetch_powerbi_and_sync() -> bool:
+def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
     """Executes single-pass live synchronization between Power BI, Relational Postgres, and RTDB."""
-    while True:
+    attempt = 0
+    while attempt < max_attempts:
         try:
             # FIX: Initialize current UTC timestamp at the start of every sync run to prevent UnboundLocalError
             now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -927,8 +928,10 @@ def fetch_powerbi_and_sync() -> bool:
                 t_inv = float(clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])))
                 r_deb = float(clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])))
 
+                det_seed = normalize_arabic_name(p_name) or bed_str or "patient"
+                det_hash = uuid.uuid5(uuid.NAMESPACE_OID, det_seed).hex[:8].upper()
                 rec = NormalizedPatientRecord(
-                    mrn=clean_m or raw_mrn or f"UNKNOWN-{uuid.uuid4().hex[:8]}",
+                    mrn=clean_m or raw_mrn or f"UNKNOWN-{det_hash}",
                     clean_mrn=clean_m,
                     name=p_name,
                     bed=bed_str,
@@ -1420,7 +1423,7 @@ def fetch_powerbi_and_sync() -> bool:
             ]
 
             sb_response = session.post(SUPABASE_REST_URL, json=granular_nodes, timeout=30, verify=SUPABASE_SSL_VERIFY)
-            if sb_response.status_code in (200, 201):
+            if sb_response.status_code in (200, 201, 204):
                 log(
                     f"Supabase state + Today's Snapshot ({cairo_date_str}) successfully committed: "
                     f"{len(cash_debts)} cash debts, {len(insured_debts)} insured debts, "
@@ -1434,7 +1437,13 @@ def fetch_powerbi_and_sync() -> bool:
         except Exception as e:
             log(f"Sync error encountered: {e}", level="error")
 
-        failure_countdown(5, "Data Fetch & Sync")
+        attempt += 1
+        if attempt >= max_attempts:
+            log(f"Max retry attempts ({max_attempts}) reached for this cycle. Deferring until next scheduled run.", level="error")
+            return False
+        backoff_sec = min(120, 15 * (2 ** (attempt - 1)))
+        failure_countdown(backoff_sec, f"Data Fetch & Sync (Attempt {attempt}/{max_attempts})")
+    return False
 
 
 # --- SCHEDULING & TIMEZONE ROLLOVER ORCHESTRATION ---

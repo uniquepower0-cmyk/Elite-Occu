@@ -85,13 +85,24 @@ export async function getDailyBedCensus(
   };
 }
 
+function getMonthEndDate(monthStr: string): string {
+  const [yStr, mStr] = monthStr.split('-');
+  const year = parseInt(yStr, 10);
+  const month = parseInt(mStr, 10);
+  if (!isNaN(year) && !isNaN(month) && month >= 1 && month <= 12) {
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return `${monthStr}-${String(lastDay).padStart(2, '0')}`;
+  }
+  return `${monthStr}-31`;
+}
+
 export async function getDailyBedCensusForMonth(
   monthStr: string, // YYYY-MM
   client?: SupabaseClient
 ): Promise<DailyBedCensus[]> {
   const sb = getSupabaseClient(client);
   const startDate = `${monthStr}-01`;
-  const endDate = `${monthStr}-31`;
+  const endDate = getMonthEndDate(monthStr);
 
   const { data, error } = await sb
     .from('occupancy_daily_census')
@@ -279,7 +290,7 @@ export async function getDailyORCensusForMonth(
 ): Promise<DailyORCensus[]> {
   const sb = getSupabaseClient(client);
   const startDate = `${monthStr}-01`;
-  const endDate = `${monthStr}-31`;
+  const endDate = getMonthEndDate(monthStr);
 
   const { data, error } = await sb
     .from('or_daily_census')

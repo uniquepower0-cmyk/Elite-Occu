@@ -2310,6 +2310,28 @@ let activeLoadDataPromise: Promise<void> | null = null;
 let inMemoryNodeTimestamps: Record<string, string> = {};
 let inMemoryStateMap: Record<string, any> = {};
 
+function isSameTimestamp(a: any, b: any): boolean {
+  if (!a || !b) return false;
+  const sa = String(a).trim();
+  const sb = String(b).trim();
+  if (sa === sb) return true;
+  const ta = Date.parse(sa);
+  const tb = Date.parse(sb);
+  return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
+}
+
+function buildDeterministicUnknownMrn(name: string, fallbackRoom = ''): string {
+  const clean = String(name || fallbackRoom || 'patient')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_');
+  let hash = 5381;
+  for (let i = 0; i < clean.length; i++) {
+    hash = ((hash << 5) + hash) ^ clean.charCodeAt(i);
+  }
+  return `UNKNOWN-${(hash >>> 0).toString(36).toUpperCase()}`;
+}
+
 async function loadData(force = false): Promise<void> {
   // Egress optimization: If hospitalData is in memory and was fetched within the last 2500ms,
   // reuse the in-memory dataset to prevent redundant Supabase PostgREST queries
@@ -2405,13 +2427,13 @@ async function executeLoadData(force = false) {
 
     if (metaNodes && Array.isArray(metaNodes)) {
       for (const node of metaNodes) {
-        if (node.updated_at && (!latestNodeUpdated || node.updated_at > latestNodeUpdated)) {
+        // Do not fetch or track legacy state/dataset if granular nodes are present
+        if (node.path === 'state/dataset') continue;
+        if (node.updated_at && (!latestNodeUpdated || Date.parse(node.updated_at) > Date.parse(latestNodeUpdated))) {
           latestNodeUpdated = node.updated_at;
         }
         const lastKnownTs = inMemoryNodeTimestamps[node.path];
-        // Do not fetch legacy state/dataset if granular nodes are present
-        if (node.path === 'state/dataset') continue;
-        if (force || !lastKnownTs || lastKnownTs !== node.updated_at || inMemoryStateMap[node.path] === undefined) {
+        if (force || !lastKnownTs || !isSameTimestamp(lastKnownTs, node.updated_at) || inMemoryStateMap[node.path] === undefined) {
           pathsToFetch.push(node.path);
         }
       }
@@ -2779,11 +2801,10 @@ async function executeLoadData(force = false) {
     return p;
   });
 
-  // Self-heal/Extract sub-datasets if hospitalData is present
+  // Self-heal/Extract sub-datasets in memory if hospitalData is present
   if (hospitalData && hospitalData.length > 1) {
     console.log('Refreshing derived sub-datasets (entries, debts, insured debts, dialysis, medical plans, los) with revised filters...');
     extractSubsheetsFromHospitalData(hospitalData);
-    let needsSave = true;
 
     // Always ensure all of today's admissions from hospitalData are included in cumulativeEntries
     const rawActivePatients = extractRawPatientsFromRows(hospitalData);
@@ -2798,7 +2819,6 @@ async function executeLoadData(force = false) {
     activeTodayAdmissions.forEach(p => {
       if (!cumulativeEntries.some(existing => isPatientMatch(existing, p))) {
         cumulativeEntries.push(p);
-        needsSave = true;
       }
     });
 
@@ -2812,7 +2832,6 @@ async function executeLoadData(force = false) {
       if (prevOpDate && currOpDate && prevOpDate !== currOpDate) {
         // Different days: update previousHospitalData without fabricating discharges
         previousHospitalData = hospitalData;
-        needsSave = true;
       } else {
         const newlyDischarged = oldActivePatients.filter(oldP => {
           const roomStr = oldP.room || "";
@@ -2829,15 +2848,9 @@ async function executeLoadData(force = false) {
             (p as any).dischargeDate = getTodayRiyadhDateStr();
             (p as any).dischargeType = isManual ? 'manual' : 'auto';
             cumulativeDischarged.push(p);
-            needsSave = true;
           }
         });
       }
-    }
-
-    if (needsSave && !IS_VERCEL) {
-      console.log('Persisting newly derived datasets to Supabase cloud database...');
-      saveData().catch(e => console.error('Error saving derived datasets:', e));
     }
   }
 
@@ -2859,11 +2872,7 @@ async function executeLoadData(force = false) {
     });
   }
 
-  const transfersCleaned = sanitizeAndDeduplicateTransfers();
-  if (transfersCleaned && !IS_VERCEL) {
-    console.log('[Transfers] Sanitized and removed corrupted ping-pong duplicates on startup.');
-    saveData().catch(e => console.error('Error saving cleaned transfers:', e));
-  }
+  sanitizeAndDeduplicateTransfers();
 
   // Check if daily reset or day-rollover is needed
   try {
@@ -3564,18 +3573,11 @@ async function saveData() {
             text: pendingDischargePatientsText || ''
           },
           updated_at: nowIso
-        },
-        // Also keep state/dataset updated for backwards compatibility
-        {
-          path: 'state/dataset',
-          data: data,
-          updated_at: nowIso
         }
       ];
 
       // Upsert in small batches (3-4 nodes per batch) to prevent PostgreSQL statement_timeout (error 57014)
-      const primaryGranularNodes = granularNodes.filter(n => n.path !== 'state/dataset');
-      const legacyDatasetNode = granularNodes.find(n => n.path === 'state/dataset');
+      const primaryGranularNodes = granularNodes;
 
       let sbErr: any = null;
       const CHUNK_SIZE = 4;
@@ -3596,17 +3598,6 @@ async function saveData() {
           } else {
             break;
           }
-        }
-      }
-
-      // Upsert legacy monolithic dataset node separately so its multi-megabyte size never blocks primary state
-      // On Vercel serverless, skip this 2.5MB monolithic blob entirely to prevent PostgreSQL 57014 statement timeout
-      if (legacyDatasetNode && !IS_VERCEL) {
-        try {
-          const { error: legErr } = await supabaseAdmin.from('rtdb_nodes').upsert(legacyDatasetNode as any);
-          if (legErr) console.warn('[Supabase Sync] Legacy state/dataset upsert notice:', legErr.message);
-        } catch (legacyEx: any) {
-          console.warn('[Supabase Sync] Legacy state/dataset upsert skipped:', legacyEx?.message || legacyEx);
         }
       }
 
@@ -3681,13 +3672,16 @@ async function saveData() {
         console.error('Error auto-saving database snapshot in saveData():', snapErr);
       }
 
-      // Fire a debounced change-log entry for this save (type injected by caller via pendingChangeType)
-      if (IS_VERCEL) {
-        await triggerChangeLogSnapshot(_pendingChangeType);
-      } else {
-        triggerChangeLogSnapshot(_pendingChangeType);
-      }
+      // Fire a debounced change-log entry for explicit user actions (skip unlabelled 'general' background saves)
+      const changeToLog = _pendingChangeType;
       _pendingChangeType = 'general'; // reset after consuming
+      if (changeToLog !== 'general') {
+        if (IS_VERCEL) {
+          await triggerChangeLogSnapshot(changeToLog);
+        } else {
+          triggerChangeLogSnapshot(changeToLog);
+        }
+      }
     } catch (sbEx) {
       console.error('Supabase sync exception:', sbEx);
     }
@@ -3781,13 +3775,6 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
       // Use smart timestamp diffing so only nodes with modified updated_at are fetched
       await loadData(false);
       console.log(`[Auto-Fetch Schedule] Server in-memory state successfully synchronized from database.`);
-      if (hospitalData && hospitalData.length > 3) {
-        const cairo = getCairoDateTime();
-        const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
-        takeOccupancySnapshotHelper(activeDateStr).catch(err => {
-          console.warn('[Auto-Fetch Schedule] Notice: Failed to ensure occupancy snapshot:', err);
-        });
-      }
     } catch (err) {
       console.error(`[Auto-Fetch Schedule] Failed to reload state from database:`, err);
     } finally {
@@ -3816,11 +3803,11 @@ function setupServerDatabaseAutoSync() {
       }, (payload) => {
         const path = (payload.new as any)?.path;
         const newUpdatedAt = (payload.new as any)?.updated_at || (payload.new as any)?.created_at;
-        console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'} (ts: ${newUpdatedAt})`);
         // Avoid duplicate triggers if this server instance initiated the write
-        if (newUpdatedAt && lastKnownDatabaseUpdatedAt && String(newUpdatedAt) === String(lastKnownDatabaseUpdatedAt)) {
+        if (newUpdatedAt && lastKnownDatabaseUpdatedAt && isSameTimestamp(newUpdatedAt, lastKnownDatabaseUpdatedAt)) {
           return;
         }
+        console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'} (ts: ${newUpdatedAt})`);
         if (!isServerAutoSyncing) {
           triggerServerAutoFetchFromDatabase('realtime-push');
         }
@@ -3829,24 +3816,7 @@ function setupServerDatabaseAutoSync() {
         if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to rtdb_nodes (state/metadata filter).');
       });
 
-    // 2. Subscribe to NEW Relational Tables (Admissions, Transfers, OR Cases)
-    supabaseAdmin
-      .channel('relational_schema_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'admissions' }, (payload) => {
-        console.log(`[Realtime NEW] Admission updated for patient_id: ${(payload.new as any)?.patient_id}`);
-        // NOTE: In the future, emit socket.io events directly here for targeted frontend updates
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'transfers' }, (payload) => {
-        console.log(`[Realtime NEW] Transfer logged: ${(payload.new as any)?.id}`);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_cases' }, (payload) => {
-        console.log(`[Realtime NEW] OR Case updated: ${(payload.new as any)?.id}`);
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Listening to Relational Schema (admissions, transfers, or_cases).');
-      });
-
-    // 3. Fallback Active Drift Heartbeat: Polls every 15s to guarantee sync even if WebSockets drop or miss events
+    // 2. Fallback Active Drift Heartbeat: Polls every 15s to guarantee sync even if WebSockets drop or miss events
     setInterval(async () => {
       try {
         const { data: node } = await supabaseAdmin
@@ -3855,7 +3825,7 @@ function setupServerDatabaseAutoSync() {
           .eq('path', 'state/metadata')
           .maybeSingle();
 
-        if (node?.updated_at && (!lastKnownDatabaseUpdatedAt || String(node.updated_at) !== String(lastKnownDatabaseUpdatedAt))) {
+        if (node?.updated_at && (!lastKnownDatabaseUpdatedAt || !isSameTimestamp(node.updated_at, lastKnownDatabaseUpdatedAt))) {
           console.log(`[Heartbeat Drift Detector] Newer database state detected (${node.updated_at} vs ${lastKnownDatabaseUpdatedAt}). Reloading...`);
           triggerServerAutoFetchFromDatabase('heartbeat-drift-detector');
         }
@@ -4336,7 +4306,7 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
     for (const row of parsedData) {
       let rawMrn = row.mrn ? String(row.mrn).trim() : "";
       let mrn = rawMrn.replace(/^0+/, "");
-      if (!mrn) mrn = `UNKNOWN-${Math.random().toString(36).substring(7)}`; 
+      if (!mrn) mrn = buildDeterministicUnknownMrn(row.patientName || '', row.orRoom || '');
       patientMap.set(mrn, { mrn: mrn, name: row.patientName || 'Unknown Patient' });
       row._computedMrn = mrn;
     }
@@ -4524,7 +4494,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       const alos = String(row[colAlosIdx] || "").trim();
 
       rpcPayload.push({
-        MRN: mrn || rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`,
+        MRN: mrn || rawMrn || buildDeterministicUnknownMrn(name, room),
         Patient: name,
         "Bed#": room,
         "Floor Name": getAccommodationCategory(room) || "",
@@ -4753,14 +4723,14 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
         const financial = d.colF ? String(d.colF).trim() : (d.financial || null);
         const phoneVal = cleanPhoneStr(d.phone || d.mobile || d.colE);
 
-        const targetMrn = cleanMrn || rawMrn;
-        if (targetMrn) mrnList.push(targetMrn);
-        if (rawMrn && rawMrn !== cleanMrn) mrnList.push(rawMrn);
+        const effectiveMrn = cleanMrn || rawMrn || buildDeterministicUnknownMrn(patientName || '', d.room || '');
+        mrnList.push(effectiveMrn);
+        if (rawMrn && rawMrn !== effectiveMrn) mrnList.push(rawMrn);
 
         itemMetas.push({
           d,
           rawMrn,
-          cleanMrn,
+          cleanMrn: effectiveMrn,
           patientName,
           totalVal,
           remainingVal,
@@ -4784,7 +4754,7 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
       for (const item of itemMetas) {
         let pId = (item.cleanMrn ? patientMap.get(item.cleanMrn) : null) || (item.rawMrn ? patientMap.get(item.rawMrn) : null);
         if (!pId) {
-          const m = item.cleanMrn || item.rawMrn || `UNKNOWN-${Math.random().toString(36).substring(7)}`;
+          const m = item.cleanMrn || item.rawMrn || buildDeterministicUnknownMrn(item.patientName || '', item.d?.room || '');
           missingPatients.push({
             mrn: m,
             name: item.patientName || 'Unknown Patient',
@@ -7829,10 +7799,14 @@ app.get('/api/occupancy/data', async (req, res) => {
   }
   await ensureVipCasesLoaded();
 
-  const currentEtag = `"${lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : 'empty')}"`;
+  const currentEtagTs = lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : 'empty');
+  const currentEtag = `"${currentEtagTs}"`;
   res.setHeader('ETag', currentEtag);
 
-  if (!force && !isDataMissing && req.headers['if-none-match'] === currentEtag) {
+  const clientEtagRaw = typeof req.headers['if-none-match'] === 'string'
+    ? req.headers['if-none-match'].replace(/^"|"$/g, '')
+    : '';
+  if (!force && !isDataMissing && (req.headers['if-none-match'] === currentEtag || isSameTimestamp(clientEtagRaw, currentEtagTs))) {
     return res.status(304).end();
   }
 
@@ -8136,6 +8110,7 @@ app.get('/api/early-discharge-rooms', (req, res) => {
 
 app.post('/api/early-discharge-rooms', async (req, res) => {
   earlyDischargeRoomsText = req.body.text || "";
+  setSaveChangeType('setting');
   await saveData();
   res.json({ success: true, text: earlyDischargeRoomsText });
 });
@@ -8149,6 +8124,7 @@ app.post('/api/pending-discharge', async (req, res) => {
   pendingDischargePatientsText = textVal;
   
   if (!textVal.trim()) {
+    setSaveChangeType('setting');
     await saveData();
     return res.json({ success: true, text: pendingDischargePatientsText, dischargedCount: 0, unmatched: [] });
   }
@@ -8160,6 +8136,7 @@ app.post('/api/pending-discharge', async (req, res) => {
     .filter((name: string) => name.length > 0);
 
   if (namesToDischarge.length === 0) {
+    setSaveChangeType('setting');
     await saveData();
     return res.json({ success: true, text: pendingDischargePatientsText, dischargedCount: 0, unmatched: [] });
   }
@@ -9124,8 +9101,16 @@ app.all('/api/cron/daily-reset', async (req, res) => {
   const cairo = getCairoDateTime();
   console.log(`[Cron Webhook] /api/cron/daily-reset invoked at ${cairo.fullStr}`);
   try {
+    if (!hospitalData) {
+      await loadData();
+    }
     const requestedDate = (req.query.date as string) || req.body?.date;
-    const targetDate = requestedDate || (cairo.hours === 23 && cairo.minutes >= 55 ? cairo.dateStr : (lastActiveDate || cairo.dateStr));
+    const yesterdayStr = getYesterdayCairoDateStr();
+    const targetDate = requestedDate || (
+      cairo.hours === 23 && cairo.minutes >= 55
+        ? cairo.dateStr
+        : (cairo.hours < 4 ? yesterdayStr : (lastActiveDate && lastActiveDate < cairo.dateStr ? lastActiveDate : yesterdayStr))
+    );
     const success = await performDailyRollover(targetDate);
     res.json({
       success: true,
@@ -9144,25 +9129,8 @@ app.post('/api/reset', async (req, res) => {
   console.log('Reset request received: removing today\'s occupancy state and snapshot from database');
   const cairo = getCairoDateTime();
   try {
-    const targetDatesToDelete = new Set<string>();
-    targetDatesToDelete.add(cairo.dateStr);
-    if (uploadedAt) {
-      targetDatesToDelete.add(getCairoDateFromTimestamp(uploadedAt));
-    }
-    if (lastActiveDate) {
-      targetDatesToDelete.add(lastActiveDate);
-    }
-    if (hospitalData && hospitalData.length > 3 && hospitalData[3][0]) {
-      const rowDate = cleanAdmissionDateStr(hospitalData[3][0]);
-      if (rowDate) {
-        const norm = normalizeToISODate(rowDate);
-        if (norm) targetDatesToDelete.add(norm);
-      }
-    }
-    if (cumulativeORList && cumulativeORList.length > 0 && cumulativeORList[0]?.orListDate) {
-      const orD = normalizeToISODate(cumulativeORList[0].orListDate);
-      if (orD) targetDatesToDelete.add(orD);
-    }
+    // Strictly restrict reset deletion to TODAY's Cairo date so past historical snapshots are never deleted
+    const targetDatesToDelete = new Set<string>([cairo.dateStr]);
 
     // 0. Save an immutable manual_reset changelog entry BEFORE deleting/clearing data
     try {
@@ -9792,7 +9760,7 @@ app.get('/api/database/auto-sync-status', async (req, res) => {
           .maybeSingle();
         if (node && node.updated_at) {
           const cloudUpdated = String(node.updated_at);
-          if (lastKnownDatabaseUpdatedAt && cloudUpdated !== lastKnownDatabaseUpdatedAt && !isServerAutoSyncing) {
+          if (lastKnownDatabaseUpdatedAt && !isSameTimestamp(cloudUpdated, lastKnownDatabaseUpdatedAt) && !isServerAutoSyncing) {
             console.log(`[Auto-Fetch Schedule] Newer database version detected via status check (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
             lastKnownDatabaseUpdatedAt = cloudUpdated;
             await loadData(true);

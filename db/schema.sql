@@ -235,25 +235,26 @@ CREATE POLICY "Allow authenticated read or_cases" ON public.or_cases FOR SELECT 
 DROP POLICY IF EXISTS "Allow authenticated read rtdb_nodes" ON public.rtdb_nodes;
 CREATE POLICY "Allow authenticated read rtdb_nodes" ON public.rtdb_nodes FOR SELECT TO authenticated USING (true);
 
--- 12. Realtime publication additions
+-- 12. Realtime publication additions (only rtdb_nodes is used for state/metadata change notifications;
+-- drop high-churn relational tables from publication to prevent WAL/log bloat)
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.patients;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.patients;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.admissions;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.admissions;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.rooms;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.rooms;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.transfers;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.transfers;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.or_cases;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.or_cases;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN

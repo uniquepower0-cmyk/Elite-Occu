@@ -740,7 +740,14 @@ export default function App() {
           },
           (payload: any) => {
             const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
-            if (newUpdatedAt && newUpdatedAt === lastDbTimestampRef.current) {
+            const isSameDbTs = (a: string | null | undefined, b: string | null | undefined) => {
+              if (!a || !b) return false;
+              if (a === b) return true;
+              const ta = Date.parse(a);
+              const tb = Date.parse(b);
+              return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
+            };
+            if (newUpdatedAt && isSameDbTs(String(newUpdatedAt), lastDbTimestampRef.current)) {
               // Already synced to this database snapshot, ignore echo
               return;
             }
@@ -810,6 +817,13 @@ export default function App() {
     if (!isAuthenticated) return;
 
     let isPolling = false;
+    const isSameDbTs = (a: string | null | undefined, b: string | null | undefined) => {
+      if (!a || !b) return false;
+      if (a === b) return true;
+      const ta = Date.parse(a);
+      const tb = Date.parse(b);
+      return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
+    };
     const checkDbSyncStatus = async () => {
       // Avoid background tabs or concurrent fetches draining egress
       if (document.hidden || isPolling || isFetchingRef.current) return;
@@ -819,7 +833,7 @@ export default function App() {
         if (res.ok) {
           const json = await res.json();
           const serverDbUpdated = json.lastDatabaseUpdate ? String(json.lastDatabaseUpdate) : null;
-          if (serverDbUpdated && lastDbTimestampRef.current && serverDbUpdated !== lastDbTimestampRef.current) {
+          if (serverDbUpdated && lastDbTimestampRef.current && !isSameDbTs(serverDbUpdated, lastDbTimestampRef.current)) {
             console.log('⚡ [Auto-Sync] Database change detected in Supabase cloud! Auto-fetching latest state...', serverDbUpdated, 'vs', lastDbTimestampRef.current);
             lastDbTimestampRef.current = serverDbUpdated;
             setCloudDatabaseUpdatedAt(serverDbUpdated);

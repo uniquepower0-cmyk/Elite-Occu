@@ -118,12 +118,12 @@ DROP POLICY IF EXISTS "Allow authenticated read or_monthly_summary" ON public.or
 CREATE POLICY "Allow authenticated read or_monthly_summary" 
 ON public.or_monthly_summary FOR SELECT TO authenticated USING (true);
 
--- Enable Realtime publication if desired
+-- Ensure daily census tables are not in supabase_realtime to avoid WAL broadcast overhead
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.occupancy_daily_census;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.occupancy_daily_census;
 EXCEPTION WHEN others THEN null;
 END $$;
 DO $$ BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.or_daily_census;
+    ALTER PUBLICATION supabase_realtime DROP TABLE public.or_daily_census;
 EXCEPTION WHEN others THEN null;
 END $$;

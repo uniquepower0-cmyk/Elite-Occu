@@ -102,9 +102,8 @@ export const historySupabase = createClient(
   }
 );
 
-// On Vercel (and other read-only serverless environments), /var/task is read-only.
-// Use /tmp for ephemeral disk history; on Railway/local process.cwd() is writable.
-const WRITABLE_BASE = process.env.VERCEL ? '/tmp' : process.cwd();
+// On Vercel or during automated tests, use /tmp so local project history/ is never mutated by test runs.
+const WRITABLE_BASE = (process.env.VERCEL || process.env.VITEST || process.env.NODE_ENV === 'test') ? '/tmp' : process.cwd();
 export const HISTORY_OCC_DIR = path.join(WRITABLE_BASE, 'history', 'occupancy');
 export const HISTORY_OR_DIR = path.join(WRITABLE_BASE, 'history', 'or');
 
@@ -755,8 +754,8 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
     }
   }
 
-  // 2. Try Supabase cloud database if not found on disk or if needing live cloud state
-  if (!snapshot) {
+  // 2. Try Supabase cloud database if not found on disk or if local disk file has no hospitalData
+  if (!snapshot || !snapshot.hospitalData || snapshot.hospitalData.length === 0) {
     try {
       // Query granular nodes under history/occupancy/${cleanDate}/%
       const { data: nodes, error: sbErr } = await historySupabase
