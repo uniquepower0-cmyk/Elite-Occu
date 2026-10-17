@@ -417,7 +417,13 @@ export default function App() {
 
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [dutyManagerTab, setDutyManagerTab] = useState<'reports' | 'preview-occupancy'>('reports');
-  const [vipCases, setVipCases] = useState<string>('');
+  const [vipCases, setVipCases] = useState<string>(() => {
+    try {
+      return localStorage.getItem('elite_vip_cases_permanent') || '';
+    } catch {
+      return '';
+    }
+  });
   const [vipSaveStatus, setVipSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'idle'>('idle');
   const isVipFocusedRef = useRef(false);
   const vipDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1242,8 +1248,32 @@ export default function App() {
       setOrList(data.orList || []);
       setOverList(data.overList || []);
       if (data.vipCasesText !== undefined && !isVipFocusedRef.current) {
-        setVipCases(data.vipCasesText);
-        setVipSaveStatus('saved');
+        const incomingVip = String(data.vipCasesText || '');
+        let localSavedVip = '';
+        try {
+          localSavedVip = localStorage.getItem('elite_vip_cases_permanent') || '';
+        } catch {}
+
+        if (incomingVip.trim().length > 0) {
+          setVipCases(incomingVip);
+          try {
+            localStorage.setItem('elite_vip_cases_permanent', incomingVip);
+          } catch {}
+          setVipSaveStatus('saved');
+        } else if (localSavedVip.trim().length > 0) {
+          // Permanent VIP Cases Safeguard: if server returned empty on a cold start while local permanent mirror has VIP cases,
+          // preserve the user's VIP cases and re-synchronize them to the server.
+          setVipCases(localSavedVip);
+          setVipSaveStatus('saved');
+          fetch('/api/vip-cases', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: localSavedVip })
+          }).catch(() => {});
+        } else {
+          setVipCases('');
+          setVipSaveStatus('saved');
+        }
       }
       if (data.earlyDischargeRoomsText !== undefined) {
         setEarlyDischargeRooms(data.earlyDischargeRoomsText);
@@ -1852,6 +1882,9 @@ export default function App() {
 
   const handleVipChange = (val: string) => {
     setVipCases(val);
+    try {
+      localStorage.setItem('elite_vip_cases_permanent', val);
+    } catch {}
     setVipSaveStatus('unsaved');
     if (vipDebounceTimerRef.current) clearTimeout(vipDebounceTimerRef.current);
     vipDebounceTimerRef.current = setTimeout(async () => {
@@ -1879,6 +1912,9 @@ export default function App() {
     setProcessing('Saving VIP Cases...');
     setVipSaveStatus('saving');
     try {
+      try {
+        localStorage.setItem('elite_vip_cases_permanent', vipCases);
+      } catch {}
       const res = await fetch('/api/vip-cases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1908,6 +1944,9 @@ export default function App() {
     if (vipDebounceTimerRef.current) clearTimeout(vipDebounceTimerRef.current);
     setProcessing('Resetting VIP Cases...');
     try {
+      try {
+        localStorage.removeItem('elite_vip_cases_permanent');
+      } catch {}
       const res = await fetch('/api/reset-vip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }

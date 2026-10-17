@@ -287,9 +287,9 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
           <div className="bg-teal-50/70 border border-teal-200/60 rounded-xl p-3 flex items-start gap-2.5">
             <Clock size={16} className="text-teal-700 shrink-0 mt-0.5" />
             <div>
-              <div className="font-extrabold text-[#0b3c34]">Daily Auto-Reset Schedule</div>
+              <div className="font-extrabold text-[#0b3c34]">30-Day Rolling Archive & Auto-Reset</div>
               <div className="text-slate-600 text-[11px] mt-0.5">
-                Everyday at <strong>11:59 PM</strong> (Egypt Time / Africa:Cairo). Automatically snapshots state before wipe.
+                Retains up to <strong>30 days</strong> of daily snapshots ({dates.length}/30 stored). Saving day 31 automatically evicts the oldest day from RTDB &amp; database.
               </div>
             </div>
           </div>
@@ -297,9 +297,9 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
           <div className="bg-emerald-50/70 border border-emerald-200/60 rounded-xl p-3 flex items-start gap-2.5">
             <ShieldCheck size={16} className="text-emerald-700 shrink-0 mt-0.5" />
             <div>
-              <div className="font-extrabold text-emerald-950">Critical Data Persistence</div>
+              <div className="font-extrabold text-emerald-950">Permanent MTD Analytics &amp; VIP Cases</div>
               <div className="text-slate-600 text-[11px] mt-0.5">
-                VIP Cases & Discharged Cases (auto/manual) remain strictly persistent across all resets.
+                <strong>MTD &amp; Monthly Cumulative Analytics</strong> and <strong>VIP Cases</strong> entered in the textbox are preserved forever.
               </div>
             </div>
           </div>

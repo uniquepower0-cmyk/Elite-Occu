@@ -33,6 +33,10 @@ import {
   getChangeLogDates,
   type ChangeType,
   normalizeRowsArray,
+  MAX_HISTORY_RETENTION_DAYS,
+  getRetentionCutoffDate,
+  pruneExpiredHistory,
+  registerRetentionHooks,
 } from './historyManager.js';
 import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
@@ -191,6 +195,30 @@ if (CONFIG_PATH && SERVICE_ACCOUNT_PATH) {
   console.info("[Firebase Admin] No service-account-key.json or firebase-applet-config.json detected. Running with Supabase/local persistent store.");
 }
 
+// Register 30-day rolling retention hooks:
+// 1. Before any historical date is evicted, guarantee its peak bed & OR census is recorded in cumulative analytics tables.
+// 2. Evict the oldest date from external Firebase RTDB / Firestore bridges if configured.
+registerRetentionHooks({
+  onBeforeDeleteDate: async (dateStr: string) => {
+    await cumulativeOccupancy.ensureDateCensusRecorded(dateStr);
+  },
+  externalRtdbPrune: async (dateStr: string) => {
+    if (adminRTDB) {
+      await Promise.allSettled([
+        adminRTDB.ref(`history/occupancy/${dateStr}`).remove(),
+        adminRTDB.ref(`history/or/${dateStr}`).remove(),
+        adminRTDB.ref(`history/changelog/${dateStr}`).remove(),
+      ]);
+    }
+    if (adminDb) {
+      await Promise.allSettled([
+        adminDb.collection('occupancy_history').doc(dateStr).delete(),
+        adminDb.collection('or_history').doc(dateStr).delete(),
+      ]);
+    }
+  },
+});
+
 // Environment detection & writable directory fallback: Vercel serverless has a read-only root, so /tmp is used
 const IS_VERCEL = !!process.env.VERCEL;
 const WRITABLE_BASE = IS_VERCEL ? '/tmp' : process.cwd();
@@ -285,6 +313,7 @@ let cumulativeORList: any[] = [];
 let cumulativeTransfers: any[] = [];
 let patientRoomRegistry: Record<string, { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
 let vipCasesText = "";
+let vipExplicitlyCleared = false;
 let earlyDischargeRoomsText = "";
 let pendingDischargePatientsText = "";
 let uploadedAt: number | null = null;
@@ -292,6 +321,40 @@ let lastActiveDate = "";
 let lastTransfersDate = "";
 let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
+
+/**
+ * Permanent VIP Cases Safeguard:
+ * Ensures that if vipCasesText is empty in memory (e.g. cold serverless start) and was NOT
+ * explicitly cleared by the user via /api/reset-vip, we recover the persisted text from
+ * `settings/vip_cases` in Supabase or local disk before reading or saving state.
+ */
+async function ensureVipCasesLoaded(): Promise<string> {
+  if ((vipCasesText && vipCasesText.trim().length > 0) || vipExplicitlyCleared) {
+    return vipCasesText;
+  }
+  try {
+    const { data: vipNode, error } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'settings/vip_cases')
+      .maybeSingle();
+    if (!error && vipNode?.data && typeof vipNode.data.text === 'string' && vipNode.data.text.trim().length > 0) {
+      vipCasesText = vipNode.data.text;
+      return vipCasesText;
+    }
+  } catch (err) {
+    console.warn('[VIP Safeguard] Could not query settings/vip_cases from Supabase:', err);
+  }
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      if (typeof raw?.vipCasesText === 'string' && raw.vipCasesText.trim().length > 0) {
+        vipCasesText = raw.vipCasesText;
+      }
+    }
+  } catch (_) {}
+  return vipCasesText;
+}
 
 function isManuallyDischarged(patientName: string): boolean {
   if (!patientName) return false;
@@ -3315,6 +3378,9 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 async function saveData() {
   try {
+    // Permanent VIP Cases Safeguard: never overwrite settings/vip_cases with an uninitialized empty string
+    await ensureVipCasesLoaded();
+
     const cairo = getCairoDateTime();
     if (
       (hospitalData && hospitalData.length > 0) ||
@@ -7761,6 +7827,7 @@ app.get('/api/occupancy/data', async (req, res) => {
       console.error('Failed to load latest state from Supabase in GET /api/occupancy/data:', err);
     }
   }
+  await ensureVipCasesLoaded();
 
   const currentEtag = `"${lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : 'empty')}"`;
   res.setHeader('ETag', currentEtag);
@@ -7935,11 +8002,13 @@ app.get('/api/occupancy/data', async (req, res) => {
   });
 });
 
-app.get('/api/vip-cases', (req, res) => {
+app.get('/api/vip-cases', async (req, res) => {
+  await ensureVipCasesLoaded();
   res.json({ text: vipCasesText });
 });
 
-app.all('/api/vip-cases/formatted', (req, res) => {
+app.all('/api/vip-cases/formatted', async (req, res) => {
+  await ensureVipCasesLoaded();
   const currentText = (req.body && typeof req.body.text === 'string') ? req.body.text : vipCasesText;
   if (!currentText) {
     return res.json({ text: "*Admitted VIP Cases as of " + new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }) + "*\n(No VIP cases in the text box)" });
@@ -8045,6 +8114,7 @@ app.all('/api/vip-cases/formatted', (req, res) => {
 app.post('/api/vip-cases', async (req, res) => {
   const newText = typeof req.body.text === 'string' ? req.body.text : (req.body.text || "");
   vipCasesText = newText;
+  vipExplicitlyCleared = !vipCasesText.trim();
   try {
     const nowIso = new Date().toISOString();
     await supabaseAdmin.from('rtdb_nodes').upsert({
@@ -8965,6 +9035,17 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     // and finalized at the next 23:59 rollover or on operational saves.
     console.log(`[Daily Rollover] New day baseline initialized in memory & database for ${newDayDateStr}.`);
 
+    // 9. Enforce 30-day rolling data retention (evicts 31st+ oldest days from RTDB, relational tables, and local disk,
+    // while permanently preserving Month-to-Date & Monthly Cumulative Analytics and VIP Cases).
+    try {
+      const pruneSummary = await pruneExpiredHistory({ referenceDate: newDayDateStr });
+      console.log(
+        `[Daily Rollover] 30-day retention sweep completed (cutoff=${pruneSummary.cutoffDate}, evicted=${pruneSummary.evictedDates.length} dates).`
+      );
+    } catch (pruneErr) {
+      console.warn('[Daily Rollover] Notice during 30-day retention sweep:', pruneErr);
+    }
+
     console.log(`[Daily Rollover] Rollover completed successfully for closing date ${targetDate}. Inpatients retained in beds, daily datasets zeroed, baseline established for new day ${newDayDateStr}.`);
     return true;
   } catch (err) {
@@ -9184,6 +9265,7 @@ app.post('/api/reset', async (req, res) => {
 app.post('/api/reset-vip', async (req, res) => {
   console.log('Reset VIP cases requested manually by user');
   vipCasesText = "";
+  vipExplicitlyCleared = true;
   try {
     const nowIso = new Date().toISOString();
     await supabaseAdmin.from('rtdb_nodes').upsert({
@@ -9770,8 +9852,32 @@ app.get('/api/history/status', (req, res) => {
     cairoDate: cairo.dateStr,
     nextAutoResetSchedule: 'Every day at 11:59 PM Egyptian Time (Africa/Cairo)',
     timezone: 'Africa/Cairo',
-    lastAutoResetDate: lastEgyptianAutoResetDate || 'None today'
+    lastAutoResetDate: lastEgyptianAutoResetDate || 'None today',
+    retentionDays: MAX_HISTORY_RETENTION_DAYS,
+    cutoffDate: getRetentionCutoffDate(cairo.dateStr, MAX_HISTORY_RETENTION_DAYS),
+    preservedPermanently: [
+      'occupancy_daily_census (MTD & monthly bed analytics)',
+      'occupancy_monthly_summary (finalized monthly bed analytics)',
+      'or_daily_census (MTD & monthly OR analytics)',
+      'or_monthly_summary (finalized monthly OR analytics)',
+      'settings/vip_cases (VIP cases textbox)'
+    ]
   });
+});
+
+app.post('/api/history/prune', async (req, res) => {
+  try {
+    const maxDays = Number(req.body?.maxDays) > 0 ? Number(req.body.maxDays) : MAX_HISTORY_RETENTION_DAYS;
+    const referenceDate = typeof req.body?.referenceDate === 'string' ? req.body.referenceDate : undefined;
+    const summary = await pruneExpiredHistory({ maxDays, referenceDate });
+    res.json({
+      success: true,
+      ...summary
+    });
+  } catch (err: any) {
+    console.error('Manual history retention prune failed:', err);
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
 });
 
 app.post('/api/or-list/sync', async (req, res) => {

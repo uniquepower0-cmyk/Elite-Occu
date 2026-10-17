@@ -332,9 +332,9 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
           <div className="bg-teal-50/70 border border-teal-200/60 rounded-xl p-3 flex items-start gap-2.5">
             <Clock size={16} className="text-teal-700 shrink-0 mt-0.5" />
             <div>
-              <div className="font-extrabold text-[#0b3c34]">Daily Reset at 11:59 PM</div>
+              <div className="font-extrabold text-[#0b3c34]">30-Day Rolling OR Archive</div>
               <div className="text-slate-600 text-[11px] mt-0.5">
-                Archived automatically everyday at 11:59 PM (Egypt Time) to preserve the historical audit record.
+                Retains up to <strong>30 days</strong> of OR snapshots ({dates.length}/30 stored). Saving day 31 automatically evicts the oldest day from RTDB &amp; database.
               </div>
             </div>
           </div>
@@ -342,9 +342,9 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
           <div className="bg-emerald-50/70 border border-emerald-200/60 rounded-xl p-3 flex items-start gap-2.5">
             <Building2 size={16} className="text-emerald-700 shrink-0 mt-0.5" />
             <div>
-              <div className="font-extrabold text-emerald-950">Combined OR Workbook</div>
+              <div className="font-extrabold text-emerald-950">Permanent OR Cumulative Analytics</div>
               <div className="text-slate-600 text-[11px] mt-0.5">
-                Download Schedule, Timeline Graphics, Reconciliation & Over-listed cases formatted into one report.
+                <strong>MTD &amp; Monthly OR Utilization Analytics</strong> are preserved forever even after raw 30-day schedules are pruned.
               </div>
             </div>
           </div>

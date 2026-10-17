@@ -295,8 +295,78 @@ export async function getChangeLogForDate(dateStr: string): Promise<ChangeLogEnt
   }
 }
 
+export const MAX_HISTORY_RETENTION_DAYS = 30;
+
+export interface RetentionHooks {
+  onBeforeDeleteDate?: (dateStr: string) => Promise<void>;
+  externalRtdbPrune?: (dateStr: string) => Promise<void>;
+}
+
+let retentionHooks: RetentionHooks = {};
+
+export function registerRetentionHooks(hooks: RetentionHooks): void {
+  retentionHooks = { ...retentionHooks, ...hooks };
+}
+
 /**
- * Retrieve all dates that have at least one change-log entry.
+ * Computes the earliest YYYY-MM-DD date to retain for a rolling window of `maxDays`
+ * inclusive of `referenceDateStr` (e.g. if referenceDateStr is Day 31 and maxDays is 30,
+ * Day 2 .. Day 31 are >= cutoffDate, while Day 1 is < cutoffDate).
+ */
+export function getRetentionCutoffDate(
+  referenceDateStr?: string,
+  maxDays: number = MAX_HISTORY_RETENTION_DAYS
+): string {
+  const effectiveMax = Math.max(1, maxDays);
+  const baseStr =
+    (referenceDateStr && normalizeToISODate(referenceDateStr)) ||
+    getCairoDateTime().dateStr;
+  const [y, m, d] = baseStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - (effectiveMax - 1));
+  const yStr = dt.getUTCFullYear();
+  const mStr = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dStr = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yStr}-${mStr}-${dStr}`;
+}
+
+/**
+ * Delete all change-log entries for a specific date from Supabase rtdb_nodes and index.
+ */
+export async function deleteChangeLogForDate(dateStr: string): Promise<boolean> {
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
+  try {
+    await historySupabase
+      .from('rtdb_nodes')
+      .delete()
+      .like('path', `history/changelog/${cleanDate}%`);
+
+    const { data: node } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'history/changelog_index')
+      .maybeSingle();
+
+    if (node && Array.isArray(node.data)) {
+      const filtered = (node.data as string[]).filter(
+        d => (normalizeToISODate(d) || d) !== cleanDate && d !== dateStr
+      );
+      await historySupabase.from('rtdb_nodes').upsert({
+        path: 'history/changelog_index',
+        data: filtered,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    return true;
+  } catch (err) {
+    console.error(`[ChangeLog] Failed to delete changelog for ${cleanDate}:`, err);
+    return false;
+  }
+}
+
+/**
+ * Retrieve all dates that have at least one change-log entry (capped at 30 days).
  */
 export async function getChangeLogDates(): Promise<string[]> {
   try {
@@ -307,7 +377,16 @@ export async function getChangeLogDates(): Promise<string[]> {
       .maybeSingle();
 
     if (node && Array.isArray(node.data)) {
-      return node.data as string[];
+      const normalized = Array.from(
+        new Set(
+          (node.data as string[])
+            .map(d => normalizeToISODate(d) || d)
+            .filter(Boolean)
+        )
+      ).sort((a, b) => b.localeCompare(a));
+      const refDate = normalized[0] || getCairoDateTime().dateStr;
+      const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
+      return normalized.filter((d, idx) => idx < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate);
     }
   } catch (err) {
     console.error('[ChangeLog] Failed to fetch changelog dates index:', err);
@@ -316,9 +395,11 @@ export async function getChangeLogDates(): Promise<string[]> {
 }
 
 /**
- * Maintain a small index of all dates that have changelog entries.
+ * Maintain a bounded 30-day index of dates that have changelog entries.
+ * Evicts any dates beyond 30 days from rtdb_nodes.
  */
 async function updateChangeLogIndex(dateStr: string): Promise<void> {
+  const normDate = normalizeToISODate(dateStr) || dateStr;
   try {
     const { data: node } = await historySupabase
       .from('rtdb_nodes')
@@ -326,15 +407,27 @@ async function updateChangeLogIndex(dateStr: string): Promise<void> {
       .eq('path', 'history/changelog_index')
       .maybeSingle();
 
-    let dates: string[] = (node && Array.isArray(node.data)) ? node.data as string[] : [];
-    if (!dates.includes(dateStr)) {
-      dates.unshift(dateStr);
-      dates.sort((a, b) => b.localeCompare(a));
-      await historySupabase.from('rtdb_nodes').upsert({
-        path: 'history/changelog_index',
-        data: dates,
-        updated_at: new Date().toISOString(),
-      });
+    let dates: string[] = (node && Array.isArray(node.data)) ? (node.data as string[]) : [];
+    dates = Array.from(
+      new Set([normDate, ...dates.map(d => normalizeToISODate(d) || d).filter(Boolean)])
+    ).sort((a, b) => b.localeCompare(a));
+
+    const refDate = dates[0] || normDate;
+    const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
+    const keptDates = dates.filter((d, idx) => idx < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate);
+    const evictedDates = dates.filter((d, idx) => idx >= MAX_HISTORY_RETENTION_DAYS || d < cutoffDate);
+
+    await historySupabase.from('rtdb_nodes').upsert({
+      path: 'history/changelog_index',
+      data: keptDates,
+      updated_at: new Date().toISOString(),
+    });
+
+    for (const oldDate of evictedDates) {
+      await historySupabase
+        .from('rtdb_nodes')
+        .delete()
+        .like('path', `history/changelog/${oldDate}%`);
     }
   } catch (err) {
     console.error('[ChangeLog] Failed to update changelog index:', err);
@@ -1160,7 +1253,133 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
 }
 
 /**
- * Update the index of available dates
+ * Prunes relational tables (`or_cases`, `transfers`, non-active `admissions`, and orphaned `patients`)
+ * for dates older than `cutoffDateStr` or explicitly in `evictedDates`.
+ * Strictly preserves:
+ *   - `occupancy_daily_census` & `occupancy_monthly_summary`
+ *   - `or_daily_census` & `or_monthly_summary`
+ *   - `rtdb_nodes` `settings/vip_cases`
+ *   - Active inpatients (`admissions.status = 'Admitted'`)
+ */
+export async function pruneRelationalTablesForCutoff(
+  cutoffDateStr: string,
+  evictedDates: string[] = [],
+  referenceDateStr?: string,
+  maxDays: number = MAX_HISTORY_RETENTION_DAYS
+): Promise<void> {
+  const cleanCutoff = normalizeToISODate(cutoffDateStr) || cutoffDateStr;
+  const cleanRef =
+    (referenceDateStr && normalizeToISODate(referenceDateStr)) ||
+    getCairoDateTime().dateStr;
+  const cutoffIso = `${cleanCutoff}T00:00:00Z`;
+
+  // 1. Attempt PostgreSQL stored procedure enforce_30_day_retention if deployed
+  try {
+    await historySupabase.rpc('enforce_30_day_retention', {
+      p_max_days: maxDays,
+      p_reference_date: cleanRef,
+    });
+  } catch (_) {
+    // Non-fatal if RPC is not yet deployed in SQL editor; direct fallback below handles cleanup
+  }
+
+  // 2. Direct fallback pruning on relational tables
+  try {
+    await historySupabase
+      .from('or_cases')
+      .delete()
+      .lt('scheduled_date', cleanCutoff);
+
+    if (evictedDates.length > 0) {
+      await historySupabase
+        .from('or_cases')
+        .delete()
+        .in('scheduled_date', evictedDates);
+    }
+  } catch (orErr) {
+    console.warn('[Retention] Notice pruning expired or_cases:', orErr);
+  }
+
+  try {
+    await historySupabase
+      .from('transfers')
+      .delete()
+      .lt('transfer_date', cutoffIso);
+  } catch (trErr) {
+    console.warn('[Retention] Notice pruning expired transfers:', trErr);
+  }
+
+  try {
+    // Only delete historical non-active admissions (Discharged / Transferred) older than cutoff.
+    // Active inpatients (status = 'Admitted') are NEVER deleted.
+    await historySupabase
+      .from('admissions')
+      .delete()
+      .neq('status', 'Admitted')
+      .lt('updated_at', cutoffIso);
+  } catch (admErr) {
+    console.warn('[Retention] Notice pruning expired discharged admissions:', admErr);
+  }
+
+  try {
+    // Prune orphaned patient rows older than cutoff that have no remaining admission records
+    const [{ data: oldPts }, { data: activeAdms }] = await Promise.all([
+      historySupabase.from('patients').select('id').lt('updated_at', cutoffIso).limit(1000),
+      historySupabase.from('admissions').select('patient_id').limit(5000),
+    ]);
+    if (Array.isArray(oldPts) && oldPts.length > 0) {
+      const referencedIds = new Set(
+        (activeAdms || []).map((a: any) => a?.patient_id).filter(Boolean)
+      );
+      const orphanIds = oldPts
+        .map((p: any) => p?.id)
+        .filter((id: any) => id && !referencedIds.has(id));
+      if (orphanIds.length > 0) {
+        await historySupabase.from('patients').delete().in('id', orphanIds);
+      }
+    }
+  } catch (ptErr) {
+    console.warn('[Retention] Notice pruning orphaned patients:', ptErr);
+  }
+}
+
+/**
+ * Evicts a single date across occupancy, OR, changelog, disk, external RTDB,
+ * after running the pre-eviction cumulative analytics safeguard.
+ */
+async function evictSingleDateEverywhere(dateStr: string): Promise<void> {
+  const cleanDate = normalizeToISODate(dateStr) || dateStr.trim();
+  if (!cleanDate) return;
+
+  // 1. Pre-eviction safeguard: ensure cumulative daily bed & OR census are recorded first
+  try {
+    if (retentionHooks.onBeforeDeleteDate) {
+      await retentionHooks.onBeforeDeleteDate(cleanDate);
+    }
+  } catch (hookErr) {
+    console.warn(`[Retention] Pre-delete safeguard notice for ${cleanDate}:`, hookErr);
+  }
+
+  // 2. Remove from local disk & Supabase rtdb_nodes
+  await deleteOccupancySnapshot(cleanDate);
+  await deleteORSnapshot(cleanDate);
+  await deleteChangeLogForDate(cleanDate);
+
+  // 3. Remove from external Firebase RTDB / Firestore if configured
+  try {
+    if (retentionHooks.externalRtdbPrune) {
+      await retentionHooks.externalRtdbPrune(cleanDate);
+    }
+  } catch (extErr) {
+    console.warn(`[Retention] External RTDB prune notice for ${cleanDate}:`, extErr);
+  }
+}
+
+/**
+ * Update the index of available dates and enforce the 30-day rolling retention cap.
+ * When a 31st day is saved (or any date falls older than 30 days), the oldest day
+ * is automatically removed from disk, Supabase rtdb_nodes, external RTDB, and relational tables,
+ * after ensuring its cumulative analytics census is recorded.
  */
 async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntry) {
   const normDate = normalizeToISODate(entry.date) || entry.date;
@@ -1206,25 +1425,300 @@ async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntr
   entries.unshift(entry);
   entries.sort((a, b) => (normalizeToISODate(b.date) || b.date).localeCompare(normalizeToISODate(a.date) || a.date));
 
-  // Save to disk asynchronously
+  // Enforce 30-day rolling retention cap (both max 30 dates and 30-day calendar window)
+  const newestDate = normalizeToISODate(entries[0]?.date) || normDate;
+  const cutoffDate = getRetentionCutoffDate(newestDate, MAX_HISTORY_RETENTION_DAYS);
+
+  const keptEntries: DateIndexEntry[] = [];
+  const evictedDates: string[] = [];
+
+  entries.forEach((item, idx) => {
+    const itemDate = normalizeToISODate(item.date) || item.date;
+    if (idx < MAX_HISTORY_RETENTION_DAYS && itemDate >= cutoffDate) {
+      keptEntries.push({ ...item, date: itemDate });
+    } else {
+      evictedDates.push(itemDate);
+    }
+  });
+
+  // Save trimmed 30-day index to disk asynchronously
   try {
-    await fsPromises.writeFile(indexPath, JSON.stringify(entries));
+    await fsPromises.writeFile(indexPath, JSON.stringify(keptEntries));
   } catch (e) {}
 
-  // Save to Supabase
+  // Save trimmed 30-day index to Supabase
   try {
     await historySupabase.from('rtdb_nodes').upsert({
       path: `history/${type}_index`,
-      data: entries,
+      data: keptEntries,
       updated_at: new Date().toISOString()
     });
   } catch (e) {
     console.error(`[History] Failed to sync ${type}_index to Supabase:`, e);
   }
+
+  // Evict overflow / expired dates (> 30 days) from disk, rtdb_nodes, external RTDB, and relational tables
+  if (evictedDates.length > 0) {
+    console.log(`[Retention] Evicting ${evictedDates.length} expired ${type} date(s) beyond ${MAX_HISTORY_RETENTION_DAYS}-day limit: ${evictedDates.join(', ')}`);
+    for (const oldDate of evictedDates) {
+      await evictSingleDateEverywhere(oldDate);
+    }
+    await pruneRelationalTablesForCutoff(cutoffDate, evictedDates, newestDate, MAX_HISTORY_RETENTION_DAYS);
+  }
 }
 
 /**
- * Get all available dates for a given history type
+ * Scans all occupancy, OR, and changelog history across local disk and Supabase rtdb_nodes,
+ * evicting any dates beyond `maxDays` (default 30) or older than the 30-day cutoff date,
+ * while safeguarding cumulative Month-to-Date analytics and permanent VIP cases.
+ */
+export async function pruneExpiredHistory(options?: {
+  referenceDate?: string;
+  maxDays?: number;
+}): Promise<{
+  evictedDates: string[];
+  prunedOccupancyDates: string[];
+  prunedOrDates: string[];
+  prunedChangelogDates: string[];
+  cutoffDate: string;
+}> {
+  const maxDays = Math.max(1, options?.maxDays ?? MAX_HISTORY_RETENTION_DAYS);
+  const prunedOccupancyDates: string[] = [];
+  const prunedOrDates: string[] = [];
+  const prunedChangelogDates: string[] = [];
+
+  // Helper to collect all known dates for a given type ('occupancy' | 'or')
+  const collectAllDatesForType = async (type: 'occupancy' | 'or'): Promise<DateIndexEntry[]> => {
+    const dir = type === 'occupancy' ? HISTORY_OCC_DIR : HISTORY_OR_DIR;
+    const indexPath = path.join(WRITABLE_BASE, 'history', `${type}_index.json`);
+    const collected: DateIndexEntry[] = [];
+
+    if (fs.existsSync(indexPath)) {
+      try {
+        const raw = await fsPromises.readFile(indexPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) collected.push(...parsed);
+      } catch (_) {}
+    }
+
+    try {
+      if (fs.existsSync(dir)) {
+        const files = await fsPromises.readdir(dir);
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            const d = normalizeToISODate(file.replace('.json', ''));
+            if (d && !collected.some(e => (normalizeToISODate(e.date) || e.date) === d)) {
+              collected.push({ date: d, timestamp: Date.now(), cairoTime: `${d} 00:00:00`, summary: {} });
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const { data: node } = await historySupabase
+        .from('rtdb_nodes')
+        .select('data')
+        .eq('path', `history/${type}_index`)
+        .maybeSingle();
+      if (node && Array.isArray(node.data)) {
+        for (const ce of node.data as DateIndexEntry[]) {
+          const d = normalizeToISODate(ce.date) || ce.date;
+          if (d && !collected.some(e => (normalizeToISODate(e.date) || e.date) === d)) {
+            collected.push({ ...ce, date: d });
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const { data: nodes } = await historySupabase
+        .from('rtdb_nodes')
+        .select('path, updated_at')
+        .like('path', `history/${type}/%`);
+      if (nodes && Array.isArray(nodes)) {
+        for (const n of nodes) {
+          const rel = n.path.replace(`history/${type}/`, '');
+          const datePart = rel.split('/')[0];
+          const d = normalizeToISODate(datePart);
+          if (d && !collected.some(e => (normalizeToISODate(e.date) || e.date) === d)) {
+            collected.push({
+              date: d,
+              timestamp: new Date(n.updated_at || Date.now()).getTime(),
+              cairoTime: `${d} 00:00:00`,
+              summary: {},
+            });
+          }
+        }
+      }
+    } catch (_) {}
+
+    const dedup = new Map<string, DateIndexEntry>();
+    for (const item of collected) {
+      const norm = normalizeToISODate(item.date) || item.date;
+      if (norm && !dedup.has(norm)) {
+        dedup.set(norm, { ...item, date: norm });
+      }
+    }
+    return Array.from(dedup.values()).sort((a, b) => b.date.localeCompare(a.date));
+  };
+
+  const occEntries = await collectAllDatesForType('occupancy');
+  const orEntries = await collectAllDatesForType('or');
+
+  const candidateRefDates = [
+    options?.referenceDate,
+    occEntries[0]?.date,
+    orEntries[0]?.date,
+    getCairoDateTime().dateStr,
+  ]
+    .map(d => (d ? normalizeToISODate(d) || d : null))
+    .filter(Boolean) as string[];
+  candidateRefDates.sort((a, b) => b.localeCompare(a));
+
+  const referenceDate = options?.referenceDate
+    ? normalizeToISODate(options.referenceDate) || options.referenceDate
+    : candidateRefDates[0] || getCairoDateTime().dateStr;
+  const cutoffDate = getRetentionCutoffDate(referenceDate, maxDays);
+
+  // 1. Prune Occupancy Dates
+  const keptOcc: DateIndexEntry[] = [];
+  for (let i = 0; i < occEntries.length; i++) {
+    const entry = occEntries[i];
+    if (i < maxDays && entry.date >= cutoffDate) {
+      keptOcc.push(entry);
+    } else {
+      prunedOccupancyDates.push(entry.date);
+    }
+  }
+
+  for (const oldDate of prunedOccupancyDates) {
+    try {
+      await retentionHooks.onBeforeDeleteDate?.(oldDate);
+    } catch (_) {}
+    await deleteOccupancySnapshot(oldDate);
+    try {
+      await retentionHooks.externalRtdbPrune?.(oldDate);
+    } catch (_) {}
+  }
+
+  if (prunedOccupancyDates.length > 0) {
+    const occIndexPath = path.join(WRITABLE_BASE, 'history', 'occupancy_index.json');
+    try {
+      await fsPromises.writeFile(occIndexPath, JSON.stringify(keptOcc));
+    } catch (_) {}
+    try {
+      await historySupabase.from('rtdb_nodes').upsert({
+        path: 'history/occupancy_index',
+        data: keptOcc,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (_) {}
+  }
+
+  // 2. Prune OR Dates
+  const keptOr: DateIndexEntry[] = [];
+  for (let i = 0; i < orEntries.length; i++) {
+    const entry = orEntries[i];
+    if (i < maxDays && entry.date >= cutoffDate) {
+      keptOr.push(entry);
+    } else {
+      prunedOrDates.push(entry.date);
+    }
+  }
+
+  for (const oldDate of prunedOrDates) {
+    try {
+      await retentionHooks.onBeforeDeleteDate?.(oldDate);
+    } catch (_) {}
+    await deleteORSnapshot(oldDate);
+    try {
+      await retentionHooks.externalRtdbPrune?.(oldDate);
+    } catch (_) {}
+  }
+
+  if (prunedOrDates.length > 0) {
+    const orIndexPath = path.join(WRITABLE_BASE, 'history', 'or_index.json');
+    try {
+      await fsPromises.writeFile(orIndexPath, JSON.stringify(keptOr));
+    } catch (_) {}
+    try {
+      await historySupabase.from('rtdb_nodes').upsert({
+        path: 'history/or_index',
+        data: keptOr,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (_) {}
+  }
+
+  // 3. Prune ChangeLog Dates
+  try {
+    const clSet = new Set<string>();
+    const { data: clIdxNode } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'history/changelog_index')
+      .maybeSingle();
+    if (clIdxNode && Array.isArray(clIdxNode.data)) {
+      for (const d of clIdxNode.data as string[]) {
+        const norm = normalizeToISODate(d) || d;
+        if (norm) clSet.add(norm);
+      }
+    }
+    const { data: clNodes } = await historySupabase
+      .from('rtdb_nodes')
+      .select('path')
+      .like('path', 'history/changelog/%');
+    if (clNodes && Array.isArray(clNodes)) {
+      for (const n of clNodes) {
+        const datePart = n.path.replace('history/changelog/', '').split('/')[0];
+        const norm = normalizeToISODate(datePart);
+        if (norm) clSet.add(norm);
+      }
+    }
+
+    const sortedCl = Array.from(clSet).sort((a, b) => b.localeCompare(a));
+    const keptCl: string[] = [];
+    for (let i = 0; i < sortedCl.length; i++) {
+      const d = sortedCl[i];
+      if (i < maxDays && d >= cutoffDate) {
+        keptCl.push(d);
+      } else {
+        prunedChangelogDates.push(d);
+      }
+    }
+
+    for (const oldDate of prunedChangelogDates) {
+      await deleteChangeLogForDate(oldDate);
+    }
+
+    if (prunedChangelogDates.length > 0) {
+      await historySupabase.from('rtdb_nodes').upsert({
+        path: 'history/changelog_index',
+        data: keptCl,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (clErr) {
+    console.warn('[Retention] Notice pruning changelog history:', clErr);
+  }
+
+  // 4. Prune Relational Tables (or_cases, transfers, discharged admissions, orphaned patients)
+  const allEvicted = Array.from(new Set([...prunedOccupancyDates, ...prunedOrDates, ...prunedChangelogDates]));
+  await pruneRelationalTablesForCutoff(cutoffDate, allEvicted, referenceDate, maxDays);
+
+  return {
+    evictedDates: allEvicted,
+    prunedOccupancyDates,
+    prunedOrDates,
+    prunedChangelogDates,
+    cutoffDate,
+  };
+}
+
+/**
+ * Get all available dates for a given history type (bounded to the 30-day retention window).
+ * If any dates beyond 30 days are discovered on disk or in rtdb_nodes, triggers background eviction.
  */
 export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateIndexEntry[]> {
   const dir = type === 'occupancy' ? HISTORY_OCC_DIR : HISTORY_OR_DIR;
@@ -1297,7 +1791,7 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
     if (nodes && Array.isArray(nodes)) {
       for (const n of nodes) {
         const rel = n.path.replace(`history/${type}/`, '');
-        const datePart = rel.split('/summary')[0].split('/cases')[0];
+        const datePart = rel.split('/summary')[0].split('/cases')[0].split('/')[0];
         const norm = normalizeToISODate(datePart);
         if (norm && !diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === norm)) {
           diskEntries.push({
@@ -1325,8 +1819,31 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
     }
   }
 
-  const result = Array.from(map.values());
-  result.sort((a, b) => b.date.localeCompare(a.date));
-  return result;
+  const allSorted = Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+  const refDate = allSorted[0]?.date || cairo.dateStr;
+  const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
+
+  const kept: DateIndexEntry[] = [];
+  const expired: string[] = [];
+  allSorted.forEach((item, idx) => {
+    if (idx < MAX_HISTORY_RETENTION_DAYS && item.date >= cutoffDate) {
+      kept.push(item);
+    } else {
+      expired.push(item.date);
+    }
+  });
+
+  if (expired.length > 0) {
+    // Asynchronously evict expired dates discovered during listing
+    (async () => {
+      for (const oldDate of expired) {
+        await evictSingleDateEverywhere(oldDate);
+      }
+      await pruneRelationalTablesForCutoff(cutoffDate, expired, refDate, MAX_HISTORY_RETENTION_DAYS);
+    })().catch(err => console.warn('[Retention] Async cleanup notice:', err));
+  }
+
+  return kept;
 }
+
 

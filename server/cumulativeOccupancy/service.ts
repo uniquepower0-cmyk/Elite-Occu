@@ -337,7 +337,50 @@ export class CumulativeOccupancyService {
   }
 
   /**
+   * Safeguard invoked BEFORE a historical date's raw snapshot is evicted by the 30-day
+   * retention policy. Ensures that the date's bed occupancy census and OR utilization census
+   * are recorded in `occupancy_daily_census` and `or_daily_census` so Month-to-Date and
+   * monthly cumulative analytics never lose any historical day's metrics.
+   */
+  async ensureDateCensusRecorded(dateStr: string): Promise<void> {
+    if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return;
+
+    // 1. Ensure Bed Census is recorded
+    try {
+      const existingBed = await getDailyBedCensus(dateStr);
+      if (!existingBed || (existingBed.totalOccupied > 0 && existingBed.inpatientOccupied === 0)) {
+        const snap = await getOccupancySnapshot(dateStr);
+        if (snap && snap.hospitalData && snap.hospitalData.length > 3) {
+          await this.recordPeakBedCensus(
+            dateStr,
+            snap.hospitalData,
+            snap.cumulativeDischarged || [],
+            'backfill'
+          );
+        }
+      }
+    } catch (bedErr) {
+      console.warn(`[CumulativeService] Pre-eviction bed census safeguard notice for ${dateStr}:`, bedErr);
+    }
+
+    // 2. Ensure OR Census is recorded
+    try {
+      const existingOR = await getDailyORCensus(dateStr);
+      if (!existingOR) {
+        const orSnap = await getORSnapshot(dateStr);
+        if (orSnap && Array.isArray(orSnap.orList) && orSnap.orList.length > 0) {
+          await this.recordPeakORCensus(dateStr, orSnap.orList, 'backfill');
+        }
+      }
+    } catch (orErr) {
+      console.warn(`[CumulativeService] Pre-eviction OR census safeguard notice for ${dateStr}:`, orErr);
+    }
+  }
+
+  /**
    * Auto-backfills a month using historical snapshots on disk or Supabase.
+   * Preserves existing cumulative daily census records if raw snapshots were already pruned
+   * by the 30-day retention policy.
    */
   async backfillMonth(monthStr: string, force = false): Promise<{ bedsBackfilled: number; orBackfilled: number }> {
     if (!force && backfilledMonths.has(monthStr)) {
@@ -352,16 +395,18 @@ export class CumulativeOccupancyService {
     try {
       const storedBeds = await getDailyBedCensusForMonth(monthStr);
       // Valid records that are not corrupted (totalOccupied > 0 while inpatientOccupied == 0)
+      const validBedMap = new Map(
+        storedBeds
+          .filter(b => b.inpatientOccupied > 0 || (b.totalOccupied === 0 && b.inpatientOccupied === 0))
+          .map(b => [b.date, b])
+      );
       const existingBedDates = force
         ? new Set<string>()
-        : new Set(
-            storedBeds
-              .filter(b => b.inpatientOccupied > 0 || (b.totalOccupied === 0 && b.inpatientOccupied === 0))
-              .map(b => b.date)
-          );
+        : new Set(validBedMap.keys());
 
       const storedOR = await getDailyORCensusForMonth(monthStr);
-      const existingORDates = force ? new Set<string>() : new Set(storedOR.map(o => o.date));
+      const validORMap = new Map(storedOR.map(o => [o.date, o]));
+      const existingORDates = force ? new Set<string>() : new Set(validORMap.keys());
 
       const dates = listMonthDates(monthStr);
 
@@ -371,7 +416,7 @@ export class CumulativeOccupancyService {
           try {
             const snap = await getOccupancySnapshot(d);
             if (snap && snap.hospitalData && snap.hospitalData.length > 3) {
-              const rec = await this.recordBedCensus(d, snap.hospitalData, 'backfill');
+              const rec = await this.recordPeakBedCensus(d, snap.hospitalData, snap.cumulativeDischarged || [], 'backfill');
               if (rec) bedsBackfilled++;
             }
           } catch (snapErr) {
@@ -379,22 +424,23 @@ export class CumulativeOccupancyService {
           }
         }
 
-        // 2. Backfill OR
+        // 2. Backfill OR (Never overwrite an already recorded OR census with 0 if raw snapshot was pruned after 30 days)
         if (!existingORDates.has(d)) {
           try {
             const orSnap = await getORSnapshot(d);
             if (orSnap && Array.isArray(orSnap.orList)) {
               await this.recordORCensus(d, orSnap.orList, 'backfill');
               orBackfilled++;
-            } else {
-              // Calendar-day rule: days with no OR list are recorded with 0 minutes
+            } else if (!validORMap.has(d)) {
+              // Calendar-day rule: only record 0 minutes if no OR census record exists yet for this date
               await this.recordORCensus(d, [], 'backfill');
               orBackfilled++;
             }
           } catch (orSnapErr) {
-            // Record empty day
-            await this.recordORCensus(d, [], 'backfill');
-            orBackfilled++;
+            if (!validORMap.has(d)) {
+              await this.recordORCensus(d, [], 'backfill');
+              orBackfilled++;
+            }
           }
         }
       }
