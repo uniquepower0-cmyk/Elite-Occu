@@ -314,6 +314,8 @@ let cumulativeTransfers: any[] = [];
 let patientRoomRegistry: Record<string, { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
 let vipCasesText = "";
 let vipExplicitlyCleared = false;
+let vipCasesCheckedFromDb = false;
+let isServerHydrated = false;
 let earlyDischargeRoomsText = "";
 let pendingDischargePatientsText = "";
 let uploadedAt: number | null = null;
@@ -327,9 +329,10 @@ let manuallyDischargedNames: string[] = [];
  * Ensures that if vipCasesText is empty in memory (e.g. cold serverless start) and was NOT
  * explicitly cleared by the user via /api/reset-vip, we recover the persisted text from
  * `settings/vip_cases` in Supabase or local disk before reading or saving state.
+ * Uses negative lookup caching (vipCasesCheckedFromDb) so legitimately empty text does not re-query DB.
  */
 async function ensureVipCasesLoaded(): Promise<string> {
-  if ((vipCasesText && vipCasesText.trim().length > 0) || vipExplicitlyCleared) {
+  if (vipCasesCheckedFromDb || (vipCasesText && vipCasesText.trim().length > 0) || vipExplicitlyCleared) {
     return vipCasesText;
   }
   try {
@@ -338,12 +341,14 @@ async function ensureVipCasesLoaded(): Promise<string> {
       .select('data')
       .eq('path', 'settings/vip_cases')
       .maybeSingle();
+    vipCasesCheckedFromDb = true;
     if (!error && vipNode?.data && typeof vipNode.data.text === 'string' && vipNode.data.text.trim().length > 0) {
       vipCasesText = vipNode.data.text;
       return vipCasesText;
     }
   } catch (err) {
     console.warn('[VIP Safeguard] Could not query settings/vip_cases from Supabase:', err);
+    vipCasesCheckedFromDb = true;
   }
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -2320,6 +2325,30 @@ function isSameTimestamp(a: any, b: any): boolean {
   return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
 }
 
+function arePayloadsEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  if (a === null || b === null) return a === b;
+  try {
+    const strA = JSON.stringify(a);
+    const strB = JSON.stringify(b);
+    if (strA === strB) return true;
+    if (typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
+      const keysA = Object.keys(a).sort();
+      const keysB = Object.keys(b).sort();
+      if (keysA.length !== keysB.length) return false;
+      for (let i = 0; i < keysA.length; i++) {
+        if (keysA[i] !== keysB[i]) return false;
+        if (!arePayloadsEqual(a[keysA[i]], b[keysB[i]])) return false;
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function buildDeterministicUnknownMrn(name: string, fallbackRoom = ''): string {
   const clean = String(name || fallbackRoom || 'patient')
     .trim()
@@ -2333,9 +2362,9 @@ function buildDeterministicUnknownMrn(name: string, fallbackRoom = ''): string {
 }
 
 async function loadData(force = false): Promise<void> {
-  // Egress optimization: If hospitalData is in memory and was fetched within the last 2500ms,
-  // reuse the in-memory dataset to prevent redundant Supabase PostgREST queries
-  if (!force && hospitalData && (Date.now() - lastServerFetchTimestamp < 2500)) {
+  // Egress optimization: If hospitalData is in memory or server is hydrated and was fetched within the last 15000ms,
+  // reuse the in-memory dataset to prevent redundant Supabase PostgREST queries (Realtime sync handles updates)
+  if (!force && isServerHydrated && (Date.now() - lastServerFetchTimestamp < 15000)) {
     return;
   }
   if (activeLoadDataPromise && !force) {
@@ -2411,16 +2440,31 @@ async function executeLoadData(force = false) {
       return val;
     };
 
-    // Query granular state nodes using a 2-stage egress-optimized fetch:
-    // Stage 1: Only query path and updated_at (tiny metadata payload)
-    const { data: metaNodes, error: sbMetaErr } = await supabaseAdmin
-      .from('rtdb_nodes')
-      .select('path, updated_at')
-      .like('path', 'state/%');
+    // Query granular state and settings nodes using a 2-stage egress-optimized fetch:
+    // Stage 1: Only query path and updated_at (tiny metadata payload) for state/% and settings/%
+    const [sbStateMetaRes, sbSettingsMetaRes] = await Promise.all([
+      supabaseAdmin
+        .from('rtdb_nodes')
+        .select('path, updated_at')
+        .like('path', 'state/%')
+        .neq('path', 'state/dataset'),
+      supabaseAdmin
+        .from('rtdb_nodes')
+        .select('path, updated_at')
+        .like('path', 'settings/%')
+    ]);
 
-    if (sbMetaErr) {
-      console.error('Supabase granular state metadata query error:', sbMetaErr);
+    if (sbStateMetaRes.error) {
+      console.error('Supabase granular state metadata query error:', sbStateMetaRes.error);
     }
+    if (sbSettingsMetaRes.error) {
+      console.error('Supabase settings metadata query error:', sbSettingsMetaRes.error);
+    }
+
+    const metaNodes = [
+      ...(sbStateMetaRes.data || []),
+      ...(sbSettingsMetaRes.data || [])
+    ];
 
     const pathsToFetch: string[] = [];
     let latestNodeUpdated: string | null = null;
@@ -2441,7 +2485,7 @@ async function executeLoadData(force = false) {
 
     // Stage 2: Only fetch the heavy 'data' payload for paths that actually changed
     if (pathsToFetch.length > 0) {
-      console.log(`Supabase: Fetching payload for ${pathsToFetch.length} changed state node(s): ${pathsToFetch.join(', ')}`);
+      console.log(`Supabase: Fetching payload for ${pathsToFetch.length} changed state/settings node(s): ${pathsToFetch.join(', ')}`);
       const { data: changedNodes, error: sbDataErr } = await supabaseAdmin
         .from('rtdb_nodes')
         .select('path, data, updated_at')
@@ -2617,94 +2661,74 @@ async function executeLoadData(force = false) {
       if (parsed.lastTransfersDate) lastTransfersDate = String(parsed.lastTransfersDate);
     }
 
-    // Load dedicated settings nodes in parallel
+    // Apply dedicated settings nodes from inMemoryStateMap (downloaded during Stage 2 if modified)
     try {
-      const { data: settingNodes } = await supabaseAdmin
-        .from('rtdb_nodes')
-        .select('path, data')
-        .like('path', 'settings/%');
-
-      if (settingNodes && Array.isArray(settingNodes)) {
-        for (const sNode of settingNodes) {
-          if (sNode.path === 'settings/vip_cases' && sNode.data && typeof sNode.data.text === 'string') {
-            if (force || sNode.data.text.trim().length > 0 || !vipCasesText) {
-              vipCasesText = sNode.data.text;
-            }
-          } else if (sNode.path === 'settings/early_discharge_rooms' && sNode.data && typeof sNode.data.text === 'string') {
-            if (force || sNode.data.text.trim().length > 0 || !earlyDischargeRoomsText) {
-              earlyDischargeRoomsText = sNode.data.text;
-            }
-          } else if (sNode.path === 'settings/pending_discharges' && sNode.data && typeof sNode.data.text === 'string') {
-            if (force || sNode.data.text.trim().length > 0 || !pendingDischargePatientsText) {
-              pendingDischargePatientsText = sNode.data.text;
-            }
-          }
+      const vipNode = inMemoryStateMap['settings/vip_cases'];
+      if (vipNode && typeof vipNode.text === 'string') {
+        if (force || vipNode.text.trim().length > 0 || !vipCasesText) {
+          vipCasesText = vipNode.text;
         }
       }
+      const earlyNode = inMemoryStateMap['settings/early_discharge_rooms'];
+      if (earlyNode && typeof earlyNode.text === 'string') {
+        if (force || earlyNode.text.trim().length > 0 || !earlyDischargeRoomsText) {
+          earlyDischargeRoomsText = earlyNode.text;
+        }
+      }
+      const pendingNode = inMemoryStateMap['settings/pending_discharges'];
+      if (pendingNode && typeof pendingNode.text === 'string') {
+        if (force || pendingNode.text.trim().length > 0 || !pendingDischargePatientsText) {
+          pendingDischargePatientsText = pendingNode.text;
+        }
+      }
+      vipCasesCheckedFromDb = true;
     } catch (setErr) {
       // Non-blocking
     }
 
     // Snapshot fallbacks: Ensure active data for today is NEVER lost on database restart
     const cairoNow = getCairoDateTime();
+    const isTodayActive = Boolean(lastActiveDate && lastActiveDate === cairoNow.dateStr);
+    const isTodayNotReset = lastEgyptianAutoResetDate !== cairoNow.dateStr;
 
-    // 1. Occupancy snapshot fallback if empty: only restore on server reboot if today was actually active and not reset
-    if ((!hospitalData || hospitalData.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr) {
+    const needsOccFallback = (!hospitalData || hospitalData.length === 0) && isTodayActive;
+    const needsDiscFallback = (!cumulativeDischarged || cumulativeDischarged.length === 0) && isTodayActive && isTodayNotReset;
+    const needsDialFallback = (!cumulativeDialysis || cumulativeDialysis.length === 0) && isTodayActive && isTodayNotReset;
+    const needsTransFallback = (!cumulativeTransfers || cumulativeTransfers.length === 0) && isTodayActive && isTodayNotReset;
+
+    if (needsOccFallback || needsDiscFallback || needsDialFallback || needsTransFallback) {
       try {
         const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
-        if (todaySnap && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 0) {
-          console.log(`[loadData] Restored occupancy data from today's snapshot (${cairoNow.dateStr})`);
-          hospitalData = todaySnap.hospitalData;
+        if (todaySnap) {
+          if (needsOccFallback && todaySnap.hospitalData && Array.isArray(todaySnap.hospitalData) && todaySnap.hospitalData.length > 0) {
+            console.log(`[loadData] Restored occupancy data from today's snapshot (${cairoNow.dateStr})`);
+            hospitalData = todaySnap.hospitalData;
+          }
+          if (isTodayNotReset) {
+            if (needsDiscFallback && Array.isArray(todaySnap.cumulativeDischarged) && todaySnap.cumulativeDischarged.length > 0) {
+              console.log(`[loadData] Restored ${todaySnap.cumulativeDischarged.length} discharged cases from today's snapshot (${cairoNow.dateStr})`);
+              cumulativeDischarged = todaySnap.cumulativeDischarged;
+              if (Array.isArray(todaySnap.manuallyDischargedNames) && todaySnap.manuallyDischargedNames.length > 0) {
+                manuallyDischargedNames = todaySnap.manuallyDischargedNames;
+              }
+            }
+            if (needsDialFallback && Array.isArray(todaySnap.cumulativeDialysis) && todaySnap.cumulativeDialysis.length > 0) {
+              console.log(`[loadData] Restored ${todaySnap.cumulativeDialysis.length} dialysis cases from today's snapshot (${cairoNow.dateStr})`);
+              cumulativeDialysis = todaySnap.cumulativeDialysis;
+            }
+            if (needsTransFallback && Array.isArray(todaySnap.cumulativeTransfers) && todaySnap.cumulativeTransfers.length > 0) {
+              console.log(`[loadData] Restored ${todaySnap.cumulativeTransfers.length} transfers from today's snapshot (${cairoNow.dateStr})`);
+              cumulativeTransfers = todaySnap.cumulativeTransfers;
+            }
+          }
         }
       } catch (snapErr) {
         console.error('[loadData] Failed to check today occupancy snapshot fallback:', snapErr);
       }
     }
 
-    // 2. Discharged cases snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeDischarged || cumulativeDischarged.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
-      try {
-        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
-        if (todaySnap && Array.isArray(todaySnap.cumulativeDischarged) && todaySnap.cumulativeDischarged.length > 0) {
-          console.log(`[loadData] Restored ${todaySnap.cumulativeDischarged.length} discharged cases from today's snapshot (${cairoNow.dateStr})`);
-          cumulativeDischarged = todaySnap.cumulativeDischarged;
-          if (Array.isArray(todaySnap.manuallyDischargedNames) && todaySnap.manuallyDischargedNames.length > 0) {
-            manuallyDischargedNames = todaySnap.manuallyDischargedNames;
-          }
-        }
-      } catch (discSnapErr) {
-        console.error('[loadData] Failed to restore discharged snapshot fallback:', discSnapErr);
-      }
-    }
-
-    // 3. Dialysis snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeDialysis || cumulativeDialysis.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
-      try {
-        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
-        if (todaySnap && Array.isArray(todaySnap.cumulativeDialysis) && todaySnap.cumulativeDialysis.length > 0) {
-          console.log(`[loadData] Restored ${todaySnap.cumulativeDialysis.length} dialysis cases from today's snapshot (${cairoNow.dateStr})`);
-          cumulativeDialysis = todaySnap.cumulativeDialysis;
-        }
-      } catch (dialSnapErr) {
-        console.error('[loadData] Failed to restore dialysis snapshot fallback:', dialSnapErr);
-      }
-    }
-
-    // 4. Transfers snapshot fallback: only restore if today was active and not reset
-    if ((!cumulativeTransfers || cumulativeTransfers.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
-      try {
-        const todaySnap = await getOccupancySnapshot(cairoNow.dateStr);
-        if (todaySnap && Array.isArray(todaySnap.cumulativeTransfers) && todaySnap.cumulativeTransfers.length > 0) {
-          console.log(`[loadData] Restored ${todaySnap.cumulativeTransfers.length} transfers from today's snapshot (${cairoNow.dateStr})`);
-          cumulativeTransfers = todaySnap.cumulativeTransfers;
-        }
-      } catch (transSnapErr) {
-        console.error('[loadData] Failed to restore transfers snapshot fallback:', transSnapErr);
-      }
-    }
-
     // OR List Snapshot: Only restore from TODAY'S snapshot if available and active (never resurrect old historical OR lists or reset lists)
-    if ((!cumulativeORList || cumulativeORList.length === 0) && lastActiveDate && lastActiveDate === cairoNow.dateStr && lastEgyptianAutoResetDate !== cairoNow.dateStr) {
+    if ((!cumulativeORList || cumulativeORList.length === 0) && isTodayActive && isTodayNotReset) {
       try {
         const todaySnap = await getORSnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
@@ -2880,6 +2904,8 @@ async function executeLoadData(force = false) {
   } catch (resetErr) {
     console.error('Error during initial daily reset check:', resetErr);
   }
+
+  isServerHydrated = true;
 }
 
 // Health Check & Database Status
@@ -2895,52 +2921,29 @@ app.get('/api/health', (req, res) => {
 // Parity verification endpoint comparing Supabase vs Firestore
 app.get('/api/db-parity', async (req, res) => {
   try {
-    // 1. Fetch Supabase state nodes
-    const { data: stateNodes, error: sbErr } = await supabaseAdmin
-      .from('rtdb_nodes')
-      .select('path, data, updated_at')
-      .like('path', 'state/%');
+    // 1. Fetch Supabase state metadata and audit logs (reading lightweight counts directly from state/metadata)
+    const [metaResult, auditResult, profilesResult] = await Promise.all([
+      supabaseAdmin
+        .from('rtdb_nodes')
+        .select('data, updated_at')
+        .eq('path', 'state/metadata')
+        .maybeSingle(),
+      supabaseAdmin
+        .from('rtdb_nodes')
+        .select('data')
+        .eq('path', 'audit_logs')
+        .maybeSingle(),
+      supabaseAdmin
+        .from('profiles')
+        .select('id', { count: 'exact', head: true })
+    ]);
 
-    const stateMap: Record<string, any> = {};
-    let latestUpdatedAt: string | null = null;
-    if (stateNodes && Array.isArray(stateNodes)) {
-      for (const n of stateNodes) {
-        stateMap[n.path] = n.data;
-        if (n.updated_at && (!latestUpdatedAt || n.updated_at > latestUpdatedAt)) {
-          latestUpdatedAt = n.updated_at;
-        }
-      }
-    }
-
-    const { count: profilesCount } = await supabaseAdmin
-      .from('profiles')
-      .select('id', { count: 'exact', head: true });
-
-    const { data: sbAuditNode } = await supabaseAdmin
-      .from('rtdb_nodes')
-      .select('data')
-      .eq('path', 'audit_logs')
-      .maybeSingle();
-
-    const parseMaybe = (v: any) => {
-      if (!v) return [];
-      if (typeof v === 'string') {
-        try { return JSON.parse(v); } catch (e) { return []; }
-      }
-      return Array.isArray(v) ? v : [];
-    };
-
-    const occCurrent = stateMap['state/occupancy']?.current || stateMap['state/occupancy']?.beds || stateMap['state/dataset']?.current;
-    const discPatients = stateMap['state/discharged']?.patients || stateMap['state/discharged'] || stateMap['state/dataset']?.discharged;
-    const transItems = stateMap['state/transfers']?.items || stateMap['state/transfers'] || stateMap['state/dataset']?.transfers;
-    const orItems = stateMap['state/or_list']?.items || stateMap['state/or_list'] || stateMap['state/dataset']?.orList;
-    const entItems = stateMap['state/entries']?.items || stateMap['state/entries'] || stateMap['state/dataset']?.entries;
-    const dialItems = stateMap['state/dialysis']?.items || stateMap['state/dialysis'] || stateMap['state/dataset']?.dialysis;
-    const debtsItems = stateMap['state/debts']?.items || stateMap['state/debts'] || stateMap['state/dataset']?.debts;
-    const insItems = stateMap['state/insured_debts']?.items || stateMap['state/insured_debts'] || stateMap['state/dataset']?.insuredDebts;
-    const medItems = stateMap['state/medical_plans']?.items || stateMap['state/medical_plans'] || stateMap['state/dataset']?.medicalPlans;
-    const compItems = stateMap['state/companion_status']?.items || stateMap['state/companion_status'] || stateMap['state/dataset']?.companionStatus;
-    const losItems = stateMap['state/los_data']?.items || stateMap['state/los_data'] || stateMap['state/dataset']?.losData;
+    const sbErr = metaResult.error;
+    const metaNode = metaResult.data;
+    const metaCounts = (metaNode?.data && typeof metaNode.data === 'object' && metaNode.data.counts) ? metaNode.data.counts : {};
+    const latestUpdatedAt = metaNode?.updated_at || lastKnownDatabaseUpdatedAt;
+    const profilesCount = profilesResult.count || 0;
+    const sbAuditNode = auditResult.data;
 
     const supabaseStats = {
       connected: !sbErr,
@@ -2949,17 +2952,17 @@ app.get('/api/db-parity', async (req, res) => {
       table: 'rtdb_nodes',
       updatedAt: latestUpdatedAt,
       records: {
-        inpatientPatients: parseMaybe(occCurrent).length || (Array.isArray(hospitalData) ? hospitalData.length : 0),
-        dischargedPatients: parseMaybe(discPatients).length || (Array.isArray(cumulativeDischarged) ? cumulativeDischarged.length : 0),
-        transfers: parseMaybe(transItems).length || (Array.isArray(cumulativeTransfers) ? cumulativeTransfers.length : 0),
-        orList: parseMaybe(orItems).length || (Array.isArray(cumulativeORList) ? cumulativeORList.length : 0),
-        entries: parseMaybe(entItems).length || (Array.isArray(cumulativeEntries) ? cumulativeEntries.length : 0),
-        dialysis: parseMaybe(dialItems).length || (Array.isArray(cumulativeDialysis) ? cumulativeDialysis.length : 0),
-        debts: parseMaybe(debtsItems).length || (Array.isArray(cumulativeDebts) ? cumulativeDebts.length : 0),
-        insuredDebts: parseMaybe(insItems).length || (Array.isArray(cumulativeInsuredDebts) ? cumulativeInsuredDebts.length : 0),
-        medicalPlans: parseMaybe(medItems).length || (Array.isArray(cumulativeMedicalPlans) ? cumulativeMedicalPlans.length : 0),
-        companionStatus: parseMaybe(compItems).length || (Array.isArray(cumulativeCompanionStatus) ? cumulativeCompanionStatus.length : 0),
-        losData: parseMaybe(losItems).length || (Array.isArray(cumulativeLOS) ? cumulativeLOS.length : 0),
+        inpatientPatients: typeof metaCounts.occupiedBeds === 'number' ? metaCounts.occupiedBeds : (Array.isArray(hospitalData) ? hospitalData.length : 0),
+        dischargedPatients: typeof metaCounts.discharged === 'number' ? metaCounts.discharged : (Array.isArray(cumulativeDischarged) ? cumulativeDischarged.length : 0),
+        transfers: typeof metaCounts.transfers === 'number' ? metaCounts.transfers : (Array.isArray(cumulativeTransfers) ? cumulativeTransfers.length : 0),
+        orList: typeof metaCounts.orList === 'number' ? metaCounts.orList : (Array.isArray(cumulativeORList) ? cumulativeORList.length : 0),
+        entries: typeof metaCounts.entries === 'number' ? metaCounts.entries : (Array.isArray(cumulativeEntries) ? cumulativeEntries.length : 0),
+        dialysis: typeof metaCounts.dialysis === 'number' ? metaCounts.dialysis : (Array.isArray(cumulativeDialysis) ? cumulativeDialysis.length : 0),
+        debts: typeof metaCounts.debts === 'number' ? metaCounts.debts : (Array.isArray(cumulativeDebts) ? cumulativeDebts.length : 0),
+        insuredDebts: typeof metaCounts.insuredDebts === 'number' ? metaCounts.insuredDebts : (Array.isArray(cumulativeInsuredDebts) ? cumulativeInsuredDebts.length : 0),
+        medicalPlans: typeof metaCounts.medicalPlans === 'number' ? metaCounts.medicalPlans : (Array.isArray(cumulativeMedicalPlans) ? cumulativeMedicalPlans.length : 0),
+        companionStatus: typeof metaCounts.companionStatus === 'number' ? metaCounts.companionStatus : (Array.isArray(cumulativeCompanionStatus) ? cumulativeCompanionStatus.length : 0),
+        losData: typeof metaCounts.losData === 'number' ? metaCounts.losData : (Array.isArray(cumulativeLOS) ? cumulativeLOS.length : 0),
         profilesCount: profilesCount || 0,
         auditLogsCount: Array.isArray(sbAuditNode?.data) ? sbAuditNode.data.length : 0
       }
@@ -2986,6 +2989,15 @@ app.get('/api/db-parity', async (req, res) => {
         losData: 0,
         loginsCount: 0
       }
+    };
+
+    const parseMaybe = (v: any) => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v;
+      if (typeof v === 'string') {
+        try { return JSON.parse(v); } catch (e) { return []; }
+      }
+      return Array.isArray(v) ? v : [];
     };
 
     if (adminDb) {
@@ -3162,7 +3174,8 @@ app.get('/api/db-status', async (req, res) => {
     const { data: nodes, error } = await supabaseAdmin
       .from('rtdb_nodes')
       .select('path, updated_at')
-      .like('path', 'state/%');
+      .like('path', 'state/%')
+      .neq('path', 'state/dataset');
 
     res.json({
       status: error ? 'error' : 'connected',
@@ -3435,15 +3448,146 @@ async function saveData() {
       console.error('Failed to save local data (might be read-only env)', e); 
     }
 
-    // 2. Synchronize to Supabase (Primary Cloud Database - Granular Multi-Row Scheme)
+    // 2. Synchronize to Supabase (Primary Cloud Database - Granular Multi-Row Scheme with Dirty Checking)
     try {
-      const nowIso = new Date().toISOString();
-      lastKnownDatabaseUpdatedAt = nowIso;
-      lastServerFetchTimestamp = Date.now();
-      console.log('Synchronizing hospital dataset to Supabase rtdb_nodes (granular multi-row scheme)...');
-
-      const granularNodes = [
+      const contentNodes = [
         {
+          path: 'state/occupancy',
+          data: {
+            current: hospitalData || [],
+            previous: previousHospitalData || []
+          }
+        },
+        {
+          path: 'state/discharged',
+          data: {
+            patients: cumulativeDischarged || []
+          }
+        },
+        {
+          path: 'state/entries',
+          data: {
+            items: cumulativeEntries || []
+          }
+        },
+        {
+          path: 'state/transfers',
+          data: {
+            items: cumulativeTransfers || []
+          }
+        },
+        {
+          path: 'state/dialysis',
+          data: {
+            items: cumulativeDialysis || []
+          }
+        },
+        {
+          path: 'state/debts',
+          data: {
+            items: cumulativeDebts || []
+          }
+        },
+        {
+          path: 'state/insured_debts',
+          data: {
+            items: cumulativeInsuredDebts || []
+          }
+        },
+        {
+          path: 'state/medical_plans',
+          data: {
+            items: cumulativeMedicalPlans || []
+          }
+        },
+        {
+          path: 'state/companion_status',
+          data: {
+            items: cumulativeCompanionStatus || []
+          }
+        },
+        {
+          path: 'state/los_data',
+          data: {
+            items: cumulativeLOS || []
+          }
+        },
+        {
+          path: 'state/or_list',
+          data: {
+            items: cumulativeORList || []
+          }
+        },
+        {
+          path: 'state/registry',
+          data: {
+            patientRoomRegistry: patientRoomRegistry || {}
+          }
+        },
+        {
+          path: 'settings/vip_cases',
+          data: {
+            text: vipCasesText || ''
+          }
+        },
+        {
+          path: 'settings/early_discharge_rooms',
+          data: {
+            text: earlyDischargeRoomsText || ''
+          }
+        },
+        {
+          path: 'settings/pending_discharges',
+          data: {
+            text: pendingDischargePatientsText || ''
+          }
+        }
+      ];
+
+      // Identify dirty content slices compared against inMemoryStateMap
+      const dirtyContentNodes: { path: string; data: any }[] = [];
+      for (const node of contentNodes) {
+        const cached = inMemoryStateMap[node.path];
+        if (cached === undefined || !arePayloadsEqual(node.data, cached)) {
+          dirtyContentNodes.push(node);
+        }
+      }
+
+      // Check state/metadata changes (counts, upload timestamp, dates, or active discharged names)
+      const currentMetaCounts = {
+        occupiedBeds: (hospitalData || []).length,
+        discharged: (cumulativeDischarged || []).length,
+        entries: (cumulativeEntries || []).length,
+        transfers: (cumulativeTransfers || []).length,
+        dialysis: (cumulativeDialysis || []).length,
+        debts: (cumulativeDebts || []).length,
+        insuredDebts: (cumulativeInsuredDebts || []).length,
+        medicalPlans: (cumulativeMedicalPlans || []).length,
+        companionStatus: (cumulativeCompanionStatus || []).length,
+        losData: (cumulativeLOS || []).length,
+        orList: (cumulativeORList || []).length
+      };
+
+      const cachedMeta = inMemoryStateMap['state/metadata'];
+      const cachedMetaData = (cachedMeta && typeof cachedMeta === 'object' && cachedMeta.data) ? cachedMeta.data : cachedMeta;
+      const metaChanged = dirtyContentNodes.length > 0 ||
+        cachedMetaData === undefined ||
+        cachedMetaData.uploadedAt !== uploadedAt ||
+        cachedMetaData.lastResetDate !== lastEgyptianAutoResetDate ||
+        cachedMetaData.lastActiveDate !== lastActiveDate ||
+        cachedMetaData.lastTransfersDate !== lastTransfersDate ||
+        !arePayloadsEqual(cachedMetaData.manuallyDischargedNames, manuallyDischargedNames || []) ||
+        !arePayloadsEqual(cachedMetaData.counts, currentMetaCounts);
+
+      if (!metaChanged && dirtyContentNodes.length === 0) {
+        console.log('[saveData] In-memory state clean; skipping redundant Supabase upsert (0 of 16 nodes dirty).');
+        lastServerFetchTimestamp = Date.now();
+      } else {
+        const nowIso = new Date().toISOString();
+        lastKnownDatabaseUpdatedAt = nowIso;
+        lastServerFetchTimestamp = Date.now();
+
+        const metadataNode = {
           path: 'state/metadata',
           data: {
             uploadedAt: uploadedAt,
@@ -3452,166 +3596,51 @@ async function saveData() {
             lastActiveDate: lastActiveDate,
             lastTransfersDate: lastTransfersDate,
             manuallyDischargedNames: manuallyDischargedNames || [],
-            counts: {
-              occupiedBeds: (hospitalData || []).length,
-              discharged: (cumulativeDischarged || []).length,
-              entries: (cumulativeEntries || []).length,
-              transfers: (cumulativeTransfers || []).length,
-              dialysis: (cumulativeDialysis || []).length,
-              debts: (cumulativeDebts || []).length,
-              insuredDebts: (cumulativeInsuredDebts || []).length,
-              medicalPlans: (cumulativeMedicalPlans || []).length,
-              companionStatus: (cumulativeCompanionStatus || []).length,
-              losData: (cumulativeLOS || []).length,
-              orList: (cumulativeORList || []).length
+            counts: currentMetaCounts
+          },
+          updated_at: nowIso
+        };
+
+        const nodesToUpsert: { path: string; data: any; updated_at: string }[] = [
+          metadataNode,
+          ...dirtyContentNodes.map(n => ({ ...n, updated_at: nowIso }))
+        ];
+
+        console.log(`[saveData] Synchronizing ${nodesToUpsert.length} dirty nodes (of 16 total) to Supabase rtdb_nodes...`);
+
+        // Upsert in small batches (CHUNK_SIZE = 4) to prevent PostgreSQL statement_timeout (error 57014)
+        let sbErr: any = null;
+        const CHUNK_SIZE = 4;
+        for (let i = 0; i < nodesToUpsert.length; i += CHUNK_SIZE) {
+          const chunk = nodesToUpsert.slice(i, i + CHUNK_SIZE);
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(chunk);
+            if (!error) {
+              sbErr = null;
+              break;
             }
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/occupancy',
-          data: {
-            current: hospitalData || [],
-            previous: previousHospitalData || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/discharged',
-          data: {
-            patients: cumulativeDischarged || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/entries',
-          data: {
-            items: cumulativeEntries || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/transfers',
-          data: {
-            items: cumulativeTransfers || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/dialysis',
-          data: {
-            items: cumulativeDialysis || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/debts',
-          data: {
-            items: cumulativeDebts || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/insured_debts',
-          data: {
-            items: cumulativeInsuredDebts || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/medical_plans',
-          data: {
-            items: cumulativeMedicalPlans || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/companion_status',
-          data: {
-            items: cumulativeCompanionStatus || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/los_data',
-          data: {
-            items: cumulativeLOS || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/or_list',
-          data: {
-            items: cumulativeORList || []
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'state/registry',
-          data: {
-            patientRoomRegistry: patientRoomRegistry || {}
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'settings/vip_cases',
-          data: {
-            text: vipCasesText || ''
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'settings/early_discharge_rooms',
-          data: {
-            text: earlyDischargeRoomsText || ''
-          },
-          updated_at: nowIso
-        },
-        {
-          path: 'settings/pending_discharges',
-          data: {
-            text: pendingDischargePatientsText || ''
-          },
-          updated_at: nowIso
-        }
-      ];
-
-      // Upsert in small batches (3-4 nodes per batch) to prevent PostgreSQL statement_timeout (error 57014)
-      const primaryGranularNodes = granularNodes;
-
-      let sbErr: any = null;
-      const CHUNK_SIZE = 4;
-      for (let i = 0; i < primaryGranularNodes.length; i += CHUNK_SIZE) {
-        const chunk = primaryGranularNodes.slice(i, i + CHUNK_SIZE);
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(chunk);
-          if (!error) {
-            sbErr = null;
-            break;
-          }
-          sbErr = error;
-          const errMsg = String(error.message || error.details || error);
-          const isRetryable = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT') || errMsg.includes('57014');
-          if (isRetryable && attempt < 3) {
-            console.warn(`[Supabase Sync] Batch ${Math.floor(i / CHUNK_SIZE) + 1} transient glitch (attempt ${attempt}/3: ${errMsg}). Retrying in ${attempt * 200}ms...`);
-            await new Promise(res => setTimeout(res, attempt * 200));
-          } else {
-            break;
+            sbErr = error;
+            const errMsg = String(error.message || error.details || error);
+            const isRetryable = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT') || errMsg.includes('57014');
+            if (isRetryable && attempt < 3) {
+              console.warn(`[Supabase Sync] Batch ${Math.floor(i / CHUNK_SIZE) + 1} transient glitch (attempt ${attempt}/3: ${errMsg}). Retrying in ${attempt * 200}ms...`);
+              await new Promise(res => setTimeout(res, attempt * 200));
+            } else {
+              break;
+            }
           }
         }
-      }
 
-      if (sbErr) {
-        console.error('Supabase granular nodes upsert error:', sbErr);
-      } else {
-        console.log(`Hospital Supabase cloud database synchronization completed (${granularNodes.length} individual rows written).`);
-        // Update local in-memory caches to avoid redundant self-refetching
-        for (const gn of granularNodes) {
-          inMemoryNodeTimestamps[gn.path] = gn.updated_at;
-          inMemoryStateMap[gn.path] = gn.data;
+        if (sbErr) {
+          console.error('Supabase granular nodes upsert error:', sbErr);
+        } else {
+          console.log(`Hospital Supabase cloud database synchronization completed (${nodesToUpsert.length} dirty rows written, ${16 - nodesToUpsert.length} clean rows preserved).`);
+          // Update local in-memory caches only for nodes that were mutated
+          for (const un of nodesToUpsert) {
+            inMemoryNodeTimestamps[un.path] = un.updated_at;
+            inMemoryStateMap[un.path] = un.data;
+          }
         }
-        lastKnownDatabaseUpdatedAt = nowIso;
-        lastServerFetchTimestamp = Date.now();
       }
 
       // 3. Automatically create/update the database snapshot for the active date on every change
@@ -7787,10 +7816,10 @@ app.get('/api/occupancy/data', async (req, res) => {
   }
 
   const force = req.query.force === 'true' || req.query.reload === 'true';
-  const isDataMissing = (hospitalData === null && previousHospitalData === null && (!cumulativeDischarged || cumulativeDischarged.length === 0));
-  const isStale = (Date.now() - lastServerFetchTimestamp > 2500);
+  const isDataMissing = !isServerHydrated;
+  const isStale = (Date.now() - lastServerFetchTimestamp > 15000);
 
-  if (force || isStale || isDataMissing || !hospitalData) {
+  if (force || isStale || isDataMissing) {
     try {
       await loadData(force);
     } catch (err) {
@@ -8089,6 +8118,7 @@ app.post('/api/vip-cases', async (req, res) => {
   const newText = typeof req.body.text === 'string' ? req.body.text : (req.body.text || "");
   vipCasesText = newText;
   vipExplicitlyCleared = !vipCasesText.trim();
+  vipCasesCheckedFromDb = true;
   try {
     const nowIso = new Date().toISOString();
     await supabaseAdmin.from('rtdb_nodes').upsert({
@@ -8642,7 +8672,7 @@ async function takeORSnapshotHelper(customDate?: string) {
 
 // Helper to resolve Occupancy dataset (either live or historical by date)
 async function resolveOccupancyDataset(reqDate?: string | null) {
-  if (!hospitalData || hospitalData.length === 0 || cumulativeDebts.length === 0) {
+  if (!isServerHydrated) {
     try {
       await loadData();
     } catch (err) {
@@ -9234,6 +9264,7 @@ app.post('/api/reset-vip', async (req, res) => {
   console.log('Reset VIP cases requested manually by user');
   vipCasesText = "";
   vipExplicitlyCleared = true;
+  vipCasesCheckedFromDb = true;
   try {
     const nowIso = new Date().toISOString();
     await supabaseAdmin.from('rtdb_nodes').upsert({
@@ -9299,7 +9330,7 @@ app.post('/api/reset-or', async (req, res) => {
 // History API Endpoints
 app.get('/api/history/occupancy/dates', async (req, res) => {
   try {
-    if (!hospitalData) {
+    if (!isServerHydrated) {
       await loadData();
     }
     let dates = await getAvailableDates('occupancy');
@@ -9477,7 +9508,7 @@ app.post('/api/history/occupancy/snapshot', async (req, res) => {
 
 app.get('/api/history/or/dates', async (req, res) => {
   try {
-    if (!cumulativeORList || cumulativeORList.length === 0) {
+    if (!isServerHydrated) {
       await loadData();
     }
     let dates = await getAvailableDates('or');

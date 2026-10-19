@@ -114,6 +114,34 @@ try {
   console.warn('[historyManager] Could not create history dirs (read-only fs?):', (mkdirErr as any)?.message);
 }
 
+// In-memory memoization caches with negative lookup caching for historical snapshots
+const occupancySnapshotMemoryCache = new Map<string, { snapshot: OccupancySnapshot | null; timestamp: number }>();
+const orSnapshotMemoryCache = new Map<string, { snapshot: ORSnapshot | null; timestamp: number }>();
+const SNAPSHOT_CACHE_TTL_MS = 60000; // 60s memory TTL for positive & negative lookups
+
+// In-memory cache of serialized payloads for dirty-checking history slice upserts
+const lastSavedOccupancySnapshotSlices = new Map<string, string>(); // path -> serialized JSON
+const lastSavedORSnapshotSlices = new Map<string, string>(); // path -> serialized JSON
+
+export function invalidateOccupancySnapshotCache(dateStr?: string): void {
+  if (dateStr) {
+    const norm = normalizeToISODate(dateStr) || dateStr.trim();
+    occupancySnapshotMemoryCache.delete(norm);
+    orSnapshotMemoryCache.delete(norm);
+    for (const key of Array.from(lastSavedOccupancySnapshotSlices.keys())) {
+      if (key.includes(norm)) lastSavedOccupancySnapshotSlices.delete(key);
+    }
+    for (const key of Array.from(lastSavedORSnapshotSlices.keys())) {
+      if (key.includes(norm)) lastSavedORSnapshotSlices.delete(key);
+    }
+  } else {
+    occupancySnapshotMemoryCache.clear();
+    orSnapshotMemoryCache.clear();
+    lastSavedOccupancySnapshotSlices.clear();
+    lastSavedORSnapshotSlices.clear();
+  }
+}
+
 
 export interface OccupancySnapshotSummary {
   totalOccupancy: number;
@@ -667,21 +695,21 @@ export async function saveOccupancySnapshot(
     console.error('[OccupancyHistory] Failed to write local snapshot:', err);
   }
 
-  // 2. Write to Supabase rtdb_nodes table as granular structured nodes (not all in one row)
+  // 2. Write to Supabase rtdb_nodes table as granular structured nodes with dirty-check filtering
   try {
     const nowIso = new Date().toISOString();
-    const granularHistoryUpserts = [
-      { path: `history/occupancy/${dateStr}/summary`, data: snapshot.summary, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/hospital_data`, data: snapshot.hospitalData, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/discharged`, data: snapshot.cumulativeDischarged, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/transfers`, data: snapshot.cumulativeTransfers, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/entries`, data: snapshot.cumulativeEntries, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/dialysis`, data: snapshot.cumulativeDialysis, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/debts`, data: snapshot.cumulativeDebts, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/insured_debts`, data: snapshot.cumulativeInsuredDebts, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/medical_plans`, data: snapshot.cumulativeMedicalPlans, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/companion_status`, data: snapshot.cumulativeCompanionStatus, updated_at: nowIso },
-      { path: `history/occupancy/${dateStr}/los`, data: snapshot.cumulativeLOS, updated_at: nowIso },
+    const granularHistoryNodes = [
+      { path: `history/occupancy/${dateStr}/summary`, data: snapshot.summary },
+      { path: `history/occupancy/${dateStr}/hospital_data`, data: snapshot.hospitalData },
+      { path: `history/occupancy/${dateStr}/discharged`, data: snapshot.cumulativeDischarged },
+      { path: `history/occupancy/${dateStr}/transfers`, data: snapshot.cumulativeTransfers },
+      { path: `history/occupancy/${dateStr}/entries`, data: snapshot.cumulativeEntries },
+      { path: `history/occupancy/${dateStr}/dialysis`, data: snapshot.cumulativeDialysis },
+      { path: `history/occupancy/${dateStr}/debts`, data: snapshot.cumulativeDebts },
+      { path: `history/occupancy/${dateStr}/insured_debts`, data: snapshot.cumulativeInsuredDebts },
+      { path: `history/occupancy/${dateStr}/medical_plans`, data: snapshot.cumulativeMedicalPlans },
+      { path: `history/occupancy/${dateStr}/companion_status`, data: snapshot.cumulativeCompanionStatus },
+      { path: `history/occupancy/${dateStr}/los`, data: snapshot.cumulativeLOS },
       {
         path: `history/occupancy/${dateStr}/settings`,
         data: {
@@ -690,32 +718,47 @@ export async function saveOccupancySnapshot(
           manuallyDischargedNames: snapshot.manuallyDischargedNames,
           timestamp: snapshot.timestamp,
           cairoTime: snapshot.cairoTime
-        },
-        updated_at: nowIso
+        }
       }
     ];
 
-    let sbErr: any = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const { error } = await historySupabase.from('rtdb_nodes').upsert(granularHistoryUpserts);
-      if (!error) {
-        sbErr = null;
-        break;
-      }
-      sbErr = error;
-      const errMsg = String(error.message || error.details || error);
-      const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
-      if (isNetworkErr && attempt < 3) {
-        await new Promise(res => setTimeout(res, attempt * 300));
-      } else {
-        break;
+    const dirtyHistoryUpserts: { path: string; data: any; updated_at: string }[] = [];
+    for (const node of granularHistoryNodes) {
+      const serialized = JSON.stringify(node.data);
+      const cached = lastSavedOccupancySnapshotSlices.get(node.path);
+      if (cached !== serialized) {
+        dirtyHistoryUpserts.push({ ...node, updated_at: nowIso });
       }
     }
 
-    if (sbErr) {
-      console.error('[OccupancyHistory] Supabase granular history upsert error:', sbErr);
+    if (dirtyHistoryUpserts.length === 0) {
+      console.log(`[OccupancyHistory] Snapshot for ${dateStr} is clean; skipping redundant Supabase upsert (0 of 12 slices modified).`);
     } else {
-      console.log(`[OccupancyHistory] Granular history snapshots saved to Supabase (history/occupancy/${dateStr}/* across 12 distinct rows)`);
+      let sbErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const { error } = await historySupabase.from('rtdb_nodes').upsert(dirtyHistoryUpserts);
+        if (!error) {
+          sbErr = null;
+          break;
+        }
+        sbErr = error;
+        const errMsg = String(error.message || error.details || error);
+        const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+        if (isNetworkErr && attempt < 3) {
+          await new Promise(res => setTimeout(res, attempt * 300));
+        } else {
+          break;
+        }
+      }
+
+      if (sbErr) {
+        console.error('[OccupancyHistory] Supabase granular history upsert error:', sbErr);
+      } else {
+        console.log(`[OccupancyHistory] Granular history snapshots saved to Supabase (history/occupancy/${dateStr}/*: ${dirtyHistoryUpserts.length} dirty rows written, ${12 - dirtyHistoryUpserts.length} clean rows preserved)`);
+        for (const node of dirtyHistoryUpserts) {
+          lastSavedOccupancySnapshotSlices.set(node.path, JSON.stringify(node.data));
+        }
+      }
     }
   } catch (err) {
     console.error('[OccupancyHistory] Supabase error:', err);
@@ -729,6 +772,9 @@ export async function saveOccupancySnapshot(
     summary: snapshot.summary
   });
 
+  // Update in-memory snapshot cache
+  occupancySnapshotMemoryCache.set(dateStr, { snapshot, timestamp: Date.now() });
+
   return snapshot;
 }
 
@@ -736,7 +782,15 @@ export async function saveOccupancySnapshot(
  * Retrieve Occupancy Snapshot for a specific date
  */
 export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySnapshot | null> {
-  const cleanDate = dateStr.trim();
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
+
+  // 0. Check in-memory memo cache (including negative lookups)
+  const cached = occupancySnapshotMemoryCache.get(cleanDate);
+  if (cached && (Date.now() - cached.timestamp < SNAPSHOT_CACHE_TTL_MS)) {
+    return cached.snapshot;
+  }
+
   let snapshot: OccupancySnapshot | null = null;
 
   // 1. Try local disk
@@ -848,7 +902,51 @@ export async function getOccupancySnapshot(dateStr: string): Promise<OccupancySn
     }
   }
 
+  // Memoize snapshot (including null for negative lookup caching)
+  occupancySnapshotMemoryCache.set(cleanDate, { snapshot, timestamp: Date.now() });
+
   return snapshot;
+}
+
+/**
+ * High-efficiency summary query that only pulls the small summary row instead of the entire 12-row snapshot.
+ */
+export async function getOccupancySummary(dateStr: string): Promise<OccupancySnapshotSummary | null> {
+  const norm = normalizeToISODate(dateStr);
+  const cleanDate = norm || dateStr.trim();
+
+  // Check in-memory cache first
+  const cached = occupancySnapshotMemoryCache.get(cleanDate);
+  if (cached?.snapshot?.summary) {
+    return cached.snapshot.summary;
+  }
+
+  // Check local disk file
+  const filePath = path.join(HISTORY_OCC_DIR, `${cleanDate}.json`);
+  if (fs.existsSync(filePath)) {
+    try {
+      const raw = await fsPromises.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.summary) return parsed.summary as OccupancySnapshotSummary;
+    } catch (_) {}
+  }
+
+  // Fetch only the summary row from Supabase
+  try {
+    const { data: node, error } = await historySupabase
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', `history/occupancy/${cleanDate}/summary`)
+      .maybeSingle();
+
+    if (!error && node?.data) {
+      return node.data as OccupancySnapshotSummary;
+    }
+  } catch (err) {
+    console.error(`[OccupancyHistory] Failed to fetch summary from Supabase for ${cleanDate}:`, err);
+  }
+
+  return null;
 }
 
 /**
@@ -858,6 +956,13 @@ export async function deleteOccupancySnapshot(dateStr: string): Promise<boolean>
   const norm = normalizeToISODate(dateStr);
   const cleanDate = norm || dateStr.trim();
   console.log(`[OccupancyHistory] Deleting occupancy snapshot for date: ${cleanDate}`);
+
+  // Invalidate memory cache immediately
+  occupancySnapshotMemoryCache.delete(cleanDate);
+  occupancySnapshotMemoryCache.delete(dateStr);
+  for (const key of Array.from(lastSavedOccupancySnapshotSlices.keys())) {
+    if (key.includes(cleanDate)) lastSavedOccupancySnapshotSlices.delete(key);
+  }
 
   // 1. Delete from local disk
   try {
@@ -943,6 +1048,13 @@ export async function deleteORSnapshot(dateStr: string): Promise<boolean> {
   const norm = normalizeToISODate(dateStr);
   const cleanDate = norm || dateStr.trim();
   console.log(`[ORHistory] Deleting OR snapshot for date: ${cleanDate}`);
+
+  // Invalidate memory cache immediately
+  orSnapshotMemoryCache.delete(cleanDate);
+  orSnapshotMemoryCache.delete(dateStr);
+  for (const key of Array.from(lastSavedORSnapshotSlices.keys())) {
+    if (key.includes(cleanDate)) lastSavedORSnapshotSlices.delete(key);
+  }
 
   // 1. Delete from local disk
   try {
@@ -1042,47 +1154,61 @@ export async function saveORSnapshot(
     console.error('[ORHistory] Failed to write local snapshot:', err);
   }
 
-  // 2. Supabase granular nodes (not all in one row)
+  // 2. Supabase granular nodes with dirty checking
   try {
     const nowIso = new Date().toISOString();
-    const granularORUpserts = [
+    const granularORNodes = [
       {
         path: `history/or/${dateStr}/summary`,
         data: {
           ...snapshot.summary,
           timestamp: snapshot.timestamp,
           cairoTime: snapshot.cairoTime
-        },
-        updated_at: nowIso
+        }
       },
       {
         path: `history/or/${dateStr}/cases`,
-        data: snapshot.orList,
-        updated_at: nowIso
+        data: snapshot.orList
       }
     ];
 
-    let sbErr: any = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const { error } = await historySupabase.from('rtdb_nodes').upsert(granularORUpserts);
-      if (!error) {
-        sbErr = null;
-        break;
-      }
-      sbErr = error;
-      const errMsg = String(error.message || error.details || error);
-      const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
-      if (isNetworkErr && attempt < 3) {
-        await new Promise(res => setTimeout(res, attempt * 300));
-      } else {
-        break;
+    const dirtyORUpserts: { path: string; data: any; updated_at: string }[] = [];
+    for (const node of granularORNodes) {
+      const serialized = JSON.stringify(node.data);
+      const cached = lastSavedORSnapshotSlices.get(node.path);
+      if (cached !== serialized) {
+        dirtyORUpserts.push({ ...node, updated_at: nowIso });
       }
     }
 
-    if (sbErr) {
-      console.error('[ORHistory] Supabase granular OR upsert error:', sbErr);
+    if (dirtyORUpserts.length === 0) {
+      console.log(`[ORHistory] OR snapshot for ${dateStr} is clean; skipping redundant Supabase upsert (0 of 2 slices modified).`);
     } else {
-      console.log(`[ORHistory] Granular OR snapshots saved to Supabase (history/or/${dateStr}/summary & cases across 2 distinct rows)`);
+      let sbErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const { error } = await historySupabase.from('rtdb_nodes').upsert(dirtyORUpserts);
+        if (!error) {
+          sbErr = null;
+          break;
+        }
+        sbErr = error;
+        const errMsg = String(error.message || error.details || error);
+        const isNetworkErr = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('ETIMEDOUT');
+        if (isNetworkErr && attempt < 3) {
+          await new Promise(res => setTimeout(res, attempt * 300));
+        } else {
+          break;
+        }
+      }
+
+      if (sbErr) {
+        console.error('[ORHistory] Supabase granular OR upsert error:', sbErr);
+      } else {
+        console.log(`[ORHistory] Granular OR snapshots saved to Supabase (history/or/${dateStr}/*: ${dirtyORUpserts.length} dirty rows written, ${2 - dirtyORUpserts.length} clean rows preserved)`);
+        for (const node of dirtyORUpserts) {
+          lastSavedORSnapshotSlices.set(node.path, JSON.stringify(node.data));
+        }
+      }
     }
   } catch (err) {
     console.error('[ORHistory] Supabase error:', err);
@@ -1096,6 +1222,9 @@ export async function saveORSnapshot(
     summary: snapshot.summary
   });
 
+  // Update in-memory snapshot cache
+  orSnapshotMemoryCache.set(dateStr, { snapshot, timestamp: Date.now() });
+
   return snapshot;
 }
 
@@ -1105,11 +1234,22 @@ export async function saveORSnapshot(
 export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null> {
   const norm = normalizeToISODate(dateStr);
   const cleanDate = norm || dateStr.trim();
+
+  // 0. Check in-memory memo cache (including negative lookups)
+  const cached = orSnapshotMemoryCache.get(cleanDate);
+  if (cached && (Date.now() - cached.timestamp < SNAPSHOT_CACHE_TTL_MS)) {
+    return cached.snapshot;
+  }
+
   const filePath = path.join(HISTORY_OR_DIR, `${cleanDate}.json`);
   if (fs.existsSync(filePath)) {
     try {
       const raw = await fsPromises.readFile(filePath, 'utf-8');
-      return JSON.parse(raw) as ORSnapshot;
+      const snap = JSON.parse(raw) as ORSnapshot;
+      if (snap) {
+        orSnapshotMemoryCache.set(cleanDate, { snapshot: snap, timestamp: Date.now() });
+        return snap;
+      }
     } catch (err) {
       console.error(`[ORHistory] Failed to parse local snapshot for ${cleanDate}:`, err);
     }
@@ -1147,6 +1287,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
         await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
       } catch (e) {}
 
+      orSnapshotMemoryCache.set(cleanDate, { snapshot, timestamp: Date.now() });
       return snapshot;
     }
 
@@ -1178,6 +1319,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
       try {
         await fsPromises.writeFile(filePath, JSON.stringify(snapshot));
       } catch (e) {}
+      orSnapshotMemoryCache.set(cleanDate, { snapshot, timestamp: Date.now() });
       return snapshot;
     }
 
@@ -1215,6 +1357,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
 
           // Re-save normalized under cleanDate for future queries
           saveORSnapshot(snapshot).catch(() => {});
+          orSnapshotMemoryCache.set(cleanDate, { snapshot, timestamp: Date.now() });
           return snapshot;
         }
       }
@@ -1224,11 +1367,14 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
       const [yr, mo, dy] = cleanDate.split('-');
       const invertedIso = `${yr}-${dy}-${mo}`;
       if (invertedIso !== cleanDate) {
-        // Query directly to avoid infinite recursion
-        const { data: invertedNode } = await historySupabase
+        // Query path only with limit to avoid fetching data payload for existence check
+        const invQuery = historySupabase
           .from('rtdb_nodes')
-          .select('data')
+          .select('path')
           .like('path', `history/or/${invertedIso}/%`);
+        const { data: invertedNode } = typeof (invQuery as any).limit === 'function'
+          ? await (invQuery as any).limit(1)
+          : await invQuery;
 
         if (invertedNode && invertedNode.length > 0) {
           const invSnap = await getORSnapshot(invertedIso);
@@ -1239,6 +1385,7 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
               cairoTime: invSnap.cairoTime.replace(invertedIso, cleanDate)
             };
             saveORSnapshot(corrected).catch(() => {});
+            orSnapshotMemoryCache.set(cleanDate, { snapshot: corrected, timestamp: Date.now() });
             return corrected;
           }
         }
@@ -1248,6 +1395,8 @@ export async function getORSnapshot(dateStr: string): Promise<ORSnapshot | null>
     console.error(`[ORHistory] Failed to fetch OR snapshot from Supabase for ${cleanDate}:`, err);
   }
 
+  // Cache null for negative lookup caching
+  orSnapshotMemoryCache.set(cleanDate, { snapshot: null, timestamp: Date.now() });
   return null;
 }
 

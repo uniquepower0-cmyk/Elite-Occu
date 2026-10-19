@@ -54,14 +54,20 @@ vi.mock('@supabase/supabase-js', () => {
                   return { data: null, error: null };
                 },
               }),
-              like: async (col: string, pattern: string) => {
-                if (col === 'path') {
-                  const rows = Array.from(mockRtdbNodes.values()).filter((r) =>
-                    matchesLike(r.path, pattern)
-                  );
-                  return { data: rows, error: null };
-                }
-                return { data: [], error: null };
+              like: (col: string, pattern: string) => {
+                const getRows = () => {
+                  if (col === 'path') {
+                    return Array.from(mockRtdbNodes.values()).filter((r) =>
+                      matchesLike(r.path, pattern)
+                    );
+                  }
+                  return [];
+                };
+                const res = { data: getRows(), error: null };
+                const promise = Promise.resolve(res);
+                return Object.assign(promise, {
+                  limit: async (num: number) => ({ data: getRows().slice(0, num), error: null })
+                });
               },
             }),
             delete: () => ({
@@ -373,17 +379,16 @@ describe('30-Day Rolling Data Retention & Permanent Cumulative Analytics / VIP P
         cumulativeTransfers: [],
         vipCasesText: '1. HRH Prince Sultan - VIP Suite 401\n2. Ambassador Kareem - Room 305',
         earlyDischargeRoomsText: '',
-        pendingDischargePatientsText: '',
         summary: {
-          occupiedBeds: 2,
-          emptyBeds: 66,
+          totalOccupancy: 2,
           dischargesCount: 1,
           autoDischargesCount: 1,
           manualDischargesCount: 0,
           entriesCount: 0,
           dialysisCount: 0,
+          debtsCount: 0,
+          insuredDebtsCount: 0,
           transfersCount: 0,
-          vipCount: 2,
         },
       });
 
@@ -401,16 +406,25 @@ describe('30-Day Rolling Data Retention & Permanent Cumulative Analytics / VIP P
         ],
         summary: {
           totalCases: 1,
-          inpatientCount: 1,
-          outpatientCount: 0,
-          overListCount: 0,
+          matched: 1,
+          outpatients: 0,
         },
       });
 
       await saveChangeLogEntry({
         date: d,
         changeType: 'upload',
-        summary: { occupiedBeds: 2, dischargedCount: 1, entriesCount: 0, dialysisCount: 0, transfersCount: 0 },
+        summary: {
+          totalOccupancy: 2,
+          dischargesCount: 1,
+          autoDischargesCount: 1,
+          manualDischargesCount: 0,
+          entriesCount: 0,
+          dialysisCount: 0,
+          debtsCount: 0,
+          insuredDebtsCount: 0,
+          transfersCount: 0,
+        },
         cumulativeEntries: [],
         cumulativeDischarged: [],
         cumulativeDialysis: [],
