@@ -45,8 +45,8 @@ describe('Solar Calculation Engine', () => {
   });
 
   it('identifies nighttime accurately after sunset in Cairo', () => {
-    // 22:00 (10 PM) in Cairo
-    const testDate = new Date('2026-10-19T20:00:00Z'); // 22:00 local Cairo (UTC+2 or UTC+3)
+    // 22:17 (10:17 PM) in Cairo/Riyadh (+03:00)
+    const testDate = new Date('2026-10-19T22:17:53+03:00');
     const timeline = calculateSolarTimeline(testDate, cairoLocation);
 
     expect(timeline.isDaytime).toBe(false);

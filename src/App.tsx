@@ -2753,8 +2753,8 @@ export default function App() {
         }`}
         style={{
           backgroundImage: isDark
-            ? `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #051411 0%, #091a16 60%, #031c17 100%)`
-            : `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+            ? `linear-gradient(135deg, rgba(6,17,15,0.94) 0%, rgba(10,24,21,0.96) 60%, rgba(4,31,26,0.94) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`
+            : `linear-gradient(135deg, rgba(228,242,240,0.85) 0%, rgba(241,245,249,0.85) 60%, rgba(204,251,241,0.85) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
@@ -3110,8 +3110,8 @@ export default function App() {
         }`}
         style={{
           backgroundImage: isDark
-            ? `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #051411 0%, #091a16 60%, #031c17 100%)`
-            : `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+            ? `linear-gradient(135deg, rgba(6,17,15,0.94) 0%, rgba(10,24,21,0.96) 60%, rgba(4,31,26,0.94) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`
+            : `linear-gradient(135deg, rgba(228,242,240,0.85) 0%, rgba(241,245,249,0.85) 60%, rgba(204,251,241,0.85) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',

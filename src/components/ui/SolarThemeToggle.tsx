@@ -69,15 +69,15 @@ export const SolarThemeToggle: React.FC = () => {
 
   // Label for header button
   const headerButtonText = () => {
+    const city = solarTimeline.location.city;
     if (themeMode === 'auto') {
-      const city = solarTimeline.location.city;
       if (solarTimeline.isDaytime) {
-        return `Auto • Sunset ${solarTimeline.sunsetFormatted.replace(/:\d{2}\s/, ' ')} (${city})`;
+        return `Day (Auto) • Sunset ${solarTimeline.sunsetFormatted.replace(/:\d{2}\s/, ' ')} (${city})`;
       } else {
-        return `Auto • Sunrise ${solarTimeline.sunriseFormatted.replace(/:\d{2}\s/, ' ')} (${city})`;
+        return `Night (Auto) • ${city}`;
       }
     }
-    return themeMode === 'dark' ? 'Dark Mode' : 'Light Mode';
+    return themeMode === 'dark' ? 'Dark Mode (Manual)' : 'Light Mode (Manual)';
   };
 
   // Calculate position along the visual solar curve (SVG arc)
@@ -132,11 +132,13 @@ export const SolarThemeToggle: React.FC = () => {
         <span
           className={`px-1.5 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider font-extrabold ${
             themeMode === 'auto'
-              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+              ? isDark
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'
+                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
               : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
           }`}
         >
-          {themeMode}
+          {themeMode === 'auto' ? (isDark ? 'Auto: Night' : 'Auto: Day') : themeMode}
         </span>
       </button>
 
@@ -237,7 +239,7 @@ export const SolarThemeToggle: React.FC = () => {
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-snug">
                 {themeMode === 'auto'
-                  ? 'Default: Automatically transitions at local sunset & sunrise.'
+                  ? `Default (Active): Currently in ${isDark ? 'Night Mode (OLED Dark)' : 'Day Mode (Light)'} based on local solar schedule.`
                   : `Manual override active (${themeMode === 'dark' ? 'Night mode forced' : 'Day mode forced'}).`}
               </p>
             </div>

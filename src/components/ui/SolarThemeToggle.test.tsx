@@ -32,7 +32,7 @@ describe('SolarThemeToggle Component', () => {
     expect(screen.getByText(/Solar Arc Timeline/i)).toBeInTheDocument();
     expect(screen.getByText(/Auto \(Solar\)/i)).toBeInTheDocument();
     expect(screen.getByText(/Light/i)).toBeInTheDocument();
-    expect(screen.getByText(/Dark/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dark/i })).toBeInTheDocument();
   });
 
   it('switches to manual dark mode when Dark button is pressed', () => {

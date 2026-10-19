@@ -1,6 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, .dark, .dark *));
+
 @theme {
   --font-sans: "Inter", "Cairo", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
@@ -93,4 +95,146 @@ body {
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(11, 60, 52, 0.45);
+}
+
+/* =========================================================================
+   OLED Midnight Emerald Dark Mode Surface & Component Inversion
+   Follows /ui-ux-pro-max (OLED Dark Mode, WCAG AAA Contrast, Eye Comfort)
+   ========================================================================= */
+
+.dark {
+  color-scheme: dark;
+}
+
+/* Smooth color transitions */
+html.dark *, html:not(.dark) * {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-duration: 250ms;
+}
+
+/* Glassmorphic and Solid Card Surfaces */
+.dark .bg-white,
+.dark .bg-white\/95,
+.dark .bg-white\/90,
+.dark .bg-white\/80,
+.dark .bg-white\/70,
+.dark .bg-white\/60,
+.dark .bg-white\/50,
+.dark .bg-white\/45,
+.dark .bg-white\/40 {
+  background-color: rgba(18, 36, 33, 0.88) !important;
+  border-color: rgba(16, 185, 129, 0.22) !important;
+  color: #f8fafc;
+}
+
+.dark .bg-white\/20,
+.dark .bg-white\/15,
+.dark .bg-white\/10,
+.dark .bg-white\/5 {
+  background-color: rgba(10, 24, 21, 0.65) !important;
+  border-color: rgba(16, 185, 129, 0.18) !important;
+}
+
+/* Sub-panels, chips and inner status areas */
+.dark .bg-slate-50,
+.dark .bg-slate-100,
+.dark .bg-slate-50\/80,
+.dark .bg-slate-100\/80,
+.dark .bg-slate-100\/70 {
+  background-color: rgba(13, 26, 23, 0.8) !important;
+  border-color: rgba(30, 41, 59, 0.8) !important;
+  color: #f1f5f9 !important;
+}
+
+/* High-contrast typography */
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-\[\#0f172a\],
+.dark .text-\[\#0f172a\]\/95 {
+  color: #f8fafc !important;
+}
+
+.dark .text-slate-700,
+.dark .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.dark .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+.dark .text-brand-primary {
+  color: #10b981 !important;
+}
+
+.dark .text-emerald-950,
+.dark .text-teal-950 {
+  color: #34d399 !important;
+}
+
+.dark .text-emerald-800,
+.dark .text-teal-800 {
+  color: #6ee7b7 !important;
+}
+
+/* Borders & Separators */
+.dark .border-slate-200,
+.dark .border-slate-200\/90,
+.dark .border-slate-200\/80,
+.dark .border-slate-200\/60,
+.dark .border-slate-200\/50,
+.dark .border-slate-200\/40,
+.dark .border-white\/60,
+.dark .border-white\/45,
+.dark .border-white\/40,
+.dark .border-white\/20,
+.dark .border-white\/15 {
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(16, 185, 129, 0.15) !important;
+}
+
+/* Form inputs & search */
+.dark input:not([type="checkbox"]):not([type="radio"]),
+.dark select,
+.dark textarea {
+  background-color: #0b1916 !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  color: #f8fafc !important;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #64748b !important;
+}
+
+/* Tables & Data grids */
+.dark table thead th {
+  background-color: #0d1e1a !important;
+  color: #6ee7b7 !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+.dark table tbody tr {
+  border-color: rgba(16, 185, 129, 0.1) !important;
+}
+
+.dark table tbody tr:hover {
+  background-color: rgba(16, 185, 129, 0.08) !important;
+}
+
+.dark .group-separator {
+  background-color: #0d2621 !important;
+  color: #a7f3d0 !important;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.35);
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.6);
 }

@@ -62,14 +62,23 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Synchronize with DOM element & CSS variables
   useEffect(() => {
     const root = document.documentElement;
+    const body = typeof document !== 'undefined' ? document.body : null;
     if (isDark) {
       root.classList.add('dark');
       root.setAttribute('data-theme', 'dark');
       root.style.colorScheme = 'dark';
+      if (body) {
+        body.classList.add('dark');
+        body.setAttribute('data-theme', 'dark');
+      }
     } else {
       root.classList.remove('dark');
       root.setAttribute('data-theme', 'light');
       root.style.colorScheme = 'light';
+      if (body) {
+        body.classList.remove('dark');
+        body.setAttribute('data-theme', 'light');
+      }
     }
   }, [isDark]);
 
