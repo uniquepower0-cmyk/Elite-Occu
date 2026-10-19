@@ -98,6 +98,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { useCumulativeBeds, useCumulativeOR } from './hooks/useCumulativeOccupancy';
 import { CumulativeOccupancyPanel } from './components/CumulativeOccupancyPanel';
 import { CumulativeORPanel } from './components/CumulativeORPanel';
+import { useTheme } from './context/ThemeContext';
+import { SolarThemeToggle } from './components/ui/SolarThemeToggle';
 
 interface AutoFetchCountdownBadgeProps {
   rate: string;
@@ -399,6 +401,7 @@ const isClientNameMatch = (nameA: string, nameB: string): boolean => {
 
 export default function App() {
   const toast = useToast();
+  const { isDark } = useTheme();
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [user, setUser] = useState<{ email: string; name: string } | null>(null);
@@ -2745,19 +2748,26 @@ export default function App() {
   if (!isAuthenticated) {
     return (
       <div 
-        className="w-full min-h-screen flex items-center justify-center p-6 relative"
+        className={`w-full min-h-screen flex items-center justify-center p-6 relative transition-colors duration-300 ${
+          isDark ? 'bg-[#081210] text-slate-100' : 'bg-slate-100 text-slate-900'
+        }`}
         style={{
-          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: isDark
+            ? `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #051411 0%, #091a16 60%, #031c17 100%)`
+            : `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
         }}
       >
-        <div className="absolute inset-0 bg-white/20 backdrop-blur-sm pointer-events-none z-0"></div>
+        <div className="absolute top-4 right-4 z-20">
+          <SolarThemeToggle />
+        </div>
+        <div className="absolute inset-0 bg-white/20 dark:bg-black/40 backdrop-blur-sm pointer-events-none z-0"></div>
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="max-w-md w-full bg-white/95 backdrop-blur-md p-10 rounded-3xl shadow-2xl border border-white/60 text-center relative z-10 shadow-emerald-950/5"
+          className="max-w-md w-full bg-white/95 dark:bg-[#0f1d1a]/95 backdrop-blur-md p-10 rounded-3xl shadow-2xl border border-white/60 dark:border-emerald-500/20 text-center relative z-10 shadow-emerald-950/5 dark:text-slate-100"
         >
           <div className="flex justify-center mb-8">
             <div className="w-[76px] h-[76px] bg-white border border-teal-100/80 rounded-2xl shadow-md p-2 flex items-center justify-center overflow-hidden">
@@ -3095,25 +3105,29 @@ export default function App() {
 
     return (
       <div 
-        className="w-full min-h-screen flex flex-col font-sans text-slate-900 overflow-hidden relative bg-slate-100"
+        className={`w-full min-h-screen flex flex-col font-sans transition-colors duration-300 overflow-hidden relative ${
+          isDark ? 'bg-[#081210] text-slate-100' : 'bg-slate-100 text-slate-900'
+        }`}
         style={{
-          backgroundImage: `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
+          backgroundImage: isDark
+            ? `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #051411 0%, #091a16 60%, #031c17 100%)`
+            : `url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}'), linear-gradient(135deg, #e4f2f0 0%, #f1f5f9 60%, #ccfbf1 100%)`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
         }}
       >
         {/* Top Navigation Bar */}
-        <header className="h-20 bg-white/40 backdrop-blur-md border-b border-white/20 flex items-center justify-between px-4 sm:px-6 shrink-0 z-20 shadow-sm relative">
+        <header className="h-20 bg-white/40 dark:bg-[#0a1815]/80 backdrop-blur-md border-b border-white/20 dark:border-emerald-950/40 flex items-center justify-between px-4 sm:px-6 shrink-0 z-20 shadow-sm relative transition-colors duration-300">
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-brand-primary hover:bg-white/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-brand-primary dark:text-emerald-400 hover:bg-white/40 dark:hover:bg-slate-800/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
               aria-label="Open navigation menu"
             >
               <Menu className="w-6 h-6" />
             </button>
-            <div className="w-[72px] h-[72px] bg-white border border-white/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden shrink-0">
+            <div className="w-[72px] h-[72px] bg-white dark:bg-slate-900 border border-white/40 dark:border-emerald-500/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden shrink-0">
               <img 
                 alt="Elite Logo" 
                 className="w-full h-full object-contain transition-transform hover:scale-105 duration-300" 
@@ -3121,32 +3135,32 @@ export default function App() {
                 src="/elite_logo.png" 
               />
             </div>
-            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-brand-primary font-sans truncate">
+            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-brand-primary dark:text-emerald-400 font-sans truncate">
               Mohanad's Elite Unified Dashboard
             </h1>
           </div>
 
-
-          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <SolarThemeToggle />
             <div className="hidden sm:flex flex-col items-end text-right">
-              <span className="text-xs font-bold text-brand-primary uppercase tracking-wider">MOHANAD M.D.</span>
-              <span className="text-[10px] font-mono font-semibold text-slate-500 mt-0.5">
+              <span className="text-xs font-bold text-brand-primary dark:text-emerald-400 uppercase tracking-wider">MOHANAD M.D.</span>
+              <span className="text-[10px] font-mono font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
                 {(() => {
                   const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
                   return `${now.getDate()}-${now.getMonth() + 1}-${now.getFullYear()}`;
                 })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}
               </span>
             </div>
-            <div className="flex items-center gap-1.5 sm:gap-2 sm:pl-4 sm:border-l sm:border-slate-200/40">
+            <div className="flex items-center gap-1.5 sm:gap-2 sm:pl-3 sm:border-l sm:border-slate-200/40 dark:sm:border-slate-800">
               <button 
                  onClick={handleLogout}
-                 className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors hover:bg-white/30 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                 className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors hover:bg-white/30 dark:hover:bg-slate-800/40 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
                  title="Logout"
                  aria-label="Sign out"
               >
                  <LogOut className="w-5 h-5" />
               </button>
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-200/60 border-2 border-white text-slate-700 overflow-hidden flex items-center justify-center font-extrabold text-xs sm:text-sm shadow-inner shrink-0">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-200/60 dark:bg-emerald-950/80 border-2 border-white dark:border-emerald-500/40 text-slate-700 dark:text-emerald-300 overflow-hidden flex items-center justify-center font-extrabold text-xs sm:text-sm shadow-inner shrink-0">
                  M
               </div>
             </div>
