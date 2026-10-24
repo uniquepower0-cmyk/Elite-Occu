@@ -865,13 +865,35 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 log("Power BI returned empty dataset. Skipping cycle.", level="warning")
                 return True
 
-            # Dynamic column mapping: PowerBI Excel exports place true column names in row 1
-            header_row: dict[Any, Any] = df.iloc[0].to_dict()
-            col_map: dict[str, str] = {str(v).strip(): k for k, v in header_row.items() if pd.notna(v)}
+            # Dynamic column mapping: scan first 10 rows for >= 2 recognized occupancy header keywords
+            header_row_idx = 0
+            for r_idx in range(min(10, len(df))):
+                row_strs = [str(x).lower().strip() for x in df.iloc[r_idx].values if pd.notna(x)]
+                match_cnt = sum(1 for s in row_strs if any(k in s for k in [
+                    'bed', 'room', 'patient', 'name', 'mrn', 'admission', 'invoice', 'remaining', 'handover', 'los'
+                ]))
+                if match_cnt >= 2:
+                    header_row_idx = r_idx
+                    break
+
+            header_row: dict[Any, Any] = df.iloc[header_row_idx].to_dict()
+            col_map: dict[str, str] = {}
+            for col_key, header_val in header_row.items():
+                if pd.notna(header_val):
+                    h_str = str(header_val).strip()
+                    col_map[h_str] = col_key
+                    col_map[h_str.lower()] = col_key
+                    clean_h = re.sub(r'[^a-z0-9\u0600-\u06FF]', '', h_str.lower())
+                    if clean_h:
+                        col_map[clean_h] = col_key
 
             def get_val(row: dict[str, Any], possible_names: list[str]) -> Any:
                 for name in possible_names:
-                    key = col_map.get(name)
+                    # 1. Exact or lowercase match in col_map
+                    key = col_map.get(name) or col_map.get(name.lower())
+                    if not key:
+                        clean_n = re.sub(r'[^a-z0-9\u0600-\u06FF]', '', name.lower())
+                        key = col_map.get(clean_n)
                     if key and pd.notna(row.get(key)):
                         return row.get(key)
                     if pd.notna(row.get(name)):
@@ -885,7 +907,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     return val.isoformat()
                 return val
 
-            raw_records = df.to_dict(orient="records")
+            raw_records = df.iloc[header_row_idx + 1:].to_dict(orient="records")
 
             # 1. Fetch pre-existing state and active manual discharges guard
             existing = fetch_existing_supabase_state(cairo_date_str)
@@ -902,22 +924,25 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 if not bed_str or bed_str.lower() in ("bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1") or "no filters" in bed_str.lower():
                     continue
 
-                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"])).strip()
+                raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "رقم الملف"])).strip()
+                # Guard against MRN matching full names when column is absent or shifted
+                if raw_mrn and len(raw_mrn.split()) >= 2 and not any(ch.isdigit() for ch in raw_mrn):
+                    raw_mrn = ""
                 clean_m = raw_mrn.lstrip("0") if raw_mrn else ""
-                p_name = str(get_val(row, ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"]) or "Unknown Patient").strip()
+                p_name = str(get_val(row, ["Patient Name", "Patient", "EnglishFullName", "Name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "Unnamed: 3"]) or "Unknown Patient").strip()
 
-                if not p_name or p_name.lower() in ("patient", "المريض", "name", "unknown", "englishfullname"):
+                if not p_name or p_name.lower() in ("patient", "المريض", "name", "unknown", "englishfullname", "patient name"):
                     continue
 
                 ad_val = clean_date(get_val(row, [
-                    "AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ",
+                    "Admission Date", "AdmissionDate", "Date", "تاريخ الدخول", "التاريخ",
                     "BedoCCupancy_Soussi.AdmissionDate", "No filters applied", "Unnamed: 0"
                 ]))
                 if not ad_val:
                     first_col_key = list(row.keys())[0] if len(row) > 0 else None
                     if first_col_key and pd.notna(row.get(first_col_key)):
                         candidate = clean_date(row.get(first_col_key))
-                        if candidate and str(candidate).lower() != "admissiondate":
+                        if candidate and str(candidate).lower() not in ("admissiondate", "admission date"):
                             ad_val = candidate
 
                 mob_val = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
@@ -925,7 +950,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     m4 = clean_phone(row.get("Unnamed: 4"))
                     mob_val = m4 if len(m4) >= 7 else clean_phone(row.get("Unnamed: 32"))
 
-                t_inv = float(clean_num(get_val(row, ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])))
+                t_inv = float(clean_num(get_val(row, ["Invoice Total", "Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])))
                 r_deb = float(clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])))
 
                 det_seed = normalize_arabic_name(p_name) or bed_str or "patient"
@@ -938,20 +963,20 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     floor=str(get_val(row, ["Floor Name", "FloorName_EN", "FloorStructureName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7", "Unnamed: 4", "Unnamed: 5"])).strip(),
                     physician=str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
                     admission_date=str(ad_val) if ad_val else None,
-                    contractor=str(get_val(row, ["ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip(),
+                    contractor=str(get_val(row, ["Contractor Name", "ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip(),
                     financial_status=str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])).strip(),
                     total_invoice=t_inv,
                     remaining_debt=r_deb,
-                    specialty=normalize_specialty(get_val(row, ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"])),
-                    diagnosis=str(get_val(row, ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"])).strip(),
+                    specialty=normalize_specialty(get_val(row, ["Specialty", "Speciality", "Medical Plan X", "التخصص", "Unnamed: 23"])),
+                    diagnosis=str(get_val(row, ["ICD-10", "ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"])).strip(),
                     mobile=mob_val,
                     los=str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 18"])).strip(),
-                    alos=str(get_val(row, ["EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"])).strip(),
-                    expected_discharge=str(get_val(row, ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])).strip(),
+                    alos=str(get_val(row, ["Elite ALOS", "EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"])).strip(),
+                    expected_discharge=str(get_val(row, ["DischargeExpectedDate", "Discharge Expected Date", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])).strip(),
                     medications=str(get_val(row, ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"])).strip(),
                     initial_assessment=str(get_val(row, ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"])).strip(),
                     vte_summary=str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"])).strip(),
-                    notes=str(get_val(row, ["Notes", "Remarks", "ملاحظات", "Unnamed: 8"])).strip(),
+                    notes=str(get_val(row, ["PrograssNotes", "HandOver", "Handover", "Prograssnotes", "Notes", "Remarks", "ملاحظات", "Unnamed: 8"])).strip(),
                     payment_by=str(get_val(row, ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"])).strip(),
                     raw_row=row
                 )
@@ -1306,39 +1331,39 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
             legacy_occupancy_rows: list[dict[str, Any]] = [fake_header]
 
             known_mappings = {
-                0: ["AdmissionDate", "Admission Date", "Date", "تاريخ الدخول", "التاريخ", "No filters applied", "Unnamed: 0"],
+                0: ["Admission Date", "AdmissionDate", "Date", "تاريخ الدخول", "التاريخ", "No filters applied", "Unnamed: 0"],
                 1: ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"],
-                2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "Unnamed: 2"],
-                3: ["Patient", "EnglishFullName", "Patient Name", "Name", "المريض", "اسم المريض", "الاسم", "Unnamed: 3"],
+                2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "رقم الملف"],
+                3: ["Patient Name", "Patient", "EnglishFullName", "Name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "Unnamed: 3"],
                 4: ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4"],
                 5: ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
                 6: ["Age", "PatientAgeDBComputed", "Unnamed: 6"],
                 7: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7"],
                 8: ["Notes", "Remarks", "ملاحظات", "Unnamed: 8"],
                 9: ["Companions #", "Count of Companions", "Companion", "مرافق", "Unnamed: 9"],
-                10: ["Visit", "VisitTypeGUID", "Visit Type", "نوع الزيارة", "Unnamed: 10"],
+                10: ["Visit", "VisitTypeGUID", "Visit Type", "VisitType", "نوع الزيارة", "Unnamed: 10"],
                 11: ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"],
-                12: ["ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
-                14: ["ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"],
+                12: ["Contractor Name", "ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
+                14: ["ICD-10", "ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"],
                 18: ["LOS", "Sum(LOS)", "LOS Status", "Unnamed: 18"],
                 20: ["DischargeExpectedDate", "Expected Discharge", "ALOS", "Unnamed: 20"],
                 22: ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"],
-                23: ["Speciality", "Specialty", "Medical Plan X", "التخصص", "Unnamed: 23"],
+                23: ["Specialty", "Speciality", "Medical Plan X", "التخصص", "Unnamed: 23"],
                 24: ["Transfer History", "Unnamed: 24"],
-                25: ["Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
-                26: ["Sum of Payments", "Payments", "Unnamed: 26"],
+                25: ["Invoice Total", "Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
+                26: ["Payments", "Sum of Payments", "Unnamed: 26"],
                 27: ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
                 28: ["SSO", "Unnamed: 28"],
                 29: ["LTC Weight", "Unnamed: 29"],
                 30: ["LTC GLOS", "Unnamed: 30"],
                 31: ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31"],
-                32: ["PrograssNotes Creation Date", "Creation Date", "Medical Plan AG", "تاريخ الخطة", "DefaultMobile", "Unnamed: 32"],
-                33: ["Handover", "PrograssNotes", "Medical Plan AH", "الخطة الطبية", "Operations", "Unnamed: 33"],
-                34: ["Prograssnotes", "Hand Over", "Notes", "Medical Plan AI", "Unnamed: 34"],
+                32: ["HandOver Creation Date", "PrograssNotes Creation Date", "Creation Date", "Medical Plan AG", "تاريخ الخطة", "DefaultMobile", "Unnamed: 32"],
+                33: ["HandOver", "Handover", "PrograssNotes", "Medical Plan AH", "الخطة الطبية", "Operations", "Unnamed: 33"],
+                34: ["PrograssNotes", "Prograssnotes", "Hand Over", "Notes", "Medical Plan AI", "Unnamed: 34"],
                 35: ["OR Notes", "Unnamed: 35"],
                 36: ["Operations", "Unnamed: 36"],
-                37: ["EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"],
-                38: ["EliteWeight", "Weight", "Unnamed: 38"],
+                37: ["Elite ALOS", "EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"],
+                38: ["Elite Weight", "EliteWeight", "Weight", "Unnamed: 38"],
                 39: ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"],
                 40: ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"],
                 41: ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"]
@@ -1351,6 +1376,10 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     col_key = "No filters applied" if i == 0 else f"Unnamed: {i}"
                     if i in known_mappings:
                         val = clean_val(get_val(rec.raw_row, known_mappings[i]))
+                        if i == 2:
+                            # MRN guard: If extracted val is a patient name (multi-word letters), use rec.clean_mrn or rec.mrn
+                            if not val or (len(str(val).split()) >= 2 and not any(ch.isdigit() for ch in str(val))):
+                                val = rec.clean_mrn or rec.mrn
                         legacy_row[col_key] = val
                     else:
                         legacy_row[col_key] = clean_val(get_val(rec.raw_row, [f"Unnamed: {i}"]))

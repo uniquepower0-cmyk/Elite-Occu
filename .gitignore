@@ -13,3 +13,4 @@ service-account-key.json
 __pycache__/
 *.pyc
 .impeccable
+.vercel

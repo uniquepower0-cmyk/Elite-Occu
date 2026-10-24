@@ -28,6 +28,7 @@ import {
   getORCaseType
 } from './orLogic.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './contractorOfficers.js';
+import { formatMrnForSheet } from './columnResolver.js';
 
 export const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 export const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
@@ -657,7 +658,7 @@ export async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: an
       serial++,
       formatDateForSheet(p.colA),
       p.room || '',
-      p.mrn || '',
+      formatMrnForSheet(p.mrn),
       p.colD || '',
       p.physician || '',
       contractVal,
@@ -753,7 +754,7 @@ export async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, de
       serial++,
       formatDateForSheet(p.colA),
       p.room || '',
-      p.mrn || '',
+      formatMrnForSheet(p.mrn),
       p.colD || '',
       p.physician || '',
       contractVal,
@@ -836,7 +837,7 @@ export async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, trans
     const rowValues = [
       serial++,
       t.name || '',
-      t.mrn || '',
+      formatMrnForSheet(t.mrn),
       t.initialRoom || t.fromRoom || '',
       t.currentRoom || t.toRoom || '',
       t.physician || '',
@@ -906,7 +907,7 @@ export async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: an
       admittedRoom !== "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال" ? admittedRoom : (p.realStatus === 'IN' ? 'منوم' : 'خارجي'),
       p.orRoom || p.room || 'OR',
       p.patientName,
-      p.mrn || '',
+      formatMrnForSheet(p.mrn),
       p.surgeonName || '',
       p.arabicOperation || p.engOperation || '',
       cleanedContractor,
@@ -1006,7 +1007,7 @@ export async function addRefinedORReconciliationSheet(
       roomVal || 'N/A',
       p.orRoom || p.room || 'OR',
       p.patientName,
-      p.mrn || (occPatient ? occPatient.mrn : ''),
+      formatMrnForSheet(p.mrn || (occPatient ? occPatient.mrn : '')),
       p.surgeonName || (occPatient ? occPatient.physician : ''),
       cleanedContractor,
       getResponsibleOfficer(contractorVal),
