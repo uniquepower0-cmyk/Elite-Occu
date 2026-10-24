@@ -28,7 +28,7 @@ import {
   getORCaseType
 } from './orLogic.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './contractorOfficers.js';
-import { formatMrnForSheet } from './columnResolver.js';
+import { formatMrnForSheet, formatRoomForSheet } from './columnResolver.js';
 
 export const LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
 export const FALLBACK_LOGO_PATH = path.join(process.cwd(), 'elite_logo.png');
@@ -384,7 +384,7 @@ export function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     }
 
     const cleanedContractor = cleanContractorForDisplay(p.contractor);
-    const rowValues = [serial++, formatDateForSheet(p.date), p.room, p.name, p.physician, cleanedContractor, getResponsibleOfficer(p.contractor)];
+    const rowValues = [serial++, formatDateForSheet(p.date), formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, getResponsibleOfficer(p.contractor)];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -450,7 +450,7 @@ export async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPati
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
     const rowValues = [
       serial++,
-      p.room || p.colB || '',
+      formatRoomForSheet(p.room || p.colB),
       p.name || p.colD || '',
       p.physician || p.colW || '',
       cleanedContractor,
@@ -514,7 +514,7 @@ export async function addRefinedExitSheet(workbook: ExcelJS.Workbook, discharged
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
     const rowValues = [
       serial++,
-      p.room || p.lastRoom || '',
+      formatRoomForSheet(p.room || p.lastRoom),
       p.name || '',
       p.physician || '',
       cleanedContractor,
@@ -576,7 +576,7 @@ export async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialys
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
     const rowValues = [
       serial++,
-      p.room || '',
+      formatRoomForSheet(p.room),
       p.name || '',
       p.physician || '',
       cleanedContractor,
@@ -657,7 +657,7 @@ export async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     const rowValues = [
       serial++,
       formatDateForSheet(p.colA),
-      p.room || '',
+      formatRoomForSheet(p.room),
       formatMrnForSheet(p.mrn),
       p.colD || '',
       p.physician || '',
@@ -753,7 +753,7 @@ export async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, de
     const rowValues = [
       serial++,
       formatDateForSheet(p.colA),
-      p.room || '',
+      formatRoomForSheet(p.room),
       formatMrnForSheet(p.mrn),
       p.colD || '',
       p.physician || '',
@@ -838,8 +838,8 @@ export async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, trans
       serial++,
       t.name || '',
       formatMrnForSheet(t.mrn),
-      t.initialRoom || t.fromRoom || '',
-      t.currentRoom || t.toRoom || '',
+      formatRoomForSheet(t.initialRoom || t.fromRoom),
+      formatRoomForSheet(t.currentRoom || t.toRoom),
       t.physician || '',
       formatDateForSheet(t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : ''))
     ];
@@ -904,8 +904,8 @@ export async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: an
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
     const rowValues = [
       serial++,
-      admittedRoom !== "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال" ? admittedRoom : (p.realStatus === 'IN' ? 'منوم' : 'خارجي'),
-      p.orRoom || p.room || 'OR',
+      admittedRoom !== "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال" ? formatRoomForSheet(admittedRoom) : (p.realStatus === 'IN' ? 'منوم' : 'خارجي'),
+      formatRoomForSheet(p.orRoom || p.room) || 'OR',
       p.patientName,
       formatMrnForSheet(p.mrn),
       p.surgeonName || '',
@@ -1004,8 +1004,8 @@ export async function addRefinedORReconciliationSheet(
 
     const rowValues = [
       serial++,
-      roomVal || 'N/A',
-      p.orRoom || p.room || 'OR',
+      roomVal && roomVal !== 'N/A' ? formatRoomForSheet(roomVal) : (roomVal || 'N/A'),
+      formatRoomForSheet(p.orRoom || p.room) || 'OR',
       p.patientName,
       formatMrnForSheet(p.mrn || (occPatient ? occPatient.mrn : '')),
       p.surgeonName || (occPatient ? occPatient.physician : ''),

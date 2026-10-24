@@ -42,7 +42,7 @@ import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
-import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet } from './server/columnResolver.js';
+import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
 
 process.env.DOTENV_CONFIG_QUIET = 'true';
 dotenv.config({ quiet: true });
@@ -5193,7 +5193,7 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
     const cleanedContractor = cleanContractorForDisplay(p.contractor);
-    const rowValues = [serial++, formattedDate, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer];
+    const rowValues = [serial++, formattedDate, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -5447,7 +5447,7 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
+      const rowValues = [serial++, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5608,7 +5608,7 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const rowValues = [
         serial++, 
-        p.room, 
+        formatRoomForSheet(p.room), 
         p.name, 
         p.physician, 
         cleanedContractor, 
@@ -5782,7 +5782,7 @@ async function addRefinedDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatie
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
+      const rowValues = [serial++, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -5901,7 +5901,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     const responsibleOfficer = getResponsibleOfficer(rawContract);
     const rowValues = [
       formattedDate, 
-      p.room || '', 
+      formatRoomForSheet(p.room), 
       formatMrnForSheet(p.mrn),
       p.colD || '', 
       p.physician || '',
@@ -6167,7 +6167,7 @@ async function addInsuredNonCashOccupancySheet(workbook: ExcelJS.Workbook, data:
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const rowValues = [
         serial++, 
-        p.room, 
+        formatRoomForSheet(p.room), 
         p.name, 
         p.physician, 
         cleanedContractor, 
@@ -6299,7 +6299,7 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const responsibleOfficer = getResponsibleOfficer(rawContract);
     const rowValues = [
       formattedDate, 
-      p.room || '', 
+      formatRoomForSheet(p.room), 
       formatMrnForSheet(p.mrn),
       p.colD || '', 
       p.physician || '',
@@ -6465,14 +6465,14 @@ async function addRefinedTransfersSheet(workbook: ExcelJS.Workbook, transfers: a
 
   todayOnlyTransfers.forEach((t, idx) => {
     const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
-      ? t.journey.join('  ➔  ')
-      : `${t.initialRoom || t.fromRoom || ''}  ➔  ${t.currentRoom || t.toRoom || ''}`;
+      ? t.journey.map(r => formatRoomForSheet(r)).join('  ➔  ')
+      : `${formatRoomForSheet(t.initialRoom || t.fromRoom || '')}  ➔  ${formatRoomForSheet(t.currentRoom || t.toRoom || '')}`;
 
-    const prevRoom = t.history && t.history.length > 0
+    const prevRoom = formatRoomForSheet(t.history && t.history.length > 0
       ? t.history[t.history.length - 1].fromRoom
-      : (t.initialRoom || t.fromRoom || '-');
+      : (t.initialRoom || t.fromRoom || '-')) || '-';
 
-    const currRoom = t.currentRoom || t.toRoom || '-';
+    const currRoom = formatRoomForSheet(t.currentRoom || t.toRoom || '-') || '-';
     const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
@@ -6570,14 +6570,14 @@ function addTransfersSheet(workbook: ExcelJS.Workbook, transfers: any[]) {
 
   todayOnlyTransfers.forEach(t => {
     const journeyStr = Array.isArray(t.journey) && t.journey.length > 0
-      ? t.journey.join(' -> ')
-      : `${t.initialRoom || t.fromRoom || ''} -> ${t.currentRoom || t.toRoom || ''}`;
+      ? t.journey.map(r => formatRoomForSheet(r)).join(' -> ')
+      : `${formatRoomForSheet(t.initialRoom || t.fromRoom || '')} -> ${formatRoomForSheet(t.currentRoom || t.toRoom || '')}`;
 
-    const prevRoom = t.history && t.history.length > 0
+    const prevRoom = formatRoomForSheet(t.history && t.history.length > 0
       ? t.history[t.history.length - 1].fromRoom
-      : (t.initialRoom || t.fromRoom || '-');
+      : (t.initialRoom || t.fromRoom || '-')) || '-';
 
-    const currRoom = t.currentRoom || t.toRoom || '-';
+    const currRoom = formatRoomForSheet(t.currentRoom || t.toRoom || '-') || '-';
     const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
     const formattedDate = formatDateForSheet(rawDate);
     const responsibleOfficer = getResponsibleOfficer(t.contractor);
@@ -6647,7 +6647,7 @@ async function createSingleMedicalPlanSheetRefined(workbook: ExcelJS.Workbook, s
     const admissionDate = formatDateForSheet(p.colA);
     const responsibleOfficer = getResponsibleOfficer(p.colM);
     const cleanedContractor = cleanContractorForDisplay(p.colM);
-    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
+    const rowValues = [index + 1, admissionDate, formatRoomForSheet(p.colB), p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     const rowBgColor = (index % 2 === 1) ? bgColor : 'FFFFFFFF';
 
@@ -6844,7 +6844,7 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
-      const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate, isPatientVip(p.name) ? "VIP" : ""];
+      const rowValues = [serial++, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate, isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -6953,7 +6953,7 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
     const cleanedContractor = cleanContractorForDisplay(p.contractor);
-    const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
+    const rowValues = [serial++, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -7150,7 +7150,7 @@ function addDialysisSheet(workbook: ExcelJS.Workbook, dialysisPatients: any[]) {
     const formattedDate = formatDateForSheet(p.date);
     const responsibleOfficer = getResponsibleOfficer(p.contractor);
     const cleanedContractor = cleanContractorForDisplay(p.contractor);
-    const rowValues = [serial++, p.room, p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
+    const rowValues = [serial++, formatRoomForSheet(p.room), p.name, p.physician, cleanedContractor, responsibleOfficer, formattedDate];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell((cell, colNumber) => {
       cell.border = {
@@ -7221,8 +7221,8 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
 
     const rowValues = [
       formattedDate, 
-      p.room || '', 
-      p.mrn || '', 
+      formatRoomForSheet(p.room), 
+      formatMrnForSheet(p.mrn), 
       p.colD || '', 
       p.physician || '', 
       contractVal, 
@@ -7313,8 +7313,8 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
 
     const rowValues = [
       formattedDate, 
-      p.room || '', 
-      p.mrn || '', 
+      formatRoomForSheet(p.room), 
+      formatMrnForSheet(p.mrn), 
       p.colD || '', 
       p.physician || '', 
       contractVal, 
@@ -9997,7 +9997,7 @@ app.get('/api/reports/unified', async (req, res) => {
           const cleanedContractor = cleanContractorForDisplay(contractor);
           const pValues = [
             rowCount++,
-            room,      // Bed
+            formatRoomForSheet(room),      // Bed
             patient,   // Patient
             physician, // Physician
             cleanedContractor,// Contractor
@@ -10663,7 +10663,7 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
     const admissionDate = formatDateForSheet(p.colA);
     const responsibleOfficer = getResponsibleOfficer(p.colM);
     const cleanedContractor = cleanContractorForDisplay(p.colM);
-    const rowValues = [index + 1, admissionDate, p.colB, p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
+    const rowValues = [index + 1, admissionDate, formatRoomForSheet(p.colB), p.colD, p.colW, cleanedContractor, responsibleOfficer, updateDate, sbarText];
     const pRow = sheet.addRow(rowValues);
     
     // Alternating background logic: White then Header Color
@@ -11091,7 +11091,7 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
     group.items.forEach((p) => {
       const category = getAccommodationCategory(p.room);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
-      const rowValues = [serial++, p.room, category, p.name, p.physician, cleanedContractor, getResponsibleOfficer(p.contractor), formatDateForSheet(p.date), isPatientVip(p.name) ? "VIP" : ""];
+      const rowValues = [serial++, formatRoomForSheet(p.room), category, p.name, p.physician, cleanedContractor, getResponsibleOfficer(p.contractor), formatDateForSheet(p.date), isPatientVip(p.name) ? "VIP" : ""];
       const pRow = sheet.addRow(rowValues);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
@@ -11344,7 +11344,7 @@ async function addVacantRoomsByCategorySheet(workbook: ExcelJS.Workbook, data: a
       });
     } else {
       list.forEach((room) => {
-        const pRow = sheet.addRow([serial++, room, catName]);
+        const pRow = sheet.addRow([serial++, formatRoomForSheet(room), catName]);
         pRow.height = 24;
         pRow.eachCell((cell, colNumber) => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
@@ -11617,7 +11617,7 @@ async function addVacantRoomsAscendingSheet(workbook: ExcelJS.Workbook, data: an
 
     list.forEach(room => {
       const category = FIRST_FLOOR_BEDS.includes(room) ? "Day Case" : getAccommodationCategory(room);
-      const pRow = sheet.addRow([serial++, room, category]);
+      const pRow = sheet.addRow([serial++, formatRoomForSheet(room), category]);
       pRow.height = 24;
       pRow.eachCell((cell, colNumber) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
@@ -12846,7 +12846,7 @@ async function addEarlyDischargeCasesSheet(workbook: ExcelJS.Workbook, data: any
       }
 
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
-      const pRow = sheet.addRow([serial++, p.room, category, p.name, cleanedContractor, getResponsibleOfficer(p.contractor), specialty, formatDateForSheet(p.date)]);
+      const pRow = sheet.addRow([serial++, formatRoomForSheet(p.room), category, p.name, cleanedContractor, getResponsibleOfficer(p.contractor), specialty, formatDateForSheet(p.date)]);
       pRow.height = 24;
       pRow.eachCell((cell, colIndex) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.row } };
@@ -12995,7 +12995,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
 
     const isClosedUnit = COMPANION_EXCLUDED_DEPTS.some(dept => roomStr.includes(dept)) || roomStr === "OR" || roomStr.includes(" OR ") || roomStr.startsWith("OR ") || roomStr.endsWith(" OR");
     const cleanedContractor = cleanContractorForDisplay(p.colM);
-    const rowValues = [serial++, formatDateForSheet(p.colA), p.colB, p.colD, p.colW, cleanedContractor, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
+    const rowValues = [serial++, formatDateForSheet(p.colA), formatRoomForSheet(p.colB), p.colD, p.colW, cleanedContractor, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = {
@@ -13175,7 +13175,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
     const rowValues = [
       serial++, 
       formatDateForSheet(p.colA), 
-      p.colB, 
+      formatRoomForSheet(p.colB), 
       p.colD, 
       p.colW, 
       cleanedContractor, 
@@ -13433,8 +13433,8 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
     const rowValues = [
       serial++, 
       formatDateForSheet(p.date), 
-      p.room, 
-      p.mrn,
+      formatRoomForSheet(p.room), 
+      formatMrnForSheet(p.mrn),
       p.name, 
       p.physician || "-",
       p.specialty || "-",
@@ -13548,11 +13548,11 @@ async function buildRefinedORSheetTab(
       const cleanedContractor = cleanContractorForDisplay(p.contractorName);
       const rowValues = [
         serial++, 
-        p.orRoom, 
+        formatRoomForSheet(p.orRoom), 
         p.startTime, 
         p.endTime, 
         p.patientName, 
-        p.mrn, 
+        formatMrnForSheet(p.mrn), 
         p.arOperationName, 
         p.engOperationName, 
         p.surgeonName, 
@@ -13877,7 +13877,7 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
     const rowValues = [
       serial++, 
       timingStr,
-      p.orRoom || '—', 
+      formatRoomForSheet(p.orRoom) || '—', 
       p.patientName || '—', 
       p.engOperationName || p.arOperationName || '—', 
       p.surgeonName || '—',
@@ -14520,10 +14520,10 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
     const cleanedContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++,
-      p.patientRoom || 'N/A',
-      p.room,
+      p.patientRoom && p.patientRoom !== 'N/A' ? formatRoomForSheet(p.patientRoom) : (p.patientRoom || 'N/A'),
+      formatRoomForSheet(p.room),
       p.patientName,
-      p.mrn || '',
+      formatMrnForSheet(p.mrn),
       p.physician || '',
       cleanedContractor || '',
       getResponsibleOfficer(p.contractor),
@@ -14652,10 +14652,10 @@ async function addRefinedORReconciliationSheet(
     const cleanedContractor = cleanContractorForDisplay(displayContractor);
     const rowValues = [
       serial++,
-      displayPatientRoom,
-      p.orRoom || p.room || 'OTHER',
+      displayPatientRoom && displayPatientRoom !== 'N/A' ? formatRoomForSheet(displayPatientRoom) : (displayPatientRoom || 'N/A'),
+      formatRoomForSheet(p.orRoom || p.room) || 'OTHER',
       p.patientName,
-      displayMRN,
+      formatMrnForSheet(displayMRN),
       p.surgeonName || p.physician || '',
       cleanedContractor,
       getResponsibleOfficer(displayContractor),
@@ -14697,10 +14697,10 @@ async function addRefinedORReconciliationSheet(
     const cleanedOverContractor = cleanContractorForDisplay(p.contractor);
     const rowValues = [
       serial++,
-      p.patientRoom || 'N/A',
-      p.room,
+      p.patientRoom && p.patientRoom !== 'N/A' ? formatRoomForSheet(p.patientRoom) : (p.patientRoom || 'N/A'),
+      formatRoomForSheet(p.room),
       p.patientName,
-      p.mrn || '',
+      formatMrnForSheet(p.mrn),
       p.physician || '',
       cleanedOverContractor || '',
       getResponsibleOfficer(p.contractor),
@@ -15793,9 +15793,9 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
 
       const rowVal = [
         serial++,
-        p.orRoom,
+        formatRoomForSheet(p.orRoom),
         p.patientName,
-        p.mrn,
+        formatMrnForSheet(p.mrn),
         p.flClassName || "N/A",
         p.roomDisplay,
         getORCaseType(p),
@@ -16192,8 +16192,8 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
     const rowValues = [
       serial++, 
       formatDateForSheet(p.date), 
-      p.room, 
-      p.mrn,
+      formatRoomForSheet(p.room), 
+      formatMrnForSheet(p.mrn),
       p.name, 
       p.physician || "-",
       p.specialty || "-",
@@ -16423,7 +16423,7 @@ function addInpatientSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 
     // Patient rows inside group (Only occupied)
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), formatRoomForSheet(gr.room), gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
       pRow.eachCell((cell, colNumber) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
@@ -16606,7 +16606,7 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
     });
 
     groupRows.forEach(gr => {
-      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), gr.room, gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
+      const pRow = sheet.addRow([globalSerial++, formatDateForSheet(gr.date), formatRoomForSheet(gr.room), gr.name, cleanContractorForDisplay(gr.contract), getResponsibleOfficer(gr.contract), gr.physician, gr.notes]);
       pRow.eachCell((cell, colNumber) => {
         cell.border = {
           top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' }
@@ -17575,7 +17575,7 @@ async function addSpecialtyOccupancySheet(
       const rowValues = [
         globalSerial++, 
         formatDateForSheet(p.colA), 
-        p.colB || '', 
+        formatRoomForSheet(p.colB), 
         formatMrnForSheet(p.mrn), 
         p.colD || '', 
         p.physician || '', 

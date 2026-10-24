@@ -258,3 +258,25 @@ export function formatMrnForSheet(mrn: any): string {
   }
   return s;
 }
+
+/**
+ * Strips the word "Bed" (case-insensitive, English & Arabic prefixes) from room strings for downloadable sheets.
+ * e.g., "Bed 304" -> "304"
+ *       "Bed 102 - 1" -> "102 - 1"
+ *       "ICU Bed 9" -> "ICU 9"
+ *       "Well Baby bed 2" -> "Well Baby 2"
+ *       "Bed 304 ➔ Bed 102" -> "304 ➔ 102"
+ */
+export function formatRoomForSheet(room: any): string {
+  if (!room) return '';
+  return String(room)
+    .replace(/\bbed\b/gi, '')
+    .replace(/\broom\b/gi, '')
+    .replace(/سرير/g, '')
+    .replace(/غرفة/g, '')
+    .replace(/^[\s\-_:#]+/, '')
+    .replace(/[\s\-_:#]+$/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*➔\s*/g, ' ➔ ')
+    .trim();
+}

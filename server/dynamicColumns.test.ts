@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import ExcelJS from 'exceljs';
-import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet } from './columnResolver.js';
+import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './columnResolver.js';
 import { getOccupancyRows, getOccupancyRowsUnfiltered } from './occupancyLogic.js';
 import { addRefinedDebtsSheet } from './excelGenerators.js';
 
@@ -247,6 +247,82 @@ describe('Dynamic Column Detection on Occupancy Sheets', () => {
       expect(cellValues).toContain('N/A');
       expect(cellValues).toContain('987654');
       expect(cellValues).not.toContain('UNKNOWN-2C23D144');
+    });
+
+    it('formatRoomForSheet strips the word Bed and cleans up separators correctly', () => {
+      expect(formatRoomForSheet('Bed 304')).toBe('304');
+      expect(formatRoomForSheet('bed 102 - 1')).toBe('102 - 1');
+      expect(formatRoomForSheet('BED 505')).toBe('505');
+      expect(formatRoomForSheet('ICU Bed 9')).toBe('ICU 9');
+      expect(formatRoomForSheet('Well Baby bed 2')).toBe('Well Baby 2');
+      expect(formatRoomForSheet('Bed 304 ➔ Bed 102')).toBe('304 ➔ 102');
+      expect(formatRoomForSheet('Bed 304 -> Bed 102')).toBe('304 -> 102');
+      expect(formatRoomForSheet('سرير 205')).toBe('205');
+      expect(formatRoomForSheet('غرفة 401')).toBe('401');
+      expect(formatRoomForSheet('Bed')).toBe('');
+      expect(formatRoomForSheet('Room')).toBe('');
+      expect(formatRoomForSheet('HomeCare 35')).toBe('HomeCare 35');
+      expect(formatRoomForSheet('')).toBe('');
+      expect(formatRoomForSheet(null)).toBe('');
+      expect(formatRoomForSheet(undefined)).toBe('');
+    });
+
+    it('addRefinedDebtsSheet writes stripped room numbers into room column', async () => {
+      const workbook = new ExcelJS.Workbook();
+      const mockDebts = [
+        {
+          colA: '2026-10-24',
+          room: 'Bed 304',
+          mrn: '12345',
+          colD: 'Fatima Mahhate Eldahshan .',
+          physician: 'Mohamed Sabry Hassan El Tarhony',
+          colM: 'Cash',
+          colZ: 1500,
+          colAB: 1500
+        },
+        {
+          colA: '2026-10-24',
+          room: 'ICU Bed 4',
+          mrn: '67890',
+          colD: 'Omar Khaled',
+          physician: 'Dr. Hassan',
+          colM: 'Cash',
+          colZ: 2000,
+          colAB: 1000
+        }
+      ];
+
+      await addRefinedDebtsSheet(workbook, mockDebts);
+      const sheet = workbook.getWorksheet('Formatted Debts');
+      expect(sheet).toBeDefined();
+
+      let roomColIdx = -1;
+      let headerRowNum = -1;
+      sheet!.eachRow((row, rowNumber) => {
+        row.eachCell((cell, colNumber) => {
+          if (String(cell.value || '').includes('الغرفة')) {
+            roomColIdx = colNumber;
+            headerRowNum = rowNumber;
+          }
+        });
+      });
+
+      expect(roomColIdx).toBeGreaterThan(0);
+      expect(headerRowNum).toBeGreaterThan(0);
+
+      const dataRows: any[] = [];
+      sheet!.eachRow((row, rowNumber) => {
+        if (rowNumber > headerRowNum) {
+          dataRows.push(row);
+        }
+      });
+
+      expect(dataRows.length).toBe(2);
+      const roomValues = dataRows.map(r => r.getCell(roomColIdx).value);
+      expect(roomValues).toContain('304');
+      expect(roomValues).toContain('ICU 4');
+      expect(roomValues).not.toContain('Bed 304');
+      expect(roomValues).not.toContain('ICU Bed 4');
     });
   });
 });
