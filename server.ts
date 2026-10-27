@@ -1012,6 +1012,11 @@ function getOccupancyRows(data: any[][] | null): any[][] {
       }
     }
 
+    // Never allow patient Arabic names or non-digit text inside mrnStr
+    if (/[\u0600-\u06FF]/.test(mrnStr) || (mrnStr && !/\d/.test(mrnStr))) {
+      mrnStr = "";
+    }
+
     // Safeguard surgical procedure in physician
     if (/closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic|debridement|excision|fixation|amputation|استئصال|منظار|تفريغ|جراحة/i.test(physStr)) {
       if (row.length < 35 && row[14] && !/closure|wounds|drainage/i.test(String(row[14]))) {
@@ -1126,6 +1131,11 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
       } else if (row[2] && !/^\d+$/.test(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
         nameStr = String(row[2]).trim();
       }
+    }
+
+    // Never allow patient Arabic names or non-digit text inside mrnStr
+    if (/[\u0600-\u06FF]/.test(mrnStr) || (mrnStr && !/\d/.test(mrnStr))) {
+      mrnStr = "";
     }
 
     // Safeguard surgical procedure in physician
@@ -1647,6 +1657,11 @@ function extractRawPatientsFromRows(data: any): { name: string; mrn: string; roo
       const temp = rawMrn;
       rawMrn = rawName.replace(/^0+/, '');
       rawName = temp;
+    }
+
+    // Never allow patient Arabic names or non-digit text inside rawMrn
+    if (/[\u0600-\u06FF]/.test(rawMrn) || (rawMrn && !/\d/.test(rawMrn))) {
+      rawMrn = "";
     }
 
     // Guard 4: Physician must not be an operative note / diagnosis (e.g. "Layer Closure...")

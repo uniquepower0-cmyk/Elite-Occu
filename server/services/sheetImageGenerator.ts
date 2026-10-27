@@ -34,6 +34,27 @@ function truncateText(str: any, maxChars: number): string {
   return s.slice(0, maxChars - 1).trim() + '…';
 }
 
+/**
+ * Validates that a candidate MRN string is an actual MRN code (contains digits,
+ * no Arabic characters, no spaces, and not a synthetic placeholder).
+ */
+export function isRealMrnCode(val: any): boolean {
+  const s = String(val ?? '').trim();
+  if (!s || s === '—' || s === '-' || s.toLowerCase() === 'n/a' || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') {
+    return false;
+  }
+  if (s.startsWith('UNKNOWN-') || s.startsWith('transfer-') || s.toLowerCase().includes('transfer')) {
+    return false;
+  }
+  if (/[\u0600-\u06FF]/.test(s) || /\s/.test(s)) {
+    return false;
+  }
+  if (!/\d/.test(s)) {
+    return false;
+  }
+  return true;
+}
+
 function getHeaderBgPath(): string | null {
   const candidates = [
     path.resolve(process.cwd(), 'header_bg.webp'),
@@ -320,6 +341,7 @@ export function isOccupancyExcluded(
 /**
  * Universal Intelligent MRN Resolver
  * Solves MRN across exact match, normalized Arabic, and fuzzy patient names.
+ * Strictly rejects any non-code value (such as patient names or Arabic text).
  */
 export class MrnResolver {
   public exactMap = new Map<string, string>();
@@ -330,17 +352,7 @@ export class MrnResolver {
   public add(name: string, mrn: string, details?: { physician?: string; contractor?: string; room?: string }) {
     const rawName = String(name || '').trim();
     const cleanMrn = String(mrn || '').trim();
-    if (
-      !cleanMrn ||
-      cleanMrn === '—' ||
-      cleanMrn === '-' ||
-      cleanMrn.toLowerCase() === 'undefined' ||
-      cleanMrn.toLowerCase() === 'null' ||
-      cleanMrn.startsWith('transfer-') ||
-      cleanMrn.toLowerCase().includes('transfer') ||
-      cleanMrn.startsWith('UNKNOWN-') ||
-      cleanMrn.length > 20
-    ) {
+    if (!isRealMrnCode(cleanMrn) || cleanMrn.length > 20) {
       return;
     }
     if (!rawName) return;
@@ -366,20 +378,11 @@ export class MrnResolver {
 
   public resolve(patientName: string, directMrn?: string): string {
     const direct = String(directMrn || '').trim();
-    if (
-      direct &&
-      direct !== '—' &&
-      direct !== '-' &&
-      direct.toLowerCase() !== 'undefined' &&
-      direct.toLowerCase() !== 'null' &&
-      !direct.startsWith('transfer-') &&
-      !direct.toLowerCase().includes('transfer') &&
-      !direct.startsWith('UNKNOWN-')
-    ) {
+    if (isRealMrnCode(direct)) {
       return direct;
     }
     const rawName = String(patientName || '').trim();
-    if (!rawName) return '—';
+    if (!rawName) return 'N/A';
 
     // 1. Direct lowercase match
     const lower = rawName.toLowerCase();
@@ -396,7 +399,7 @@ export class MrnResolver {
       }
     }
 
-    return '—';
+    return 'N/A';
   }
 
   public getPatientByMrn(mrn: string) {
@@ -416,29 +419,22 @@ function resolvePatientMrn(
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): string {
   const cleanDirect = String(directMrn || '').trim();
-  if (
-    cleanDirect &&
-    cleanDirect !== '—' &&
-    cleanDirect !== '-' &&
-    cleanDirect.toLowerCase() !== 'n/a' &&
-    cleanDirect.toLowerCase() !== 'null' &&
-    cleanDirect.toLowerCase() !== 'undefined' &&
-    !cleanDirect.startsWith('transfer-') &&
-    !cleanDirect.toLowerCase().includes('transfer') &&
-    !cleanDirect.startsWith('UNKNOWN-')
-  ) {
+  if (isRealMrnCode(cleanDirect)) {
     return cleanDirect;
   }
   if (mrnLookupInput?.resolve) {
-    return mrnLookupInput.resolve(patientName, cleanDirect);
+    const r = mrnLookupInput.resolve(patientName, cleanDirect);
+    return isRealMrnCode(r) ? r : 'N/A';
   }
   if (mrnLookupInput instanceof Map) {
-    return mrnLookupInput.get(patientName.toLowerCase()) || '—';
+    const r = mrnLookupInput.get(patientName.toLowerCase());
+    return isRealMrnCode(r) ? r! : 'N/A';
   }
   if (mrnLookupInput?.nameToMrn) {
-    return mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+    const r = mrnLookupInput.nameToMrn.get(patientName.toLowerCase());
+    return isRealMrnCode(r) ? r : 'N/A';
   }
-  return '—';
+  return 'N/A';
 }
 
 /**
@@ -453,7 +449,7 @@ export function buildMrnLookup(
   // 1. Index rawRows (handles both raw uploads with headers and pre-filtered arrays)
   (rawRows || []).forEach((r) => {
     if (!Array.isArray(r) || r.length === 0) return;
-    const isUnified = r.length >= 10 || (String(r[0] || '').includes('T') || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ''))));
+    const isUnified = r.length >= 10;
     let room = '';
     let name = '';
     let physician = '';
@@ -484,8 +480,7 @@ export function buildMrnLookup(
       mrnLower === 'mrn' ||
       nameLower.includes('patient') ||
       room.toLowerCase().includes('bed#') ||
-      mrn.startsWith('transfer-') ||
-      mrn.startsWith('UNKNOWN-')
+      !isRealMrnCode(mrn)
     ) {
       return;
     }
@@ -511,13 +506,7 @@ export function buildMrnLookup(
       const contractor = String(item.contractor || item.payment || item.colM || '').trim();
       const room = String(item.room || item.bed || item.colB || '').trim();
 
-      if (
-        name &&
-        rawCandidate &&
-        !rawCandidate.startsWith('transfer-') &&
-        !rawCandidate.toLowerCase().includes('transfer') &&
-        !rawCandidate.startsWith('UNKNOWN-')
-      ) {
+      if (name && isRealMrnCode(rawCandidate)) {
         resolver.add(name, rawCandidate, { room, physician, contractor });
       }
     });
@@ -527,8 +516,8 @@ export function buildMrnLookup(
 }
 
 /**
- * 1. Occupancy Sheet (Colored Structured Grid - identical to addGridOccupancySheet)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
+ * 1. Occupancy Sheet (Colored Structured Grid - 100% identical to addGridOccupancySheet)
+ * Columns (8): ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز', 'VIP STATUS']
  * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateOccupancyJpeg(
@@ -538,7 +527,7 @@ export async function generateOccupancyJpeg(
   dialysisCases: any[] = [],
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1350;
+  const width = 1240;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 36;
@@ -546,14 +535,13 @@ export async function generateOccupancyJpeg(
 
   const cols = [
     { label: '# / الرقم', width: 65 },
-    { label: 'Room / الغرفة', width: 110 },
-    { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 270 },
-    { label: 'Physician / الطبيب المعالج', width: 230 },
-    { label: 'Contract / التعاقد', width: 205 },
+    { label: 'Room / الغرفة', width: 115 },
+    { label: 'Patient / اسم المريض', width: 280 },
+    { label: 'Physician / الطبيب المعالج', width: 235 },
+    { label: 'Contract / التعاقد', width: 210 },
     { label: 'مسئول التعاقد', width: 135 },
-    { label: 'Booking Date / تاريخ الحجز', width: 150 },
-    { label: 'VIP STATUS', width: 75 },
+    { label: 'Booking Date / تاريخ الحجز', width: 130 },
+    { label: 'VIP STATUS', width: 70 },
   ];
 
   // 1. Universal row parser: supports getOccupancyRows output, 39-col unified raw, 6-col formatted, and object lists
@@ -567,9 +555,8 @@ export async function generateOccupancyJpeg(
       const physician = String(row.physician || row.doctor || row.colW || '').trim();
       const contractor = String(row.contractor || row.payment || row.colM || '').trim();
       const date = String(row.date || row.bookingDate || row.colA || '').trim();
-      const mrn = String(row.mrn || row.id || row.colC || row.colF || '').trim();
       if (room && name && name.toLowerCase() !== 'patient' && name !== 'المريض') {
-        rawList.push({ room, name, physician, contractor, date, mrn });
+        rawList.push({ room, name, physician, contractor, date });
       }
       return;
     }
@@ -602,19 +589,17 @@ export async function generateOccupancyJpeg(
       return;
     }
 
-    const isUnified = row.length >= 10 || (str0Low.includes('t') || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(str0)));
+    const isUnified = row.length >= 10;
 
     let room = '';
     let name = '';
     let physician = '';
     let contractor = '';
     let date = '';
-    let mrn = '';
 
     if (isUnified) {
       date = str0;
       room = cleanRoomStr(String(row[1] || '').trim());
-      mrn = String(row[2] || '').trim();
       name = String(row[3] || '').trim();
       contractor = String(row[12] || '').trim();
       physician = String(row[22] || '').trim();
@@ -624,11 +609,10 @@ export async function generateOccupancyJpeg(
       physician = String(row[2] || '').trim();
       contractor = String(row[3] || '').trim();
       date = String(row[4] || '').trim();
-      mrn = String(row[5] || '').trim();
     }
 
     if (room && name && name.toLowerCase() !== 'patient' && name !== 'المريض') {
-      rawList.push({ room, name, physician, contractor, date, mrn });
+      rawList.push({ room, name, physician, contractor, date });
     }
   });
 
@@ -683,10 +667,12 @@ export async function generateOccupancyJpeg(
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrId = `cp_occhdr_${idx}`;
     tableSvgContent += `
+      <clipPath id="${hdrId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -698,10 +684,9 @@ export async function generateOccupancyJpeg(
     const rColors = getGroupColors(group.groupName);
     const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
 
-    // Merged department separator row matching addGridOccupancySheet (rColors.badge + white bold text)
     tableSvgContent += `
       <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">—  ${escapeXml(displayGroupName)}  —</text>
     `;
     currentY += separatorHeight;
 
@@ -710,12 +695,10 @@ export async function generateOccupancyJpeg(
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const isVip = isVipFn ? isVipFn(p.name) : false;
-      const resolvedMrn = resolvePatientMrn(p.name, p.mrn, mrnLookupInput);
 
       const rowValues = [
         String(serial++),
         formatRoomForSheet(p.room),
-        formatMrnForSheet(resolvedMrn),
         p.name,
         p.physician,
         cleanedContractor,
@@ -727,9 +710,9 @@ export async function generateOccupancyJpeg(
       let cellX = 0;
       rowValues.forEach((val, idx) => {
         const colDef = cols[idx];
-        const isVipCell = idx === 8 && Boolean(val);
+        const isVipCell = idx === 7 && Boolean(val);
         const textColor = isVipCell ? '#D32F2F' : '#000000';
-        const isBold = idx >= 1 && idx <= 6;
+        const isBold = idx >= 1 && idx <= 5;
         const cellId = `cp_occ_${serial}_${idx}`;
         const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
         const displayVal = truncateText(val, maxChars);
@@ -753,8 +736,8 @@ export async function generateOccupancyJpeg(
 }
 
 /**
- * 2. Admissions Sheet (Refined Entry - identical to addRefinedEntrySheet)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
+ * 2. Admissions Sheet (Formatted Entry - 100% identical to addRefinedEntrySheet)
+ * Columns (7): ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز']
  * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateEntriesJpeg(
@@ -763,7 +746,7 @@ export async function generateEntriesJpeg(
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1280;
+  const width = 1170;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
@@ -771,13 +754,12 @@ export async function generateEntriesJpeg(
 
   const cols = [
     { label: '# / الرقم', width: 65 },
-    { label: 'Room / الغرفة', width: 110 },
-    { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 270 },
-    { label: 'Physician / الطبيب المعالج', width: 230 },
+    { label: 'Room / الغرفة', width: 115 },
+    { label: 'Patient / اسم المريض', width: 280 },
+    { label: 'Physician / الطبيب المعالج', width: 235 },
     { label: 'Contract / التعاقد', width: 205 },
-    { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Booking Date / تاريخ الحجز', width: 150 },
+    { label: 'مسئول التعاقد', width: 135 },
+    { label: 'Booking Date / تاريخ الحجز', width: 135 },
   ];
 
   // Strictly exclude non-inpatient admissions: OR/Cath Lab, HomeCare, Dialysis, Well Baby
@@ -827,10 +809,12 @@ export async function generateEntriesJpeg(
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrId = `cp_enthdr_${idx}`;
     tableSvgContent += `
+      <clipPath id="${hdrId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -844,7 +828,7 @@ export async function generateEntriesJpeg(
 
     tableSvgContent += `
       <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">—  ${escapeXml(displayGroupName)}  —</text>
     `;
     currentY += separatorHeight;
 
@@ -852,13 +836,10 @@ export async function generateEntriesJpeg(
       const contractorVal = p.contractor || p.colM || '';
       const cleanedContractor = cleanContractorForDisplay(contractorVal);
       const patientName = String(p.name || p.colD || '').trim();
-      const directMrn = String(p.mrn || p.colC || p.id || p.patientId || '').trim();
-      const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
 
       const rowValues = [
         String(serial++),
         formatRoomForSheet(p.room || p.colB || ''),
-        formatMrnForSheet(resolvedMrn),
         patientName,
         p.physician || p.colW || '',
         cleanedContractor,
@@ -869,7 +850,7 @@ export async function generateEntriesJpeg(
       let cellX = 0;
       rowValues.forEach((val, idx) => {
         const colDef = cols[idx];
-        const isBold = idx >= 1 && idx <= 6;
+        const isBold = idx >= 1 && idx <= 5;
         const cellId = `cp_ent_${serial}_${idx}`;
         const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
         const displayVal = truncateText(val, maxChars);
@@ -892,15 +873,15 @@ export async function generateEntriesJpeg(
 }
 
 /**
- * 3. Dialysis Sheet (Refined Dialysis - identical to addRefinedDialysisSheet)
- * Includes: ALL Dialysis cases ONLY, with MRN, Patient Name, Contractor Officer (مسئول التعاقد).
+ * 3. Dialysis Sheet (100% identical to addRefinedDialysisSheet)
+ * Columns (7): ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Booking Date / تاريخ الحجز']
  */
 export async function generateDialysisJpeg(
   dialysisPatients: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1310;
+  const width = 1200;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
@@ -908,16 +889,15 @@ export async function generateDialysisJpeg(
 
   const cols = [
     { label: '# / الرقم', width: 65 },
-    { label: 'Room / الغرفة', width: 140 },
-    { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 270 },
-    { label: 'Physician / الطبيب المعالج', width: 230 },
+    { label: 'Room / الغرفة', width: 145 },
+    { label: 'Patient / اسم المريض', width: 280 },
+    { label: 'Physician / الطبيب المعالج', width: 235 },
     { label: 'Contract / التعاقد', width: 205 },
-    { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Booking Date / تاريخ الحجز', width: 150 },
+    { label: 'مسئول التعاقد', width: 135 },
+    { label: 'Booking Date / تاريخ الحجز', width: 135 },
   ];
 
-  // Filter identically to addRefinedDialysisSheet and deduplicate while resolving MRN
+  // Filter identically to addRefinedDialysisSheet and deduplicate
   const filteredRaw = (dialysisPatients || []).filter((p) => {
     if (!p) return false;
     const room = String(p.room || '').trim();
@@ -932,7 +912,7 @@ export async function generateDialysisJpeg(
     let physicianVal = String(p.physician || '').trim();
     let contractorVal = String(p.contractor || p.payment || '').trim();
     let roomVal = String(p.room || 'Dialysis').trim();
-    let directMrn = String(p.mrn || p.id || '').trim();
+    const directMrn = String(p.mrn || p.id || '').trim();
 
     let resolvedMrn = directMrn;
     if (/^\d{4,}$/.test(patientName)) {
@@ -951,7 +931,7 @@ export async function generateDialysisJpeg(
     }
 
     const isDup = resolvedList.some((existing) => {
-      if (resolvedMrn !== '—' && existing.mrn === resolvedMrn) return true;
+      if (isRealMrnCode(resolvedMrn) && existing.mrn === resolvedMrn) return true;
       if (patientName && existing.name && isNameMatch(patientName, existing.name)) return true;
       return false;
     });
@@ -1017,10 +997,12 @@ export async function generateDialysisJpeg(
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrId = `cp_diahdr_${idx}`;
     tableSvgContent += `
+      <clipPath id="${hdrId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -1033,8 +1015,8 @@ export async function generateDialysisJpeg(
     const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
     const sepText =
       displayGroupName === 'Floor 0' || displayGroupName === 'OTHER'
-        ? `■  Dialysis Beds (Total cases of dialysis: ${group.items.length})  ■`
-        : `■  ${displayGroupName}  ■`;
+        ? `—  Dialysis Beds (Total cases of dialysis: ${group.items.length})  —`
+        : `—  ${displayGroupName}  —`;
 
     tableSvgContent += `
       <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
@@ -1048,7 +1030,6 @@ export async function generateDialysisJpeg(
       const rowValues = [
         String(serial++),
         formatRoomForSheet(p.room),
-        formatMrnForSheet(p.mrn),
         p.name,
         p.physician,
         cleanedContractor,
@@ -1059,7 +1040,7 @@ export async function generateDialysisJpeg(
       let cellX = 0;
       rowValues.forEach((val, idx) => {
         const colDef = cols[idx];
-        const isBold = idx >= 1 && idx <= 6;
+        const isBold = idx >= 1 && idx <= 5;
         const cellId = `cp_dia_${serial}_${idx}`;
         const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
         const displayVal = truncateText(val, maxChars);
@@ -1082,8 +1063,8 @@ export async function generateDialysisJpeg(
 }
 
 /**
- * 4. Discharges Sheet (Refined Exit - identical to addRefinedExitSheet)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد), VIP STATUS.
+ * 4. Discharges Sheet (Formatted Exit - 100% identical to addRefinedExitSheet)
+ * Columns (8): ['# / الرقم', 'Room / الغرفة', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Admission Date / تاريخ الدخول', 'VIP STATUS']
  * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateExitJpeg(
@@ -1093,7 +1074,7 @@ export async function generateExitJpeg(
   dialysisCases: any[] = [],
   isVipFn?: (name: string) => boolean
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1360;
+  const width = 1250;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
@@ -1101,14 +1082,13 @@ export async function generateExitJpeg(
 
   const cols = [
     { label: '# / الرقم', width: 65 },
-    { label: 'Room / الغرفة', width: 110 },
-    { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 270 },
-    { label: 'Physician / الطبيب المعالج', width: 230 },
+    { label: 'Room / الغرفة', width: 115 },
+    { label: 'Patient / اسم المريض', width: 275 },
+    { label: 'Physician / الطبيب المعالج', width: 235 },
     { label: 'Contract / التعاقد', width: 205 },
-    { label: 'مسئول التعاقد', width: 135 },
-    { label: 'Admission Date / تاريخ الدخول', width: 160 },
-    { label: 'VIP STATUS', width: 75 },
+    { label: 'مسئول التعاقد', width: 130 },
+    { label: 'Admission Date / تاريخ الدخول', width: 155 },
+    { label: 'VIP STATUS', width: 70 },
   ];
 
   // Filter identically to addRefinedExitSheet + exclude dialysis cases
@@ -1158,10 +1138,12 @@ export async function generateExitJpeg(
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrId = `cp_exithdr_${idx}`;
     tableSvgContent += `
+      <clipPath id="${hdrId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -1175,7 +1157,7 @@ export async function generateExitJpeg(
 
     tableSvgContent += `
       <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">—  ${escapeXml(displayGroupName)}  —</text>
     `;
     currentY += separatorHeight;
 
@@ -1183,14 +1165,11 @@ export async function generateExitJpeg(
       const contractorVal = p.contractor || '';
       const cleanedContractor = cleanContractorForDisplay(contractorVal);
       const patientName = String(p.name || '').trim();
-      const directMrn = String(p.mrn || p.id || '').trim();
-      const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
       const isVip = isVipFn ? isVipFn(patientName) : false;
 
       const rowValues = [
         String(serial++),
         formatRoomForSheet(p.room || p.lastRoom || ''),
-        formatMrnForSheet(resolvedMrn),
         patientName,
         p.physician || '',
         cleanedContractor,
@@ -1202,9 +1181,9 @@ export async function generateExitJpeg(
       let cellX = 0;
       rowValues.forEach((val, idx) => {
         const colDef = cols[idx];
-        const isVipCell = idx === 8 && Boolean(val);
+        const isVipCell = idx === 7 && Boolean(val);
         const textColor = isVipCell ? '#D32F2F' : '#000000';
-        const isBold = idx >= 1 && idx <= 6;
+        const isBold = idx >= 1 && idx <= 5;
         const cellId = `cp_exit_${serial}_${idx}`;
         const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
         const displayVal = truncateText(val, maxChars);
@@ -1227,8 +1206,8 @@ export async function generateExitJpeg(
 }
 
 /**
- * 5. General Debts Sheet (Cash Debts - identical to addRefinedDebtsSheet)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد), 50% threshold separator, and department row colors.
+ * 5. General Debts Sheet (Cash Debts - 100% identical to addRefinedDebtsSheet)
+ * Columns (11): ['تاريخ الدخول / Date', 'Room / الغرفة', 'MRN / كود المريض', 'Patient / اسم المريض', 'Physician / الطبيب المعالج', 'Contract / التعاقد', 'مسئول التعاقد', 'Total Bill / إجمالي الحساب (Z)', 'Remaining Amount / المبلغ المتبقي', 'Remaining Pct / نسبة المتبقي (%)', 'VIP STATUS']
  */
 export async function generateDebtsJpeg(
   debts: any[],
@@ -1236,16 +1215,15 @@ export async function generateDebtsJpeg(
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
   isVipFn?: (name: string) => boolean
 ): Promise<{ buffer: Buffer; count: number; positiveRemaining: number }> {
-  const width = 1720;
+  const width = 1695;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 38;
   const separatorHeight = 30;
 
   const cols = [
-    { label: '# / م', width: 50 },
     { label: 'تاريخ الدخول / Date', width: 130 },
-    { label: 'Room / الغرفة', width: 95 },
+    { label: 'Room / الغرفة', width: 120 },
     { label: 'MRN / كود المريض', width: 125 },
     { label: 'Patient / اسم المريض', width: 240 },
     { label: 'Physician / الطبيب المعالج', width: 200 },
@@ -1332,9 +1310,10 @@ export async function generateDebtsJpeg(
   });
 
   let currentY = tableHeaderHeight;
-  let serial = 1;
+  let rowCounter = 1;
 
   const renderDebtRow = (p: any) => {
+    rowCounter++;
     const rawContract =
       p.contractor && String(p.contractor).trim() !== ''
         ? String(p.contractor).trim()
@@ -1344,15 +1323,15 @@ export async function generateDebtsJpeg(
     const cleanedContractor = cleanContractorForDisplay(rawContract);
 
     let patientName = String(p.colD || p.name || p.patientName || p.patient || '').trim();
-    let mrnVal = String(p.mrn || p.id || p.colC || '').trim();
-    if (!patientName && mrnVal && mrnLookupInput?.getPatientByMrn) {
+    const mrnVal = String(p.mrn || p.id || p.colC || '').trim();
+    if (!patientName && isRealMrnCode(mrnVal) && mrnLookupInput?.getPatientByMrn) {
       const fromMrn = mrnLookupInput.getPatientByMrn(mrnVal);
       if (fromMrn?.name) patientName = fromMrn.name;
     }
     const resolvedMrn = resolvePatientMrn(patientName, mrnVal, mrnLookupInput);
 
     let physicianVal = String(p.physician || p.doctor || p.colW || '').trim();
-    if (!physicianVal && resolvedMrn !== '—' && mrnLookupInput?.getPatientByMrn) {
+    if (!physicianVal && isRealMrnCode(resolvedMrn) && mrnLookupInput?.getPatientByMrn) {
       const fromMrn = mrnLookupInput.getPatientByMrn(resolvedMrn);
       if (fromMrn?.physician) physicianVal = fromMrn.physician;
     }
@@ -1367,10 +1346,9 @@ export async function generateDebtsJpeg(
     const pctFormatted = `${(p.pct * 100).toFixed(1)}%`;
 
     const rowValues = [
-      String(serial++),
       formatDateForSheet(p.colA || p.date || p.admissionDate || ''),
       formatRoomForSheet(roomRaw),
-      formatMrnForSheet(resolvedMrn),
+      isRealMrnCode(resolvedMrn) ? formatMrnForSheet(resolvedMrn) : 'N/A',
       patientName,
       physicianVal,
       cleanedContractor,
@@ -1384,21 +1362,21 @@ export async function generateDebtsJpeg(
     let cellX = 0;
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
-      const cellId = `cp_debt_${serial}_${idx}`;
+      const cellId = `cp_debt_${rowCounter}_${idx}`;
       const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
       const displayVal = truncateText(val, maxChars);
 
       let textColor = '#000000';
       let isBold = false;
-      if (idx === 2 || idx === 4 || idx === 5 || idx === 6 || idx === 7) {
+      if (idx === 1 || idx === 3 || idx === 4 || idx === 5 || idx === 6) {
         isBold = true;
-      } else if (idx === 9) {
+      } else if (idx === 8) {
         isBold = true;
         textColor = '#C00000';
-      } else if (idx === 10) {
+      } else if (idx === 9) {
         isBold = true;
         textColor = '#1F4E79';
-      } else if (idx === 11 && Boolean(val)) {
+      } else if (idx === 10 && Boolean(val)) {
         isBold = true;
         textColor = '#D32F2F';
       }
@@ -1408,8 +1386,8 @@ export async function generateDebtsJpeg(
         <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
       `;
 
-      // Subtle dataBar on Remaining Pct column (idx === 10) matching addRefinedDebtsSheet
-      if (idx === 10 && p.pct > 0) {
+      // Subtle dataBar on Remaining Pct column (idx === 9) matching addRefinedDebtsSheet
+      if (idx === 9 && p.pct > 0) {
         const clampedPct = Math.min(Math.max(p.pct, 0), 1);
         const barW = Math.max(Math.floor((colDef.width - 6) * clampedPct), 2);
         tableSvgContent += `
@@ -1433,7 +1411,7 @@ export async function generateDebtsJpeg(
   if (hasSeparator) {
     tableSvgContent += `
       <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="#D32F2F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■ متبقي أقل من 50% / Remaining Less Than 50% ■</text>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">— متبقي أقل من 50% / Remaining Less Than 50% —</text>
     `;
     currentY += separatorHeight;
   }
@@ -1448,24 +1426,23 @@ export async function generateDebtsJpeg(
 }
 
 /**
- * 6. Patient Transfers Sheet (identical to addRefinedTransfersSheet)
- * Includes: MRN, Patient Name, Transfer Journey, From Room, Current Room, Transfer Date, Physician, Contractor, Contractor Officer (مسئول التعاقد).
+ * 6. Patient Transfers Sheet (100% identical to addRefinedTransfersSheet)
+ * Columns (9): ['# / م', 'اسم المريض / Patient Name', 'مسار التحويلات / Transfer Journey', 'الغرفة السابقة / From Room', 'الغرفة الحالية / Current Room', 'تاريخ التحويل / Transfer Date', 'الطبيب المعالج / Physician', 'الجهة والتعاقد / Contractor', 'مسئول التعاقد']
  */
 export async function generateTransfersJpeg(
   transfers: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1600;
+  const width = 1540;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 38;
 
   const cols = [
     { label: '# / م', width: 50 },
-    { label: 'MRN / الملف', width: 105 },
     { label: 'اسم المريض / Patient Name', width: 240 },
-    { label: 'مسار التحويلات / Transfer Journey', width: 250 },
+    { label: 'مسار التحويلات / Transfer Journey', width: 295 },
     { label: 'الغرفة السابقة / From Room', width: 155 },
     { label: 'الغرفة الحالية / Current Room', width: 165 },
     { label: 'تاريخ التحويل / Transfer Date', width: 160 },
@@ -1502,26 +1479,10 @@ export async function generateTransfersJpeg(
     const responsibleOfficer = getResponsibleOfficer(contractorVal);
     const patientName = String(t.name || t.patientName || '').trim() || '-';
 
-    let directMrn = '';
-    const cand = String(t.mrn || t.patientId || t.barcode || '').trim();
-    if (
-      cand &&
-      !cand.startsWith('transfer-') &&
-      !cand.toLowerCase().includes('transfer') &&
-      !cand.startsWith('UNKNOWN-') &&
-      !cand.includes('-') &&
-      cand !== '—' &&
-      cand !== '-'
-    ) {
-      directMrn = cand;
-    }
-
-    const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
-
     const journeyStr =
       Array.isArray(t.journey) && t.journey.length > 0
-        ? t.journey.map((r: any) => formatRoomForSheet(r)).join(' ➔ ')
-        : `${formatRoomForSheet(t.initialRoom || t.fromRoom || '')} ➔ ${formatRoomForSheet(t.currentRoom || t.toRoom || '')}`;
+        ? t.journey.map((r: any) => formatRoomForSheet(r)).join('  ->  ')
+        : `${formatRoomForSheet(t.initialRoom || t.fromRoom || '')}  ->  ${formatRoomForSheet(t.currentRoom || t.toRoom || '')}`;
 
     const prevRoom =
       formatRoomForSheet(
@@ -1540,7 +1501,6 @@ export async function generateTransfersJpeg(
 
     const rowValues = [
       String(serial++),
-      formatMrnForSheet(resolvedMrn),
       patientName,
       journeyStr,
       prevRoom,
@@ -1564,19 +1524,17 @@ export async function generateTransfersJpeg(
       let isBold = false;
       if (idx === 1) {
         isBold = true;
+        textColor = '#0B3C34';
       } else if (idx === 2) {
         isBold = true;
-        textColor = '#0B3C34';
+        textColor = '#0070BA';
       } else if (idx === 3) {
         isBold = true;
-        textColor = '#0070BA';
+        textColor = '#555555';
       } else if (idx === 4) {
         isBold = true;
-        textColor = '#555555';
-      } else if (idx === 5) {
-        isBold = true;
         textColor = '#2E7D32';
-      } else if (idx === 7 || idx === 8 || idx === 9) {
+      } else if (idx === 6 || idx === 7 || idx === 8) {
         isBold = true;
       }
 
