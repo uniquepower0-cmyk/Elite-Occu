@@ -496,6 +496,8 @@ export default function App() {
   const { data: cumulativeORData, loading: cumulativeORLoading, error: cumulativeORError } = useCumulativeOR(undefined, orHistoryRefreshKey);
 
   const lastDbTimestampRef = useRef<string | null>(null);
+  const pendingDbTimestampRef = useRef<string | null>(null);
+  const hasInitialFetchCompletedRef = useRef<boolean>(false);
   const realtimeDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isFetchingRef = useRef<boolean>(false);
   const lastVisibilityFetchRef = useRef<number>(Date.now());
@@ -725,7 +727,19 @@ export default function App() {
     if (!isAuthenticated) return;
 
     console.log('[Auto-Fetch Schedule] Registering real-time database listener & auto-fetch schedule...');
-    fetchData();
+    fetchDataRef.current();
+
+    const isNewerDbTs = (incoming: string | null | undefined, current: string | null | undefined) => {
+      if (!incoming) return false;
+      if (!current) return true;
+      if (incoming === current) return false;
+      const tInc = Date.parse(incoming);
+      const tCur = Date.parse(current);
+      if (!isNaN(tInc) && !isNaN(tCur)) {
+        return tInc - tCur > 50;
+      }
+      return incoming !== current;
+    };
 
     // 1. Supabase Realtime channel subscription on rtdb_nodes filtered strictly to state/metadata
     // Listening only to state/metadata avoids transmitting large datasets over WebSocket while catching all state updates
@@ -743,21 +757,22 @@ export default function App() {
           },
           (payload: any) => {
             const newUpdatedAt = payload?.new?.updated_at || payload?.new?.created_at;
-            const isSameDbTs = (a: string | null | undefined, b: string | null | undefined) => {
-              if (!a || !b) return false;
-              if (a === b) return true;
-              const ta = Date.parse(a);
-              const tb = Date.parse(b);
-              return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
-            };
-            if (newUpdatedAt && isSameDbTs(String(newUpdatedAt), lastDbTimestampRef.current)) {
-              // Already synced to this database snapshot, ignore echo
+            if (!newUpdatedAt) return;
+            const incomingTs = String(newUpdatedAt);
+            const baselineTs = pendingDbTimestampRef.current || lastDbTimestampRef.current;
+
+            if (!baselineTs) {
+              lastDbTimestampRef.current = incomingTs;
+              pendingDbTimestampRef.current = incomingTs;
+              setCloudDatabaseUpdatedAt(incomingTs);
               return;
             }
-            if (newUpdatedAt) {
-              lastDbTimestampRef.current = String(newUpdatedAt);
-              setCloudDatabaseUpdatedAt(String(newUpdatedAt));
+            if (!isNewerDbTs(incomingTs, baselineTs)) {
+              // Already synced to this database snapshot or older event, ignore echo
+              return;
             }
+            pendingDbTimestampRef.current = incomingTs;
+            setCloudDatabaseUpdatedAt(incomingTs);
 
             if (realtimeDebounceTimerRef.current) clearTimeout(realtimeDebounceTimerRef.current);
             realtimeDebounceTimerRef.current = setTimeout(() => {
@@ -766,7 +781,7 @@ export default function App() {
               setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
 
               // Refresh occupancy data and history key
-              fetchData({ silent: true });
+              fetchDataRef.current({ silent: true });
               setOccupancyHistoryRefreshKey(k => k + 1);
 
               setTimeout(() => {
@@ -788,19 +803,20 @@ export default function App() {
     }
 
     // 2. Visibility change auto-fetch: when user switches back to tab after being away (> 60s), auto-fetch silently
+    // Uses ETag (If-None-Match) so 304 Not Modified prevents unnecessary re-renders if database has not changed
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         const now = Date.now();
         if (now - lastVisibilityFetchRef.current > 60000) {
           lastVisibilityFetchRef.current = now;
-          console.log('[Auto-Fetch Schedule] Tab became active after inactivity. Triggering silent auto-fetch...');
-          fetchData({ silent: true, force: true });
+          console.log('[Auto-Fetch Schedule] Tab became active after inactivity. Checking for database updates...');
+          fetchDataRef.current({ silent: true });
         }
       }
     };
     const handleOnline = () => {
-      console.log('[Auto-Fetch Schedule] Network online restored. Triggering auto-fetch...');
-      fetchData({ silent: true, force: true });
+      console.log('[Auto-Fetch Schedule] Network online restored. Checking for database updates...');
+      fetchDataRef.current({ silent: true });
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -820,12 +836,16 @@ export default function App() {
     if (!isAuthenticated) return;
 
     let isPolling = false;
-    const isSameDbTs = (a: string | null | undefined, b: string | null | undefined) => {
-      if (!a || !b) return false;
-      if (a === b) return true;
-      const ta = Date.parse(a);
-      const tb = Date.parse(b);
-      return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
+    const isNewerDbTs = (incoming: string | null | undefined, current: string | null | undefined) => {
+      if (!incoming) return false;
+      if (!current) return true;
+      if (incoming === current) return false;
+      const tInc = Date.parse(incoming);
+      const tCur = Date.parse(current);
+      if (!isNaN(tInc) && !isNaN(tCur)) {
+        return tInc - tCur > 50;
+      }
+      return incoming !== current;
     };
     const checkDbSyncStatus = async () => {
       // Avoid background tabs or concurrent fetches draining egress
@@ -836,19 +856,21 @@ export default function App() {
         if (res.ok) {
           const json = await res.json();
           const serverDbUpdated = json.lastDatabaseUpdate ? String(json.lastDatabaseUpdate) : null;
-          if (serverDbUpdated && lastDbTimestampRef.current && !isSameDbTs(serverDbUpdated, lastDbTimestampRef.current)) {
-            console.log('⚡ [Auto-Sync] Database change detected in Supabase cloud! Auto-fetching latest state...', serverDbUpdated, 'vs', lastDbTimestampRef.current);
-            lastDbTimestampRef.current = serverDbUpdated;
+          const baselineTs = pendingDbTimestampRef.current || lastDbTimestampRef.current;
+          if (serverDbUpdated && baselineTs && isNewerDbTs(serverDbUpdated, baselineTs)) {
+            console.log('⚡ [Auto-Sync] Database change detected in Supabase cloud! Auto-fetching latest state...', serverDbUpdated, 'vs', baselineTs);
+            pendingDbTimestampRef.current = serverDbUpdated;
             setCloudDatabaseUpdatedAt(serverDbUpdated);
             setIsDbUpdatePulsing(true);
             setDbUpdateMessage('Database updated in cloud • Auto-fetched latest data');
-            await fetchData({ silent: true });
+            await fetchDataRef.current({ silent: true });
             setOccupancyHistoryRefreshKey(k => k + 1);
 
             setTimeout(() => setIsDbUpdatePulsing(false), 3000);
             setTimeout(() => setDbUpdateMessage(null), 5000);
-          } else if (serverDbUpdated && !lastDbTimestampRef.current) {
+          } else if (serverDbUpdated && !baselineTs) {
             lastDbTimestampRef.current = serverDbUpdated;
+            pendingDbTimestampRef.current = serverDbUpdated;
             setCloudDatabaseUpdatedAt(serverDbUpdated);
           }
         }
@@ -1204,7 +1226,7 @@ export default function App() {
     try {
       const url = force ? `/api/occupancy/data?force=true&t=${Date.now()}` : '/api/occupancy/data';
       const headers: Record<string, string> = {};
-      if (lastDbTimestampRef.current && !force && isDataLoaded) {
+      if (lastDbTimestampRef.current && !force && hasInitialFetchCompletedRef.current) {
         headers['If-None-Match'] = `"${lastDbTimestampRef.current}"`;
       }
       const res = await fetch(url, { headers });
@@ -1235,9 +1257,21 @@ export default function App() {
       setFetchError(null);
 
       if (data.lastDatabaseUpdatedAt) {
-        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
-        setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
+        const incomingDbTs = String(data.lastDatabaseUpdatedAt);
+        const prevDbTs = lastDbTimestampRef.current;
+        const isSameLoadedTs = Boolean(
+          prevDbTs &&
+          (prevDbTs === incomingDbTs ||
+            (!isNaN(Date.parse(prevDbTs)) && !isNaN(Date.parse(incomingDbTs)) && Math.abs(Date.parse(prevDbTs) - Date.parse(incomingDbTs)) < 50))
+        );
+        lastDbTimestampRef.current = incomingDbTs;
+        pendingDbTimestampRef.current = incomingDbTs;
+        setCloudDatabaseUpdatedAt(incomingDbTs);
+        if (silent && !force && hasInitialFetchCompletedRef.current && isSameLoadedTs) {
+          return;
+        }
       }
+      hasInitialFetchCompletedRef.current = true;
 
       const rawRows = data.rows || [];
       const hasRows = rawRows.length > 0;

@@ -2520,17 +2520,34 @@ function isSameTimestamp(a: any, b: any): boolean {
   return !isNaN(ta) && !isNaN(tb) && Math.abs(ta - tb) < 10;
 }
 
+function isNewerTimestamp(incoming: any, current: any): boolean {
+  if (!incoming) return false;
+  if (!current) return true;
+  if (isSameTimestamp(incoming, current)) return false;
+  const tInc = Date.parse(String(incoming).trim());
+  const tCur = Date.parse(String(current).trim());
+  if (!isNaN(tInc) && !isNaN(tCur)) {
+    return tInc - tCur > 10;
+  }
+  return String(incoming).trim() !== String(current).trim();
+}
+
 function arePayloadsEqual(a: any, b: any): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   if (a === null || b === null) return a === b;
+  if (typeof a !== typeof b) return false;
   try {
-    const strA = JSON.stringify(a);
-    const strB = JSON.stringify(b);
-    if (strA === strB) return true;
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!arePayloadsEqual(a[i], b[i])) return false;
+      }
+      return true;
+    }
     if (typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
-      const keysA = Object.keys(a).sort();
-      const keysB = Object.keys(b).sort();
+      const keysA = Object.keys(a).filter(k => a[k] !== undefined).sort();
+      const keysB = Object.keys(b).filter(k => b[k] !== undefined).sort();
       if (keysA.length !== keysB.length) return false;
       for (let i = 0; i < keysA.length; i++) {
         if (keysA[i] !== keysB[i]) return false;
@@ -2538,7 +2555,7 @@ function arePayloadsEqual(a: any, b: any): boolean {
       }
       return true;
     }
-    return false;
+    return JSON.stringify(a) === JSON.stringify(b);
   } catch {
     return false;
   }
@@ -2569,8 +2586,8 @@ async function loadData(force = false): Promise<void> {
 // Persistence Helpers
 async function executeLoadData(force = false) {
   try {
-    // 1. Try to load local disk cache first for fast immediate recovery
-    if (fs.existsSync(DATA_FILE)) {
+    // 1. Try to load local disk cache first only on initial cold-start recovery (!isServerHydrated)
+    if (!isServerHydrated && fs.existsSync(DATA_FILE)) {
       try {
         const raw = fs.readFileSync(DATA_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
@@ -2651,11 +2668,15 @@ async function executeLoadData(force = false) {
 
     const pathsToFetch: string[] = [];
     let latestNodeUpdated: string | null = null;
+    let metadataNodeUpdated: string | null = null;
 
     if (metaNodes && Array.isArray(metaNodes)) {
       for (const node of metaNodes) {
         // Do not fetch or track legacy state/dataset if granular nodes are present
         if (node.path === 'state/dataset') continue;
+        if (node.path === 'state/metadata' && node.updated_at) {
+          metadataNodeUpdated = String(node.updated_at);
+        }
         if (node.updated_at && (!latestNodeUpdated || Date.parse(node.updated_at) > Date.parse(latestNodeUpdated))) {
           latestNodeUpdated = node.updated_at;
         }
@@ -2664,6 +2685,17 @@ async function executeLoadData(force = false) {
           pathsToFetch.push(node.path);
         }
       }
+    }
+
+    const authoritativeCloudUpdatedAt = metadataNodeUpdated || latestNodeUpdated;
+
+    // If server is already hydrated and no node in Supabase changed, skip Stage 2 and skip re-processing
+    if (isServerHydrated && !force && pathsToFetch.length === 0) {
+      if (authoritativeCloudUpdatedAt) {
+        lastKnownDatabaseUpdatedAt = String(authoritativeCloudUpdatedAt);
+      }
+      lastServerFetchTimestamp = Date.now();
+      return;
     }
 
     // Stage 2: Only fetch the heavy 'data' payload for paths that actually changed
@@ -2680,12 +2712,16 @@ async function executeLoadData(force = false) {
         for (const node of changedNodes) {
           inMemoryStateMap[node.path] = node.data;
           inMemoryNodeTimestamps[node.path] = node.updated_at;
+          if (node.path === 'state/metadata' && node.updated_at) {
+            metadataNodeUpdated = String(node.updated_at);
+          }
         }
       }
     }
 
-    if (latestNodeUpdated) {
-      lastKnownDatabaseUpdatedAt = String(latestNodeUpdated);
+    const finalCloudUpdatedAt = metadataNodeUpdated || latestNodeUpdated;
+    if (finalCloudUpdatedAt) {
+      lastKnownDatabaseUpdatedAt = String(finalCloudUpdatedAt);
     }
     lastServerFetchTimestamp = Date.now();
 
@@ -2960,42 +2996,38 @@ async function executeLoadData(force = false) {
     return p;
   });
 
-  // --- SELF-HEALING SANITIZER FOR DISCHARGED & ENTRIES ---
-  let dischargedModified = false;
+  // --- SELF-HEALING SANITIZER FOR DISCHARGED & ENTRIES (IN-MEMORY ONLY ON READ) ---
   cumulativeDischarged = (cumulativeDischarged || []).map(p => {
-    let contractor = p.contractor;
-    let physician = p.physician;
-    let name = p.name;
-    const isLeakedLosContractor = /^\d+(\.\d+)?$/.test(String(contractor || '').trim());
-    const isSurgicalPhysician = /closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic/i.test(String(physician || ''));
-    const isNumericName = /^\d+$/.test(String(name || '').trim());
+    const origContractor = String(p.contractor ?? '');
+    const origPhysician = String(p.physician ?? '');
+    const origName = String(p.name ?? '');
+    let contractor = origContractor;
+    let physician = origPhysician;
+    let name = origName;
+    const isLeakedLosContractor = /^\d+(\.\d+)?$/.test(contractor.trim());
+    const isSurgicalPhysician = /closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic/i.test(physician);
+    const isNumericName = /^\d+$/.test(name.trim());
 
     if (p.rawRow && Array.isArray(p.rawRow)) {
       if (p.rawRow.length < 35) {
         if (isLeakedLosContractor || !contractor) {
           contractor = String(p.rawRow[6] || '').trim();
-          dischargedModified = true;
         }
         if (isSurgicalPhysician || !physician) {
           physician = String(p.rawRow[14] || '').trim();
-          dischargedModified = true;
         }
         if (isNumericName) {
           name = String(p.rawRow[2] || '').trim();
-          dischargedModified = true;
         }
       } else {
         if (isLeakedLosContractor || !contractor) {
           contractor = String(p.rawRow[12] || '').trim();
-          dischargedModified = true;
         }
         if (isSurgicalPhysician || !physician) {
           physician = String(p.rawRow[22] || '').trim();
-          dischargedModified = true;
         }
         if (isNumericName) {
           name = String(p.rawRow[3] || '').trim();
-          dischargedModified = true;
         }
       }
     }
@@ -3005,7 +3037,6 @@ async function executeLoadData(force = false) {
       } else {
         contractor = '';
       }
-      dischargedModified = true;
     }
     return { ...p, name, physician, contractor };
   });
@@ -3016,12 +3047,10 @@ async function executeLoadData(force = false) {
     .filter(Boolean);
   manuallyDischargedNames = Array.from(new Set(activeManualFromDischarged));
 
-  let entriesModified = false;
   cumulativeEntries = (cumulativeEntries || []).filter(p => {
     if (!p) return false;
     // Drop corrupted entries where name is a pure number (e.g. "39" which is age)
     if (!p.name || /^\d+$/.test(String(p.name).trim())) {
-      entriesModified = true;
       return false;
     }
     const dDate = p.date || p.rawDate;
@@ -3040,40 +3069,32 @@ async function executeLoadData(force = false) {
       if (p.rawRow.length < 35) {
         if (isLeakedLosContractor || !contractor) {
           contractor = String(p.rawRow[6] || '').trim();
-          entriesModified = true;
         }
         if (isSurgicalPhysician || !physician) {
           physician = String(p.rawRow[14] || '').trim();
-          entriesModified = true;
         }
       } else {
         if (isLeakedLosContractor || !contractor) {
           contractor = String(p.rawRow[12] || '').trim();
-          entriesModified = true;
         }
         if (isSurgicalPhysician || !physician) {
           physician = String(p.rawRow[22] || '').trim();
-          entriesModified = true;
         }
       }
     }
     if (/^\d+(\.\d+)?$/.test(String(contractor || '').trim())) {
       contractor = '';
-      entriesModified = true;
     }
     // Room 328 specific safeguard
     if (String(p.room || '').includes('328') && (isNameMatch(p.name, 'احمد السيد مرسي مرسي') || String(p.name).includes('احمد السيد مرسي'))) {
       if (!contractor || contractor === '1') {
         contractor = 'شركة ميتلايف اليكو';
-        entriesModified = true;
       }
       if (!physician || physician.includes('Closure')) {
         physician = 'Mahmoud Mohamed El bakry Zamzam';
-        entriesModified = true;
       }
       if (!p.mrn || p.mrn.includes('احمد السيد')) {
         p.mrn = '0000271096';
-        entriesModified = true;
       }
     }
     return { ...p, physician, contractor };
@@ -3084,16 +3105,9 @@ async function executeLoadData(force = false) {
   cumulativeEntries.forEach(p => {
     if (!dedupedEntries.some(existing => isPatientMatch(existing, p) || (existing.room === p.room && isNameMatch(existing.name, p.name)))) {
       dedupedEntries.push(p);
-    } else {
-      entriesModified = true;
     }
   });
   cumulativeEntries = dedupedEntries;
-
-  if (dischargedModified || entriesModified) {
-    console.log(`[loadData] Sanitized clinical records (dischargedModified=${dischargedModified}, entriesModified=${entriesModified}). Persisting healed state...`);
-    saveData().catch(err => console.error('[loadData] Failed to persist sanitized state:', err));
-  }
 
   cumulativeDialysis = (cumulativeDialysis || []).filter(p => {
     if (!p) return false;
@@ -3874,9 +3888,15 @@ async function saveData() {
 
       const cachedMeta = inMemoryStateMap['state/metadata'];
       const cachedMetaData = (cachedMeta && typeof cachedMeta === 'object' && cachedMeta.data) ? cachedMeta.data : cachedMeta;
+      const normalizeEpochMs = (val: any) => {
+        if (!val) return null;
+        if (typeof val === 'number') return val;
+        const parsed = new Date(val).getTime();
+        return isNaN(parsed) ? val : parsed;
+      };
       const metaChanged = dirtyContentNodes.length > 0 ||
         cachedMetaData === undefined ||
-        cachedMetaData.uploadedAt !== uploadedAt ||
+        normalizeEpochMs(cachedMetaData.uploadedAt) !== normalizeEpochMs(uploadedAt) ||
         cachedMetaData.lastResetDate !== lastEgyptianAutoResetDate ||
         cachedMetaData.lastActiveDate !== lastActiveDate ||
         cachedMetaData.lastTransfersDate !== lastTransfersDate ||
@@ -3886,6 +3906,7 @@ async function saveData() {
       if (!metaChanged && dirtyContentNodes.length === 0) {
         console.log('[saveData] In-memory state clean; skipping redundant Supabase upsert (0 of 16 nodes dirty).');
         lastServerFetchTimestamp = Date.now();
+        return;
       } else {
         const nowIso = new Date().toISOString();
         lastKnownDatabaseUpdatedAt = nowIso;
@@ -3905,9 +3926,11 @@ async function saveData() {
           updated_at: nowIso
         };
 
+        // Put metadataNode LAST so that state/metadata is committed after all content chunks
+        // and receives the latest PostgreSQL trigger updated_at timestamp.
         const nodesToUpsert: { path: string; data: any; updated_at: string }[] = [
-          metadataNode,
-          ...dirtyContentNodes.map(n => ({ ...n, updated_at: nowIso }))
+          ...dirtyContentNodes.map(n => ({ ...n, updated_at: nowIso })),
+          metadataNode
         ];
 
         console.log(`[saveData] Synchronizing ${nodesToUpsert.length} dirty nodes (of 16 total) to Supabase rtdb_nodes...`);
@@ -3939,10 +3962,28 @@ async function saveData() {
           console.error('Supabase granular nodes upsert error:', sbErr);
         } else {
           console.log(`Hospital Supabase cloud database synchronization completed (${nodesToUpsert.length} dirty rows written, ${16 - nodesToUpsert.length} clean rows preserved).`);
-          // Update local in-memory caches only for nodes that were mutated
+          // Update local in-memory caches for nodes that were mutated
           for (const un of nodesToUpsert) {
             inMemoryNodeTimestamps[un.path] = un.updated_at;
             inMemoryStateMap[un.path] = un.data;
+          }
+          // Synchronize inMemoryNodeTimestamps and lastKnownDatabaseUpdatedAt with PostgreSQL's trigger-assigned updated_at
+          try {
+            const [sMeta, setMeta] = await Promise.all([
+              supabaseAdmin.from('rtdb_nodes').select('path, updated_at').like('path', 'state/%'),
+              supabaseAdmin.from('rtdb_nodes').select('path, updated_at').like('path', 'settings/%')
+            ]);
+            const dbTsRows = [...(sMeta?.data || []), ...(setMeta?.data || [])];
+            for (const row of dbTsRows) {
+              if (row?.path && row?.updated_at) {
+                inMemoryNodeTimestamps[row.path] = String(row.updated_at);
+                if (row.path === 'state/metadata') {
+                  lastKnownDatabaseUpdatedAt = String(row.updated_at);
+                }
+              }
+            }
+          } catch (_) {
+            // Non-blocking fallback
           }
         }
       }
@@ -4105,6 +4146,8 @@ function triggerServerAutoFetchFromDatabase(reason: string) {
     try {
       console.log(`[Auto-Fetch Schedule] Triggering server reload from database (${reason})...`);
       isServerAutoSyncing = true;
+      // Reset throttle timestamp so smart diffing actually checks Supabase timestamps
+      lastServerFetchTimestamp = 0;
       // Use smart timestamp diffing so only nodes with modified updated_at are fetched
       await loadData(false);
       console.log(`[Auto-Fetch Schedule] Server in-memory state successfully synchronized from database.`);
@@ -4136,8 +4179,8 @@ function setupServerDatabaseAutoSync() {
       }, (payload) => {
         const path = (payload.new as any)?.path;
         const newUpdatedAt = (payload.new as any)?.updated_at || (payload.new as any)?.created_at;
-        // Avoid duplicate triggers if this server instance initiated the write
-        if (newUpdatedAt && lastKnownDatabaseUpdatedAt && isSameTimestamp(newUpdatedAt, lastKnownDatabaseUpdatedAt)) {
+        // Avoid duplicate triggers if this server instance initiated the write or timestamp is not newer
+        if (!newUpdatedAt || (lastKnownDatabaseUpdatedAt && !isNewerTimestamp(newUpdatedAt, lastKnownDatabaseUpdatedAt))) {
           return;
         }
         console.log(`[Realtime] Metadata update detected in rtdb_nodes: ${path || 'state/metadata'} (ts: ${newUpdatedAt})`);
@@ -4158,7 +4201,7 @@ function setupServerDatabaseAutoSync() {
           .eq('path', 'state/metadata')
           .maybeSingle();
 
-        if (node?.updated_at && (!lastKnownDatabaseUpdatedAt || !isSameTimestamp(node.updated_at, lastKnownDatabaseUpdatedAt))) {
+        if (node?.updated_at && isNewerTimestamp(node.updated_at, lastKnownDatabaseUpdatedAt)) {
           console.log(`[Heartbeat Drift Detector] Newer database state detected (${node.updated_at} vs ${lastKnownDatabaseUpdatedAt}). Reloading...`);
           triggerServerAutoFetchFromDatabase('heartbeat-drift-detector');
         }
@@ -10062,10 +10105,10 @@ app.get('/api/database/auto-sync-status', async (req, res) => {
           .maybeSingle();
         if (node && node.updated_at) {
           const cloudUpdated = String(node.updated_at);
-          if (lastKnownDatabaseUpdatedAt && !isSameTimestamp(cloudUpdated, lastKnownDatabaseUpdatedAt) && !isServerAutoSyncing) {
+          if (lastKnownDatabaseUpdatedAt && isNewerTimestamp(cloudUpdated, lastKnownDatabaseUpdatedAt) && !isServerAutoSyncing) {
             console.log(`[Auto-Fetch Schedule] Newer database version detected via status check (${cloudUpdated} vs local ${lastKnownDatabaseUpdatedAt}). Syncing...`);
-            lastKnownDatabaseUpdatedAt = cloudUpdated;
-            await loadData(true);
+            lastServerFetchTimestamp = 0;
+            await loadData(false);
           } else if (!lastKnownDatabaseUpdatedAt) {
             lastKnownDatabaseUpdatedAt = cloudUpdated;
           }
@@ -10466,10 +10509,7 @@ app.delete('/api/header-background', (req, res) => {
 
 // Patient Transfers API Endpoints
 app.get('/api/transfers', (req, res) => {
-  const cleaned = sanitizeAndDeduplicateTransfers();
-  if (cleaned && !IS_VERCEL) {
-    saveData().catch(e => console.error('Save error after transfers sanitization:', e));
-  }
+  sanitizeAndDeduplicateTransfers();
   const cairo = getCairoDateTime();
   const todayOnlyTransfers = (cumulativeTransfers || []).filter(t => {
     const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';

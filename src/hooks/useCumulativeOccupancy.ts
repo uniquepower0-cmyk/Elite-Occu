@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export interface DailyBedCensusItem {
   date: string;
@@ -74,10 +74,13 @@ export function useCumulativeBeds(month?: string, refreshTrigger?: any) {
   const [data, setData] = useState<CumulativeBedData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedRef = useRef<boolean>(false);
 
   const fetchBeds = useCallback(async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedRef.current) {
+        setLoading(true);
+      }
       setError(null);
       const url = month ? `/api/occupancy/cumulative?month=${month}` : '/api/occupancy/cumulative';
       const res = await fetch(url);
@@ -87,6 +90,7 @@ export function useCumulativeBeds(month?: string, refreshTrigger?: any) {
       }
       const json = await res.json();
       setData(json);
+      hasLoadedRef.current = true;
     } catch (err: any) {
       setError(err?.message || 'Failed to load cumulative bed occupancy');
     } finally {
@@ -105,10 +109,13 @@ export function useCumulativeOR(month?: string, refreshTrigger?: any) {
   const [data, setData] = useState<CumulativeORData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedRef = useRef<boolean>(false);
 
   const fetchOR = useCallback(async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedRef.current) {
+        setLoading(true);
+      }
       setError(null);
       const url = month ? `/api/or/cumulative?month=${month}` : '/api/or/cumulative';
       const res = await fetch(url);
@@ -118,6 +125,7 @@ export function useCumulativeOR(month?: string, refreshTrigger?: any) {
       }
       const json = await res.json();
       setData(json);
+      hasLoadedRef.current = true;
     } catch (err: any) {
       setError(err?.message || 'Failed to load cumulative OR utilization');
     } finally {
