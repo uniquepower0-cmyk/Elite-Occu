@@ -55,6 +55,9 @@ export function cleanContractorForDisplay(text: any): string {
   let s = String(text).trim();
   if (!s || s === '-' || s === 'null' || s === 'undefined') return '';
 
+  // Do not display leaked numeric ALOS/LOS data as contractor names
+  if (/^\d+(\.\d+)?$/.test(s)) return '';
+
   // Remove "main" (case-insensitive whole word)
   s = s.replace(/\bmain\b/gi, '');
 
@@ -104,7 +107,9 @@ export function isCashContractor(text: any): boolean {
     norm === 'عميل' ||
     norm === 'بدون جهة' ||
     norm === 'بدون جهه' ||
-    norm === 'عقد الرياض el rayad' ||
+    norm.includes('رياض') ||
+    norm.includes('الرياض') ||
+    norm.includes('el rayad') ||
     norm === 'contractorname'
   ) {
     return true;
@@ -118,6 +123,11 @@ export function isCashContractor(text: any): boolean {
  * For all cash / self-paying patients, returns "حسابات المرضى".
  */
 export function getResponsibleOfficer(contractor: string | null | undefined, financialStatus?: string | null | undefined): string {
+  // Leaked numeric ALOS/LOS values have no contractor officer
+  if (contractor !== undefined && contractor !== null && /^\d+(\.\d+)?$/.test(String(contractor).trim())) {
+    return '-';
+  }
+
   // If financial status explicitly indicates cash, officer is always Patient Accounts
   if (financialStatus && isCashContractor(financialStatus)) {
     return CASH_OFFICER_NAME;
@@ -331,7 +341,7 @@ export function getResponsibleOfficer(contractor: string | null | undefined, fin
   if (['معاك', 'ma3ak'].some(k => norm.includes(k))) return OFFICERS.nadine.name;
 
   // --- ABU EL WAFA (ابو الوفا) ---
-  if (['اليكو', 'alico', 'metlife alico'].some(k => norm.includes(k))) return OFFICERS.abu_el_wafa.name;
+  if (['اليكو', 'alico', 'metlife', 'ميتلايف', 'ميت لايف', 'metlife alico'].some(k => norm.includes(k))) return OFFICERS.abu_el_wafa.name;
   if (norm.includes('التعاون للبترول')) return OFFICERS.abu_el_wafa.name;
   if (['خالد', 'khalda'].some(k => norm.includes(k))) return OFFICERS.abu_el_wafa.name;
   if (['منصور', 'mansour'].some(k => norm.includes(k))) return OFFICERS.abu_el_wafa.name;
@@ -343,6 +353,7 @@ export function getResponsibleOfficer(contractor: string | null | undefined, fin
 
   // --- DIANA (ديانا) ---
   if (['عدل', 'justice'].some(k => norm.includes(k))) return OFFICERS.diana.name;
+  if (['الخليج الدولي', 'الخليج الدولى', 'khaleej', 'gulf care', 'international gulf', 'hussem', 'hussam'].some(k => norm.includes(k))) return OFFICERS.diana.name;
   if (['عز', 'الدخيل', 'ezz'].some(k => norm.includes(k))) return OFFICERS.diana.name;
   if (['ميدنت', 'ميد نت', 'mednet'].some(k => norm.includes(k))) return OFFICERS.diana.name;
   if (['كير بلاس', 'كيربلس', 'care plus', 'careplus'].some(k => norm.includes(k))) return OFFICERS.diana.name;

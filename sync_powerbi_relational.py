@@ -280,6 +280,37 @@ def is_date_today_cairo(d_val: Any, today_cairo_str: Optional[str] = None) -> bo
     return False
 
 
+def calculate_los_from_admission(adm_date_val: Any) -> str:
+    """Calculates Length of Stay (LOS) in whole days from admission date to current Cairo date."""
+    if not adm_date_val:
+        return "0"
+    try:
+        clean = str(adm_date_val).strip()
+        clean = re.sub(r"\s+", " ", clean)
+        m_ymd = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", clean)
+        if m_ymd:
+            y, m, d = int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3))
+            adm_dt = datetime.date(y, m, d)
+            cairo_today = get_cairo_now().date()
+            diff = (cairo_today - adm_dt).days
+            return str(max(0, diff))
+        m_dmy = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})", clean)
+        if m_dmy:
+            n1, n2, y = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
+            if y < 100:
+                y += 2000
+            day, month = n1, n2
+            if "/" in clean:
+                month, day = n1, n2
+            adm_dt = datetime.date(y, month, day)
+            cairo_today = get_cairo_now().date()
+            diff = (cairo_today - adm_dt).days
+            return str(max(0, diff))
+    except Exception:
+        pass
+    return "0"
+
+
 # --- TEXT & IDENTIFIER NORMALIZATION ---
 
 def normalize_arabic_name(name: Any) -> str:
@@ -565,16 +596,15 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
     raw_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
     dial_updated = time_map.get("state/dialysis")
     existing_dial: list[dict[str, Any]] = []
-    if raw_dial and not is_new_day and not is_system_reset:
+    if raw_dial and not is_system_reset and not is_new_day:
         for p in raw_dial:
-            if isinstance(p, dict):
-                p_date = p.get("date") or p.get("admissionDate")
+            if isinstance(p, dict) and "323" not in str(p.get("room", "")):
+                p_date = p.get("date") or p.get("rawDate")
                 if p_date:
                     if is_date_today_cairo(p_date, cairo_date_str):
                         existing_dial.append(p)
-                else:
-                    if is_today_cairo(dial_updated, cairo_date_str):
-                        existing_dial.append(p)
+                elif is_today_cairo(dial_updated, cairo_date_str):
+                    existing_dial.append(p)
 
     trans = state_map.get("state/transfers") or {}
     raw_trans = trans.get("items", []) if isinstance(trans, dict) else (trans if isinstance(trans, list) else [])
@@ -701,133 +731,138 @@ def is_procedure_or_temporary_room(room_str: str) -> bool:
 
 # --- MAIN PIPELINE: FETCH & SYNC ---
 
-POWERBI_PAYLOAD_DICT: Final[dict[str, Any]] = {
-    "exportDataType": 0,
-    "executeSemanticQueryRequest": {
-        "version": "1.0.0",
-        "queries": [
-            {
-                "Query": {
-                    "Commands": [
-                        {
-                            "SemanticQueryDataShapeCommand": {
-                                "Query": {
-                                    "Version": 2,
-                                    "From": [{"Name": "b", "Entity": "BedOccupancyMedicalDirector_soussi", "Type": 0}],
-                                    "Select": [
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "AdmissionDate"}, "Name": "BedoCCupancy_Soussi.AdmissionDate"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Bed#"}, "Name": "BedoCCupancy_Soussi.BedName_EN"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Patient"}, "Name": "BedoCCupancy_Soussi.EnglishFullName"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Financial Status"}, "Name": "BedoCCupancy_Soussi.FinancialStatusGUID"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Floor Name"}, "Name": "BedoCCupancy_Soussi.FloorName_EN"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Notes"}, "Name": "BedoCCupancy_Soussi.Notes"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Age"}, "Name": "Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "MRN"}, "Name": "BedoCCupancy_Soussi.PatientBarcode"},
-                                        {"Measure": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Companions #"}, "Name": "BedoCCupancy_Soussi.Count of Companions"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "PaymentBy"}, "Name": "BedoCCupancy_Soussi.PaymentBy"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Visit"}, "Name": "BedoCCupancy_Soussi.VisitTypeGUID"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "ContractorName"}, "Name": "BedoCCupancy_Soussi.ContractorName"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "FloorStructureName_EN"}, "Name": "BedoCCupancy_Soussi.FloorStructureName_EN"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DRG"}, "Name": "BedoCCupancy_Soussi.DRG"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Created by DIG"}, "Name": "BedoCCupancy_Soussi.Expr1"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DRG Diagnosis"}, "Name": "BedoCCupancy_Soussi.Expr3"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "LOS"}, "Name": "Sum(BedoCCupancy_Soussi.LOS)"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "GeometricMeanLOS"}, "Name": "BedoCCupancy_Soussi.GeometricMeanLOS"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Speciality"}, "Name": "BedoCCupancy_Soussi.Speciality"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Date Of Patients"}, "Name": "BedoCCupancy_Soussi.NewPatients"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "ALOS"}, "Name": "BedoCCupancy_Soussi.ALOS"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "ICD-10 Diagnosis"}, "Name": "BedoCCupancy_Soussi.Name"},
-                                        {"Aggregation": {"Expression": {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Payments"}}, "Function": 0}, "Name": "Sum(BedoCCupancy_Soussi.Payments)"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Weight"}, "Name": "BedoCCupancy_Soussi.Weight"},
-                                        {"Aggregation": {"Expression": {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Difference"}}, "Function": 0}, "Name": "Sum(BedoCCupancy_Soussi.Difference)"},
-                                        {"Aggregation": {"Expression": {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "FTotal"}}, "Function": 0}, "Name": "Sum(BedoCCupancy_Soussi.FTotal)"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "SSO"}, "Name": "BedoCCupancy_Soussi.1"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "LTC Weight"}, "Name": "BedoCCupancy_Soussi.2"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "LTC GLOS"}, "Name": "BedoCCupancy_Soussi.3"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "PrograssNotes"}, "Name": "BedoCCupancy_Soussi.PrograssNotes"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "OR Notes"}, "Name": "BedoCCupancy_Soussi.OR Notes"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Operations"}, "Name": "BedoCCupancy_Soussi.Operations"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DefaultMobile"}, "Name": "BedoCCupancy_Soussi.DefaultMobile"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "TreatingPhysicianName"}, "Name": "BedoCCupancy_Soussi.TreatingPhysicianName"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "PrograssNotes Creation Date"}, "Name": "BedoCCupancy_Soussi.PrograssNotes Creation Date"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DischargeExpectedDate"}, "Name": "BedoCCupancy_Soussi.DischargeExpectedDate", "NativeReferenceName": "DischargeExpectedDate"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Hand Over"}, "Name": "BedoCCupancy_Soussi.Hand Over", "NativeReferenceName": "Prograssnotes"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "EliteALOS"}, "Name": "BedoCCupancy_Soussi.EliteALOS", "NativeReferenceName": "EliteALOS"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "EliteWeight"}, "Name": "BedoCCupancy_Soussi.EliteWeight", "NativeReferenceName": "EliteWeight"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "Medication Names"}, "Name": "BedOccupancyMedicalDirector_soussi.Medication Names", "NativeReferenceName": "Medication Names"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "IntialAssessment"}, "Name": "BedOccupancyMedicalDirector_soussi.IntialAssessment", "NativeReferenceName": "IntialAssessment"},
-                                        {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "VTE Summary"}, "Name": "BedOccupancyMedicalDirector_soussi.VTE Summary", "NativeReferenceName": "VTE Summary"}
-                                    ],
-                                    "OrderBy": [{"Direction": 2, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "b"}}, "Property": "DischargeExpectedDate"}}}]
-                                },
-                                "Binding": {
-                                    "Primary": {"Groupings": [{"Projections": list(range(42)), "Subtotal": 0}]},
-                                    "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
-                                    "Version": 1
+ORDERED_POWERBI_COLUMNS: Final[list[str]] = [
+    "Admission Date",          # 0  -> 'No filters applied'
+    "Bed#",                    # 1  -> 'Unnamed: 1'
+    "MRN",                     # 2  -> 'Unnamed: 2'
+    "Patient Name",            # 3  -> 'Unnamed: 3'
+    "Mobile",                  # 4  -> 'Unnamed: 4'
+    "FinancialStatus",         # 5  -> 'Unnamed: 5'
+    "Age",                     # 6  -> 'Unnamed: 6'
+    "Floor Name",              # 7  -> 'Unnamed: 7'
+    "AllNotes",                # 8  -> 'Unnamed: 8'
+    "VisitType",               # 9  -> 'Unnamed: 9'
+    "Payment By",              # 10 -> 'Unnamed: 10'
+    "FloorStructureName_EN",   # 11 -> 'Unnamed: 11'
+    "Contractor Name",         # 12 -> 'Unnamed: 12'
+    "DRG",                     # 13 -> 'Unnamed: 13'
+    "Created By DIG",          # 14 -> 'Unnamed: 14'
+    "DRG Diagnosis",           # 15 -> 'Unnamed: 15'
+    "LOS",                     # 16 -> 'Unnamed: 16'
+    "GLOS",                    # 17 -> 'Unnamed: 17'
+    "Date Of Patients",        # 18 -> 'Unnamed: 18'
+    "ALOS",                    # 19 -> 'Unnamed: 19'
+    "ICD-10",                  # 20 -> 'Unnamed: 20'
+    "Payments",                # 21 -> 'Unnamed: 21'
+    "TreatingPhysicianName",    # 22 -> 'Unnamed: 22'
+    "Specialty",               # 23 -> 'Unnamed: 23'
+    "Weight",                  # 24 -> 'Unnamed: 24'
+    "Invoice Total",           # 25 -> 'Unnamed: 25'
+    "SSO",                     # 26 -> 'Unnamed: 26'
+    "Difference",              # 27 -> 'Unnamed: 27'
+    "LTC Weight",              # 28 -> 'Unnamed: 28'
+    "LTC GLOS",                # 29 -> 'Unnamed: 29'
+    "PrograssNotes",           # 30 -> 'Unnamed: 30'
+    "Discharge Expected Date", # 31 -> 'Unnamed: 31'
+    "HandOver Creation Date",  # 32 -> 'Unnamed: 32'
+    "HandOver",                # 33 -> 'Unnamed: 33'
+    "OR Notes",                # 34 -> 'Unnamed: 34'
+    "Operations",              # 35 -> 'Unnamed: 35'
+    "Elite ALOS",              # 36 -> 'Unnamed: 36'
+    "Elite Weight",            # 37 -> 'Unnamed: 37'
+    "Medication Names",        # 38 -> 'Unnamed: 38'
+    "Intial Assessment",       # 39 -> 'Unnamed: 39'
+    "VTE Summary"              # 40 -> 'Unnamed: 40'
+]
+
+
+def get_powerbi_model_id(auth: Optional[Any] = None) -> str:
+    """Dynamically retrieves the active report modelId from modelsAndExploration, falling back to 1874049876."""
+    fallback_id = "1874049876"
+    try:
+        report_base = POWERBI_EXPORT_URL.rsplit("/export/", 1)[0]
+        meta_url = f"{report_base}/modelsAndExploration"
+        resp = requests.get(meta_url, auth=auth, timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            if models and "id" in models[0]:
+                return str(models[0]["id"])
+    except Exception as e:
+        log(f"Notice: Dynamic modelId discovery fallback to {fallback_id}: {e}", level="warning")
+    return fallback_id
+
+
+def build_powerbi_payload(model_id: str = "1874049876") -> dict[str, Any]:
+    """Constructs the executeSemanticQueryRequest payload matching the active Power BI report schema."""
+    select_objs = [
+        {
+            "Column": {
+                "Expression": {"SourceRef": {"Source": "b"}},
+                "Property": col
+            },
+            "Name": f"BedOccupancyMedicalDirector_soussi.{col}"
+        }
+        for col in ORDERED_POWERBI_COLUMNS
+    ]
+    export_cols = [
+        {
+            "QueryName": f"BedOccupancyMedicalDirector_soussi.{col}",
+            "Name": col
+        }
+        for col in ORDERED_POWERBI_COLUMNS
+    ]
+    return {
+        "exportDataType": 0,
+        "executeSemanticQueryRequest": {
+            "version": "1.0.0",
+            "queries": [
+                {
+                    "Query": {
+                        "Commands": [
+                            {
+                                "SemanticQueryDataShapeCommand": {
+                                    "Query": {
+                                        "Version": 2,
+                                        "From": [{"Name": "b", "Entity": "BedOccupancyMedicalDirector_soussi", "Type": 0}],
+                                        "Select": select_objs,
+                                        "OrderBy": [
+                                            {
+                                                "Direction": 2,
+                                                "Expression": {
+                                                    "Column": {
+                                                        "Expression": {"SourceRef": {"Source": "b"}},
+                                                        "Property": "Discharge Expected Date"
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    },
+                                    "Binding": {
+                                        "Primary": {"Groupings": [{"Projections": list(range(len(ORDERED_POWERBI_COLUMNS))), "Subtotal": 0}]},
+                                        "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
+                                        "Version": 1
+                                    }
+                                }
+                            },
+                            {
+                                "ExportDataCommand": {
+                                    "Columns": export_cols,
+                                    "Ordering": list(range(len(ORDERED_POWERBI_COLUMNS))),
+                                    "FiltersDescription": "No filters applied"
                                 }
                             }
-                        },
-                        {
-                            "ExportDataCommand": {
-                                "Columns": [
-                                    {"QueryName": "BedoCCupancy_Soussi.AdmissionDate", "Name": "AdmissionDate"},
-                                    {"QueryName": "BedoCCupancy_Soussi.BedName_EN", "Name": "Bed#"},
-                                    {"QueryName": "BedoCCupancy_Soussi.EnglishFullName", "Name": "Patient"},
-                                    {"QueryName": "BedoCCupancy_Soussi.FinancialStatusGUID", "Name": "Financial Status"},
-                                    {"QueryName": "BedoCCupancy_Soussi.FloorName_EN", "Name": "Floor Name"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Notes", "Name": "Notes"},
-                                    {"QueryName": "Sum(BedoCCupancy_Soussi.PatientAgeDBComputed)", "Name": "Age"},
-                                    {"QueryName": "BedoCCupancy_Soussi.PatientBarcode", "Name": "MRN"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Count of Companions", "Name": "Companions #"},
-                                    {"QueryName": "BedoCCupancy_Soussi.PaymentBy", "Name": "PaymentBy"},
-                                    {"QueryName": "BedoCCupancy_Soussi.VisitTypeGUID", "Name": "Visit"},
-                                    {"QueryName": "BedoCCupancy_Soussi.ContractorName", "Name": "ContractorName"},
-                                    {"QueryName": "BedoCCupancy_Soussi.FloorStructureName_EN", "Name": "FloorStructureName_EN"},
-                                    {"QueryName": "BedoCCupancy_Soussi.DRG", "Name": "DRG"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Expr1", "Name": "Created by DIG"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Expr3", "Name": "DRG Diagnosis"},
-                                    {"QueryName": "Sum(BedoCCupancy_Soussi.LOS)", "Name": "LOS"},
-                                    {"QueryName": "BedoCCupancy_Soussi.GeometricMeanLOS", "Name": "GLOS"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Speciality", "Name": "Speciality"},
-                                    {"QueryName": "BedoCCupancy_Soussi.NewPatients", "Name": "Date Of Patients"},
-                                    {"QueryName": "BedoCCupancy_Soussi.ALOS", "Name": "ALOS"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Name", "Name": "ICD-10 Diagnosis"},
-                                    {"QueryName": "Sum(BedoCCupancy_Soussi.Payments)", "Name": "Sum of Payments"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Weight", "Name": "Weight"},
-                                    {"QueryName": "Sum(BedoCCupancy_Soussi.Difference)", "Name": "Remaining"},
-                                    {"QueryName": "Sum(BedoCCupancy_Soussi.FTotal)", "Name": "Sum of FTotal"},
-                                    {"QueryName": "BedoCCupancy_Soussi.1", "Name": "SSO"},
-                                    {"QueryName": "BedoCCupancy_Soussi.2", "Name": "LTC Weight"},
-                                    {"QueryName": "BedoCCupancy_Soussi.3", "Name": "LTC GLOS"},
-                                    {"QueryName": "BedoCCupancy_Soussi.PrograssNotes", "Name": "Handover"},
-                                    {"QueryName": "BedoCCupancy_Soussi.OR Notes", "Name": "OR Notes"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Operations", "Name": "Operations"},
-                                    {"QueryName": "BedoCCupancy_Soussi.DefaultMobile", "Name": "DefaultMobile"},
-                                    {"QueryName": "BedoCCupancy_Soussi.TreatingPhysicianName", "Name": "TreatingPhysicianName"},
-                                    {"QueryName": "BedoCCupancy_Soussi.PrograssNotes Creation Date", "Name": "PrograssNotes Creation Date"},
-                                    {"QueryName": "BedoCCupancy_Soussi.DischargeExpectedDate", "Name": "DischargeExpectedDate"},
-                                    {"QueryName": "BedoCCupancy_Soussi.Hand Over", "Name": "Prograssnotes"},
-                                    {"QueryName": "BedoCCupancy_Soussi.EliteALOS", "Name": "EliteALOS"},
-                                    {"QueryName": "BedoCCupancy_Soussi.EliteWeight", "Name": "EliteWeight"},
-                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.Medication Names", "Name": "Medication Names"},
-                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.IntialAssessment", "Name": "IntialAssessment"},
-                                    {"QueryName": "BedOccupancyMedicalDirector_soussi.VTE Summary", "Name": "VTE Summary"}
-                                ],
-                                "Ordering": [
-                                    0, 1, 7, 2, 32, 3, 6, 4, 5, 8, 10, 9, 11, 12, 21, 13, 14, 15, 16, 17, 20, 23, 33, 18, 19, 25, 22, 24, 26, 27, 28, 35, 34, 29, 36, 30, 31, 37, 38, 39, 40, 41
-                                ],
-                                "FiltersDescription": "No filters applied"
-                            }
-                        }
-                    ]
+                        ]
+                    }
                 }
-            }
-        ],
-        "cancelQueries": [],
-        "modelId": "282542116",
-        "userPreferredLocale": "en-US"
+            ],
+            "cancelQueries": [],
+            "modelId": model_id,
+            "userPreferredLocale": "en-US"
+        }
     }
-}
+
+
+POWERBI_PAYLOAD_DICT: Final[dict[str, Any]] = build_powerbi_payload("1874049876")
 
 
 def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
@@ -846,9 +881,11 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
 
             log("Fetching live dataset from Power BI...")
             auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+            active_model_id = get_powerbi_model_id(auth=auth)
+            current_payload = build_powerbi_payload(active_model_id)
             response = requests.post(
                 POWERBI_EXPORT_URL,
-                json=POWERBI_PAYLOAD_DICT,
+                json=current_payload,
                 auth=auth,
                 timeout=25
             )
@@ -945,16 +982,26 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                         if candidate and str(candidate).lower() not in ("admissiondate", "admission date"):
                             ad_val = candidate
 
-                mob_val = clean_phone(get_val(row, ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
+                mob_val = clean_phone(get_val(row, ["Mobile", "DefaultMobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4", "Unnamed: 32"]))
                 if not mob_val:
                     m4 = clean_phone(row.get("Unnamed: 4"))
                     mob_val = m4 if len(m4) >= 7 else clean_phone(row.get("Unnamed: 32"))
 
                 t_inv = float(clean_num(get_val(row, ["Invoice Total", "Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"])))
-                r_deb = float(clean_num(get_val(row, ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])))
+                r_deb = float(clean_num(get_val(row, ["Difference", "Remaining", "Sum of Difference", "Remaining Amount", "Balance", "المتبقي", "الباقي", "Unnamed: 27"])))
 
                 det_seed = normalize_arabic_name(p_name) or bed_str or "patient"
                 det_hash = uuid.uuid5(uuid.NAMESPACE_OID, det_seed).hex[:8].upper()
+                raw_los = str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 16", "Unnamed: 10"])).strip()
+                clean_los = re.sub(r"[^0-9.]", "", raw_los)
+                if (not clean_los or float(clean_los) <= 0) and ad_val:
+                    calc_los = calculate_los_from_admission(ad_val)
+                    if float(calc_los) > 0:
+                        clean_los = calc_los
+                los_val = clean_los or raw_los or "0"
+
+                raw_alos = str(get_val(row, ["Elite ALOS", "EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 36", "Unnamed: 12"])).strip()
+
                 rec = NormalizedPatientRecord(
                     mrn=clean_m or raw_mrn or f"UNKNOWN-{det_hash}",
                     clean_mrn=clean_m,
@@ -964,20 +1011,20 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     physician=str(get_val(row, ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"])).strip(),
                     admission_date=str(ad_val) if ad_val else None,
                     contractor=str(get_val(row, ["Contractor Name", "ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"])).strip(),
-                    financial_status=str(get_val(row, ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])).strip(),
+                    financial_status=str(get_val(row, ["FinancialStatus", "Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"])).strip(),
                     total_invoice=t_inv,
                     remaining_debt=r_deb,
                     specialty=normalize_specialty(get_val(row, ["Specialty", "Speciality", "Medical Plan X", "التخصص", "Unnamed: 23"])),
                     diagnosis=str(get_val(row, ["ICD-10", "ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"])).strip(),
                     mobile=mob_val,
-                    los=str(get_val(row, ["LOS", "Sum(LOS)", "Unnamed: 18"])).strip(),
-                    alos=str(get_val(row, ["Elite ALOS", "EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"])).strip(),
-                    expected_discharge=str(get_val(row, ["DischargeExpectedDate", "Discharge Expected Date", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])).strip(),
-                    medications=str(get_val(row, ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"])).strip(),
-                    initial_assessment=str(get_val(row, ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"])).strip(),
-                    vte_summary=str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"])).strip(),
-                    notes=str(get_val(row, ["PrograssNotes", "HandOver", "Handover", "Prograssnotes", "Notes", "Remarks", "ملاحظات", "Unnamed: 8"])).strip(),
-                    payment_by=str(get_val(row, ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"])).strip(),
+                    los=los_val,
+                    alos=raw_alos or "0",
+                    expected_discharge=str(get_val(row, ["Discharge Expected Date", "DischargeExpectedDate", "Expected Discharge", "Unnamed: 31", "Unnamed: 20"])).strip(),
+                    medications=str(get_val(row, ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 38", "Unnamed: 39"])).strip(),
+                    initial_assessment=str(get_val(row, ["Intial Assessment", "IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 39", "Unnamed: 40"])).strip(),
+                    vte_summary=str(get_val(row, ["VTE Summary", "VTE", "جلطات", "Unnamed: 40", "Unnamed: 41"])).strip(),
+                    notes=str(get_val(row, ["AllNotes", "PrograssNotes", "HandOver", "Handover", "Prograssnotes", "Notes", "Remarks", "ملاحظات", "Unnamed: 8"])).strip(),
+                    payment_by=str(get_val(row, ["Payment By", "PaymentBy", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 10"])).strip(),
                     raw_row=row
                 )
                 records.append(rec)
@@ -1078,25 +1125,31 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 if not is_or_room and "323" not in b_low:
                     fl_low = rec.floor.lower()
                     spec_low = rec.specialty.lower()
+                    fin_low = rec.financial_status.lower()
+                    raw_row_dict = rec.raw_row if isinstance(rec.raw_row, dict) else {}
+                    vis_low = str(get_val(raw_row_dict, ["VisitType", "Visit", "VisitTypeGUID", "Visit Type", "Unnamed: 9"])).strip().lower()
                     is_inpatient = bool(RE_INPATIENT_ROOM.search(b_low)) or "suite" in b_low or "سويت" in b_low or "icu" in b_low or "ccu" in b_low
 
                     is_dial_case = False
-                    if not is_inpatient:
-                        if is_dialysis_room(rec.bed):
+                    if is_dialysis_room(rec.bed):
+                        is_dial_case = True
+                    elif not is_inpatient:
+                        if any(kw in fl_low for kw in ("dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى", "استصفاء", "ديلزة", "وحدة الغسيل", "قسم الغسيل")):
                             is_dial_case = True
-                        elif any(kw in fl_low for kw in ("dialysis", "diyalsis", "hemodialysis", "haemodialysis", "غسيل كلوي", "غسيل كلى", "استصفاء", "ديلزة")):
+                        elif any(kw in spec_low for kw in ("dialysis", "غسيل", "nephrology", "كلى", "أمراض كلى")) and any(kw in b_low or kw in fl_low for kw in ("dc", "daycase", "day case", "chair", "station")):
                             is_dial_case = True
-                        elif any(kw in spec_low for kw in ("dialysis", "غسيل", "nephrology", "كلى")) and any(kw in b_low or kw in fl_low for kw in ("dc", "daycase", "chair", "station")):
+                        elif any(kw in vis_low or kw in fin_low for kw in ("dialysis", "hemodialysis", "غسيل", "جلسة غسيل", "جلسات غسيل", "جلسه غسيل", "dialysis session")) and any(kw in b_low or kw in fl_low for kw in ("dc", "daycase", "chair", "station", "dial")):
                             is_dial_case = True
 
                     if is_dial_case:
+                        # Strictly only grab dialysis cases if the date is today
                         if rec.admission_date and is_date_today_cairo(rec.admission_date, cairo_date_str):
                             dialysis_cases.append({
                                 "room": rec.bed if rec.bed else "Dialysis",
                                 "name": rec.name,
                                 "physician": rec.physician,
                                 "contractor": rec.contractor,
-                                "date": rec.admission_date or "",
+                                "date": rec.admission_date,
                                 "mrn": rec.mrn,
                                 "mobile": rec.mobile,
                                 "floor": rec.floor,
@@ -1133,14 +1186,14 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     cumulative_entries.append(p)
 
             # 4. Dialysis & Transfers with 11:59 PM Cairo Rollover
-            if is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset"):
+            if is_1159_pm or existing.get("is_system_reset"):
                 log(f"[Sync Rollover] Fresh daily counters active for {cairo_date_str}. Zeroing daily dialysis & transfers.")
                 cumulative_dialysis: list[dict[str, Any]] = []
                 cumulative_transfers: list[dict[str, Any]] = []
             else:
                 cumulative_dialysis = [
                     p for p in (existing.get("dialysis") or [])
-                    if "323" not in str(p.get("room", "")) and (not p.get("date") or is_date_today_cairo(p.get("date"), cairo_date_str))
+                    if "323" not in str(p.get("room", "")) and is_date_today_cairo(p.get("date") or p.get("rawDate"), cairo_date_str)
                 ]
                 for p in dialysis_cases:
                     p_name = p.get("name", "").strip().lower()
@@ -1306,70 +1359,86 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 "Unnamed: 6": "Age",
                 "Unnamed: 7": "Floor Name",
                 "Unnamed: 8": "Notes",
-                "Unnamed: 9": "Companions #",
-                "Unnamed: 10": "Visit",
-                "Unnamed: 11": "PaymentBy",
+                "Unnamed: 9": "VisitType",
+                "Unnamed: 10": "PaymentBy",
+                "Unnamed: 11": "FloorStructureName_EN",
                 "Unnamed: 12": "ContractorName",
-                "Unnamed: 13": "FloorStructureName_EN",
-                "Unnamed: 14": "Diagnosis",
-                "Unnamed: 18": "LOS Status",
-                "Unnamed: 20": "Expected Discharge",
+                "Unnamed: 13": "DRG",
+                "Unnamed: 14": "Created By DIG",
+                "Unnamed: 15": "DRG Diagnosis",
+                "Unnamed: 16": "LOS",
+                "Unnamed: 17": "GLOS",
+                "Unnamed: 18": "Date Of Patients",
+                "Unnamed: 19": "ALOS",
+                "Unnamed: 20": "ICD-10",
+                "Unnamed: 21": "Payments",
                 "Unnamed: 22": "TreatingPhysicianName",
                 "Unnamed: 23": "Speciality",
-                "Unnamed: 24": "Transfer History",
+                "Unnamed: 24": "Weight",
                 "Unnamed: 25": "Total Invoice",
+                "Unnamed: 26": "SSO",
                 "Unnamed: 27": "Remaining Amount",
-                "Unnamed: 32": "Creation Date",
-                "Unnamed: 33": "Medical Plan AH",
-                "Unnamed: 34": "Medical Plan AI",
-                "Unnamed: 37": "EliteALOS",
-                "Unnamed: 38": "EliteWeight",
-                "Unnamed: 39": "Medication Names",
-                "Unnamed: 40": "IntialAssessment",
-                "Unnamed: 41": "VTE Summary"
+                "Unnamed: 28": "LTC Weight",
+                "Unnamed: 29": "LTC GLOS",
+                "Unnamed: 30": "PrograssNotes",
+                "Unnamed: 31": "Discharge Expected Date",
+                "Unnamed: 32": "HandOver Creation Date",
+                "Unnamed: 33": "HandOver",
+                "Unnamed: 34": "OR Notes",
+                "Unnamed: 35": "Operations",
+                "Unnamed: 36": "Elite ALOS",
+                "Unnamed: 37": "Elite Weight",
+                "Unnamed: 38": "Medication Names",
+                "Unnamed: 39": "Intial Assessment",
+                "Unnamed: 40": "VTE Summary"
             }
             legacy_occupancy_rows: list[dict[str, Any]] = [fake_header]
 
             known_mappings = {
                 0: ["Admission Date", "AdmissionDate", "Date", "تاريخ الدخول", "التاريخ", "No filters applied", "Unnamed: 0"],
                 1: ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"],
-                2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "رقم الملف"],
+                2: ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "رقم الملف", "Unnamed: 2"],
                 3: ["Patient Name", "Patient", "EnglishFullName", "Name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "Unnamed: 3"],
-                4: ["DefaultMobile", "Mobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4"],
-                5: ["Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
+                4: ["Mobile", "DefaultMobile", "Phone", "الجوال", "الهاتف", "Unnamed: 4"],
+                5: ["FinancialStatus", "Financial Status", "Financial Class", "Class", "Type", "الفئة", "نوع", "Unnamed: 5"],
                 6: ["Age", "PatientAgeDBComputed", "Unnamed: 6"],
                 7: ["Floor Name", "FloorName_EN", "Floor", "الطابق", "الدور", "Unnamed: 7"],
-                8: ["Notes", "Remarks", "ملاحظات", "Unnamed: 8"],
-                9: ["Companions #", "Count of Companions", "Companion", "مرافق", "Unnamed: 9"],
-                10: ["Visit", "VisitTypeGUID", "Visit Type", "VisitType", "نوع الزيارة", "Unnamed: 10"],
-                11: ["PaymentBy", "Payment By", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 11"],
+                8: ["AllNotes", "Notes", "Remarks", "ملاحظات", "Unnamed: 8"],
+                9: ["VisitType", "Visit", "VisitTypeGUID", "Visit Type", "نوع الزيارة", "Companions #", "Unnamed: 9"],
+                10: ["Payment By", "PaymentBy", "طريقة الدفع", "الدفع بواسطة", "الدفع", "Unnamed: 10"],
+                11: ["FloorStructureName_EN", "Unnamed: 11"],
                 12: ["Contractor Name", "ContractorName", "Contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع", "Unnamed: 12"],
-                14: ["ICD-10", "ICD-10 Diagnosis", "DRG Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 14"],
-                18: ["LOS", "Sum(LOS)", "LOS Status", "Unnamed: 18"],
-                20: ["DischargeExpectedDate", "Expected Discharge", "ALOS", "Unnamed: 20"],
+                13: ["DRG", "Unnamed: 13"],
+                14: ["Created By DIG", "Created by DIG", "Unnamed: 14"],
+                15: ["DRG Diagnosis", "Unnamed: 15"],
+                16: ["LOS", "Sum(LOS)", "Unnamed: 16"],
+                17: ["GLOS", "GeometricMeanLOS", "Unnamed: 17"],
+                18: ["Date Of Patients", "Unnamed: 18"],
+                19: ["ALOS", "Unnamed: 19"],
+                20: ["ICD-10", "ICD-10 Diagnosis", "Diagnosis", "Name", "التشخيص", "Unnamed: 20"],
+                21: ["Payments", "Sum of Payments", "Unnamed: 21"],
                 22: ["TreatingPhysicianName", "ConsultantName_EN", "Physician", "Doctor", "الطبيب", "الطبيب المعالج", "Unnamed: 22"],
                 23: ["Specialty", "Speciality", "Medical Plan X", "التخصص", "Unnamed: 23"],
-                24: ["Transfer History", "Unnamed: 24"],
+                24: ["Weight", "Transfer History", "Unnamed: 24"],
                 25: ["Invoice Total", "Sum of FTotal", "FTotal", "Total Invoice", "Total Amount", "Total", "إجمالي الفاتورة", "الاجمالي", "Unnamed: 25"],
-                26: ["Payments", "Sum of Payments", "Unnamed: 26"],
-                27: ["Remaining", "Sum of Difference", "Remaining Amount", "Difference", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
-                28: ["SSO", "Unnamed: 28"],
-                29: ["LTC Weight", "Unnamed: 29"],
-                30: ["LTC GLOS", "Unnamed: 30"],
-                31: ["DischargeExpectedDate", "Expected Discharge", "Unnamed: 31"],
-                32: ["HandOver Creation Date", "PrograssNotes Creation Date", "Creation Date", "Medical Plan AG", "تاريخ الخطة", "DefaultMobile", "Unnamed: 32"],
-                33: ["HandOver", "Handover", "PrograssNotes", "Medical Plan AH", "الخطة الطبية", "Operations", "Unnamed: 33"],
-                34: ["PrograssNotes", "Prograssnotes", "Hand Over", "Notes", "Medical Plan AI", "Unnamed: 34"],
-                35: ["OR Notes", "Unnamed: 35"],
-                36: ["Operations", "Unnamed: 36"],
-                37: ["Elite ALOS", "EliteALOS", "ALOS", "LOS AL", "Target ALOS", "Unnamed: 37"],
-                38: ["Elite Weight", "EliteWeight", "Weight", "Unnamed: 38"],
-                39: ["Medication Names", "Medications", "Medication", "الأدوية", "Unnamed: 39"],
-                40: ["IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 40"],
-                41: ["VTE Summary", "VTE", "جلطات", "Unnamed: 41"]
+                26: ["SSO", "Unnamed: 26"],
+                27: ["Difference", "Remaining", "Sum of Difference", "Remaining Amount", "Balance", "المتبقي", "الباقي", "Unnamed: 27"],
+                28: ["LTC Weight", "Unnamed: 28"],
+                29: ["LTC GLOS", "Unnamed: 29"],
+                30: ["PrograssNotes", "Prograssnotes", "Unnamed: 30"],
+                31: ["Discharge Expected Date", "DischargeExpectedDate", "Expected Discharge", "Unnamed: 31"],
+                32: ["HandOver Creation Date", "PrograssNotes Creation Date", "Creation Date", "Medical Plan AG", "تاريخ الخطة", "Unnamed: 32"],
+                33: ["HandOver", "Handover", "PrograssNotes", "Medical Plan AH", "الخطة الطبية", "Unnamed: 33"],
+                34: ["OR Notes", "PrograssNotes", "Prograssnotes", "Hand Over", "Notes", "Medical Plan AI", "Unnamed: 34"],
+                35: ["Operations", "Unnamed: 35"],
+                36: ["Elite ALOS", "EliteALOS", "ALOS", "Target ALOS", "Unnamed: 36"],
+                37: ["Elite Weight", "EliteWeight", "Weight", "Unnamed: 37"],
+                38: ["Medication Names", "Unnamed: 38"],
+                39: ["Intial Assessment", "IntialAssessment", "Initial Assessment", "التقييم الأولي", "Unnamed: 39"],
+                40: ["VTE Summary", "VTE", "جلطات", "Unnamed: 40"]
             }
 
-            total_cols = max(42, len(header_row))
+            total_cols = max(41, len(header_row))
             for rec in active_records:
                 legacy_row: dict[str, Any] = {}
                 for i in range(total_cols):
@@ -1380,6 +1449,14 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                             # MRN guard: If extracted val is a patient name (multi-word letters), use rec.clean_mrn or rec.mrn
                             if not val or (len(str(val).split()) >= 2 and not any(ch.isdigit() for ch in str(val))):
                                 val = rec.clean_mrn or rec.mrn
+                        elif i == 16:
+                            # LOS guard: Ensure non-empty numeric value
+                            if (val is None or str(val).strip() in ("", "nan", "None")) and rec.los:
+                                val = rec.los
+                        elif i == 36:
+                            # Elite ALOS guard: Ensure non-empty numeric value
+                            if (val is None or str(val).strip() in ("", "nan", "None")) and rec.alos:
+                                val = rec.alos
                         legacy_row[col_key] = val
                     else:
                         legacy_row[col_key] = clean_val(get_val(rec.raw_row, [f"Unnamed: {i}"]))

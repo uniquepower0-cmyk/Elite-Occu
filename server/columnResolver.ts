@@ -197,6 +197,18 @@ export function buildColumnIndexResolver(
               continue;
             }
           }
+          // If searching for LOS (Length of Stay), DO NOT match ALOS, GLOS, or Status
+          if (norm === "los" || norm === "current los") {
+            if (key.includes("alos") || key.includes("glos") || key.includes("status")) {
+              continue;
+            }
+          }
+          // If searching for ALOS, DO NOT match GLOS
+          if (norm.includes("alos")) {
+            if (key.includes("glos")) {
+              continue;
+            }
+          }
 
           if (key.includes(norm)) {
             if (isContentValid(idx, expectedType)) {

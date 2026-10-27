@@ -100,12 +100,22 @@ export function getOccupancyRows(
     prefix = [...prefix, ...padding];
   }
 
-  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1, 'room');
-  const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "الاسم بالكامل"], 3, 'name');
-  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], 22, 'name');
-  const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12, 'text');
-  const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
-  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], 2, 'id');
+  const sampleRow = data.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || data[0] || [];
+  const is30ColLayout = sampleRow.length < 35 && sampleRow.length >= 15;
+
+  const defaultBedCol = 1;
+  const defaultMrnCol = is30ColLayout ? -1 : 2;
+  const defaultNameCol = is30ColLayout ? 2 : 3;
+  const defaultDateCol = 0;
+  const defaultPhysCol = is30ColLayout ? 14 : 22;
+  const defaultContCol = is30ColLayout ? 6 : 12;
+
+  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], defaultBedCol, 'room');
+  const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "الاسم بالكامل"], defaultNameCol, 'name');
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], defaultPhysCol, 'name');
+  const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], defaultContCol, 'text');
+  const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], defaultDateCol, 'date');
+  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], defaultMrnCol, 'id');
 
   const body = data.slice(startIdx).map(row => {
     if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
@@ -119,11 +129,42 @@ export function getOccupancyRows(
       ];
     }
     const roomStr = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
-    const nameStr = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
-    const physStr = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
-    const contStr = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
+    let nameStr = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
+    let physStr = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
+    let contStr = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const admStr = colAdmIdx >= 0 ? cleanAdmissionDateStr(row[colAdmIdx]) : "";
     let mrnStr = colMrnIdx >= 0 ? String(row[colMrnIdx] || "").trim() : "";
+
+    // Safeguard numeric contractor (ALOS/LOS float leak)
+    if (/^\d+(\.\d+)?$/.test(contStr)) {
+      if (row.length < 35 && row[6] && !/^\d+(\.\d+)?$/.test(String(row[6]).trim())) {
+        contStr = String(row[6]).trim();
+      } else if (row.length >= 35 && row[12] && !/^\d+(\.\d+)?$/.test(String(row[12]).trim())) {
+        contStr = String(row[12]).trim();
+      } else {
+        contStr = "";
+      }
+    }
+
+    // Safeguard numeric name (Age leak)
+    if (/^\d+$/.test(nameStr)) {
+      if (mrnStr && !/^\d+$/.test(mrnStr)) {
+        nameStr = mrnStr;
+        mrnStr = "";
+      } else if (row[2] && !/^\d+$/.test(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
+        nameStr = String(row[2]).trim();
+      }
+    }
+
+    // Safeguard surgical procedure in physician
+    if (/closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic|debridement|excision|fixation|amputation|استئصال|منظار|تفريغ|جراحة/i.test(physStr)) {
+      if (row.length < 35 && row[14] && !/closure|wounds|drainage|exploration|appendectomy|biopsy/i.test(String(row[14]))) {
+        physStr = String(row[14]).trim();
+      } else if (row.length >= 35 && row[22] && !/closure|wounds|drainage|exploration|appendectomy|biopsy/i.test(String(row[22]))) {
+        physStr = String(row[22]).trim();
+      }
+    }
+
     if (!mrnStr && nameStr) {
       mrnStr = buildDeterministicUnknownMrn(nameStr, roomStr);
     }
@@ -176,12 +217,22 @@ export function getOccupancyRowsUnfiltered(
     prefix = [...prefix, ...padding];
   }
 
-  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1, 'room');
-  const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "الاسم بالكامل"], 3, 'name');
-  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], 22, 'name');
-  const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12, 'text');
-  const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
-  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], 2, 'id');
+  const sampleRow = data.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || data[0] || [];
+  const is30ColLayout = sampleRow.length < 35 && sampleRow.length >= 15;
+
+  const defaultBedCol = 1;
+  const defaultMrnCol = is30ColLayout ? -1 : 2;
+  const defaultNameCol = is30ColLayout ? 2 : 3;
+  const defaultDateCol = 0;
+  const defaultPhysCol = is30ColLayout ? 14 : 22;
+  const defaultContCol = is30ColLayout ? 6 : 12;
+
+  const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], defaultBedCol, 'room');
+  const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة", "الاسم بالكامل"], defaultNameCol, 'name');
+  const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], defaultPhysCol, 'name');
+  const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], defaultContCol, 'text');
+  const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], defaultDateCol, 'date');
+  const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], defaultMrnCol, 'id');
 
   const body = data.slice(startIdx).map(row => {
     if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
@@ -195,11 +246,42 @@ export function getOccupancyRowsUnfiltered(
       ];
     }
     const roomStr = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
-    const nameStr = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
-    const physStr = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
-    const contStr = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
+    let nameStr = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
+    let physStr = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
+    let contStr = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const admStr = colAdmIdx >= 0 ? cleanAdmissionDateStr(row[colAdmIdx]) : "";
     let mrnStr = colMrnIdx >= 0 ? String(row[colMrnIdx] || "").trim() : "";
+
+    // Safeguard numeric contractor (ALOS/LOS float leak)
+    if (/^\d+(\.\d+)?$/.test(contStr)) {
+      if (row.length < 35 && row[6] && !/^\d+(\.\d+)?$/.test(String(row[6]).trim())) {
+        contStr = String(row[6]).trim();
+      } else if (row.length >= 35 && row[12] && !/^\d+(\.\d+)?$/.test(String(row[12]).trim())) {
+        contStr = String(row[12]).trim();
+      } else {
+        contStr = "";
+      }
+    }
+
+    // Safeguard numeric name (Age leak)
+    if (/^\d+$/.test(nameStr)) {
+      if (mrnStr && !/^\d+$/.test(mrnStr)) {
+        nameStr = mrnStr;
+        mrnStr = "";
+      } else if (row[2] && !/^\d+$/.test(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
+        nameStr = String(row[2]).trim();
+      }
+    }
+
+    // Safeguard surgical procedure in physician
+    if (/closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic|debridement|excision|fixation|amputation|استئصال|منظار|تفريغ|جراحة/i.test(physStr)) {
+      if (row.length < 35 && row[14] && !/closure|wounds|drainage/i.test(String(row[14]))) {
+        physStr = String(row[14]).trim();
+      } else if (row.length >= 35 && row[22] && !/closure|wounds|drainage/i.test(String(row[22]))) {
+        physStr = String(row[22]).trim();
+      }
+    }
+
     if (!mrnStr && nameStr) {
       mrnStr = buildDeterministicUnknownMrn(nameStr, roomStr);
     }
@@ -263,41 +345,49 @@ export function getDatasetOperationalDateStr(patients: { date?: string; rawDate?
 export function extractRawPatientsFromRows(
   data: any[][],
   isManuallyDischargedFn: (name: string) => boolean = () => false
-): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }[] {
-  if (!data || !Array.isArray(data)) return [];
-  let startIdx = 0;
-  let headerBedIdx = -1;
-  let headerMrnIdx = -1;
-  let headerNameIdx = -1;
-  let headerDateIdx = -1;
-  let headerPhysicianIdx = -1;
-  let headerContractorIdx = -1;
+): { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }[] {
+  if (!data || !Array.isArray(data) || data.length === 0) return [];
 
-  for (let i = 0; i < Math.min(data.length, 10); i++) {
-    const r = data[i];
-    if (Array.isArray(r)) {
-      r.forEach((cell, idx) => {
-        const c = String(cell || "").toLowerCase().trim();
-        if (c === "bed#" || c === "bed" || c === "room" || c === "الغرفة" || c === "غرفة" || c === "السرير" || c === "سرير") headerBedIdx = idx;
-        if (c === "mrn" || c === "patientbarcode" || c === "patient id" || c === "رقم المريض" || c === "الملف") headerMrnIdx = idx;
-        if (c === "patient" || c === "englishfullname" || c === "patient name" || c === "المريض" || c === "اسم المريض" || c === "الاسم") headerNameIdx = idx;
-        if (c === "admissiondate" || c === "admission date" || c === "تاريخ الدخول" || c === "التاريخ") headerDateIdx = idx;
-        if (c === "treatingphysicianname" || c === "physician" || c === "consultantname_en" || c === "الطبيب" || c === "الطبيب المعالج") headerPhysicianIdx = idx;
-        if (c === "contractorname" || c === "contractor" || c === "جهة التعاقد" || c === "الجهة") headerContractorIdx = idx;
-      });
-    }
-    const r0 = String(data[i][0] || "").toLowerCase();
-    const r1 = String(data[i][1] || "").toLowerCase();
-    const r3 = String(data[i][3] || "").toLowerCase();
-    if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
-      startIdx = i + 1;
-      break;
+  const { headerRowIdx, findCol } = buildColumnIndexResolver(data);
+
+  let startIdx = 0;
+  if (headerRowIdx >= 0) {
+    startIdx = headerRowIdx + 1;
+  } else {
+    for (let i = 0; i < Math.min(data.length, 10); i++) {
+      const r0 = String(data[i][0] || "").toLowerCase();
+      const r1 = String(data[i][1] || "").toLowerCase();
+      const r3 = String(data[i][3] || "").toLowerCase();
+      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+        startIdx = i + 1;
+        break;
+      }
     }
   }
 
-  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string }>();
+  const patientMap = new Map<string, { name: string; mrn: string; room: string; physician?: string; contractor?: string; date?: string; rawDate?: string; rawRow?: any[] }>();
 
-  data.slice(startIdx).forEach(r => {
+  // Determine detected column indices or layout-aware defaults
+  const sampleRow = data.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || data[0] || [];
+  const is30ColLayout = sampleRow.length < 35 && sampleRow.length >= 15;
+
+  const defaultBedCol = 1;
+  const defaultMrnCol = is30ColLayout ? -1 : 2;
+  const defaultNameCol = is30ColLayout ? 2 : 3;
+  const defaultDateCol = 0;
+  const defaultPhysCol = is30ColLayout ? 14 : 22;
+  const defaultContCol = is30ColLayout ? 6 : 12;
+
+  const bedCol = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], defaultBedCol, 'room');
+  const mrnCol = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], defaultMrnCol, 'id');
+  const nameCol = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة"], defaultNameCol, 'name');
+  const dateCol = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], defaultDateCol, 'date');
+  const physCol = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], defaultPhysCol, 'name');
+  const contCol = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], defaultContCol, 'text');
+
+  data.slice(startIdx).forEach((r: any[]) => {
+    if (!Array.isArray(r) || r.length === 0) return;
+
     let rawRoom = "";
     let rawMrn = "";
     let rawName = "";
@@ -305,21 +395,14 @@ export function extractRawPatientsFromRows(
     let rawContractor = "";
     let rawDateStr = "";
 
-    // Detect layout: 39-column unified format vs 5/6-column formatted occupancy
+    // Detect layout: 30+ column unified format vs 5/6-column formatted occupancy
     if (r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))))) {
-      const bedCol = headerBedIdx >= 0 ? headerBedIdx : 1;
-      const mrnCol = headerMrnIdx >= 0 ? headerMrnIdx : 2;
-      const nameCol = headerNameIdx >= 0 ? headerNameIdx : 3;
-      const dateCol = headerDateIdx >= 0 ? headerDateIdx : 0;
-      const physCol = headerPhysicianIdx >= 0 ? headerPhysicianIdx : 22;
-      const contCol = headerContractorIdx >= 0 ? headerContractorIdx : 12;
-
-      rawDateStr = String(r[dateCol] || "").trim();
-      rawRoom = cleanRoomStr(String(r[bedCol] || "").trim());
-      rawMrn = String(r[mrnCol] || "").trim().replace(/^0+/, "");
-      rawName = String(r[nameCol] || "").trim();
-      rawContractor = String(r[contCol] || "").trim();
-      rawPhysician = String(r[physCol] || "").trim();
+      rawDateStr = dateCol >= 0 ? String(r[dateCol] || "").trim() : "";
+      rawRoom = bedCol >= 0 ? cleanRoomStr(String(r[bedCol] || "").trim()) : "";
+      rawMrn = mrnCol >= 0 ? String(r[mrnCol] || "").trim().replace(/^0+/, "") : "";
+      rawName = nameCol >= 0 ? String(r[nameCol] || "").trim() : "";
+      rawContractor = contCol >= 0 ? String(r[contCol] || "").trim() : "";
+      rawPhysician = physCol >= 0 ? String(r[physCol] || "").trim() : "";
     } else {
       rawRoom = cleanRoomStr(String(r[0] || "").trim());
       rawName = String(r[1] || "").trim();
@@ -329,12 +412,46 @@ export function extractRawPatientsFromRows(
       rawMrn = String(r[5] || "").trim().replace(/^0+/, "");
     }
 
-    // Heuristic inversion safeguard:
-    // If rawMrn contains Arabic characters and rawName contains digits or is empty, swap them
+    // Guard 1: Contractor must not be a numeric ALOS/LOS number (e.g. 5.909090909 or 1)
+    if (/^\d+(\.\d+)?$/.test(rawContractor)) {
+      if (r.length < 35 && r[6] && !/^\d+(\.\d+)?$/.test(String(r[6]).trim())) {
+        rawContractor = String(r[6]).trim();
+      } else if (r.length >= 35 && r[12] && !/^\d+(\.\d+)?$/.test(String(r[12]).trim())) {
+        rawContractor = String(r[12]).trim();
+      } else {
+        rawContractor = "";
+      }
+    }
+
+    // Guard 2: Patient Name must not be a pure number (e.g. "39" which is age)
+    if (/^\d+$/.test(rawName)) {
+      if (rawMrn && !/^\d+$/.test(rawMrn)) {
+        rawName = rawMrn;
+        rawMrn = "";
+      } else if (r[2] && !/^\d+$/.test(String(r[2]).trim()) && !cleanRoomStr(String(r[2])).includes(rawRoom)) {
+        rawName = String(r[2]).trim();
+      }
+    }
+
+    // Guard 3: Heuristic inversion safeguard between MRN and Name
     if (/[\u0600-\u06FF]/.test(rawMrn) && (/^\d+$/.test(rawName.replace(/^0+/, '')) || !rawName)) {
       const temp = rawMrn;
       rawMrn = rawName.replace(/^0+/, '');
       rawName = temp;
+    }
+
+    // Guard 4: Physician must not be an operative note / diagnosis (e.g. "Layer Closure...")
+    if (/closure|wounds|drainage|exploration|appendectomy|biopsy|laparoscopic|debridement|excision|fixation|amputation|استئصال|منظار|تفريغ|جراحة/i.test(rawPhysician)) {
+      if (r.length < 35 && r[14] && !/closure|wounds|drainage|exploration|appendectomy|biopsy/i.test(String(r[14]))) {
+        rawPhysician = String(r[14]).trim();
+      } else if (r.length >= 35 && r[22] && !/closure|wounds|drainage|exploration|appendectomy|biopsy/i.test(String(r[22]))) {
+        rawPhysician = String(r[22]).trim();
+      }
+    }
+
+    // Ensure deterministic surrogate MRN if missing
+    if (!rawMrn && rawName) {
+      rawMrn = buildDeterministicUnknownMrn(rawName, rawRoom);
     }
 
     const cleanDate = cleanAdmissionDateStr(rawDateStr);
@@ -353,7 +470,8 @@ export function extractRawPatientsFromRows(
       physician: rawPhysician,
       contractor: rawContractor,
       date: cleanDate,
-      rawDate: rawDateStr
+      rawDate: rawDateStr,
+      rawRow: [...r]
     };
 
     if (patientMap.has(patientKey)) {

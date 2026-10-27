@@ -164,6 +164,39 @@ describe('Dynamic Column Detection on Occupancy Sheets', () => {
     expect(row[5]).toMatch(/^UNKNOWN-[A-Z0-9]+$/);
   });
 
+  it('correctly maps LOS at index 16 and Elite ALOS at index 36 on 41-column PowerBI matrix without matching Date Of Patients or LOS Status', () => {
+    const fake_header_full = [
+      "AdmissionDate", "Bed", "MRN", "Patient", "DefaultMobile", "Financial Status", "Age",
+      "Floor Name", "Notes", "VisitType", "PaymentBy", "FloorStructureName_EN", "ContractorName",
+      "DRG", "Created By DIG", "DRG Diagnosis", "LOS", "GLOS", "Date Of Patients", "ALOS",
+      "ICD-10", "Payments", "TreatingPhysicianName", "Speciality", "Weight", "Total Invoice",
+      "SSO", "Remaining Amount", "LTC Weight", "LTC GLOS", "PrograssNotes",
+      "Discharge Expected Date", "HandOver Creation Date", "HandOver", "OR Notes", "Operations",
+      "Elite ALOS", "Elite Weight", "Medication Names", "Intial Assessment", "VTE Summary"
+    ];
+
+    const data_row1 = new Array(41).fill("");
+    data_row1[1] = "NICU Bed 1";
+    data_row1[2] = "0000270138";
+    data_row1[3] = "سدره سامح حمدي المغاوري";
+    data_row1[16] = "5"; // LOS
+    data_row1[17] = "2.2"; // GLOS
+    data_row1[18] = "Old Patient"; // Date of Patients
+    data_row1[19] = "2.9"; // ALOS
+    data_row1[36] = "3.1"; // Elite ALOS
+    data_row1[37] = "3.359"; // Elite Weight
+
+    const { findCol } = buildColumnIndexResolver([fake_header_full, data_row1, data_row1]);
+    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 16, "number");
+    const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], 36, "number");
+
+    expect(colLosIdx).toBe(16);
+    expect(colAlosIdx).toBe(36);
+    expect(parseFloat(data_row1[colLosIdx])).toBe(5);
+    expect(parseFloat(data_row1[colAlosIdx])).toBe(3.1);
+    expect(parseFloat(data_row1[colLosIdx]) > parseFloat(data_row1[colAlosIdx])).toBe(true);
+  });
+
   describe('MRN Formatting in Downloadable Excel Sheets', () => {
     it('formatMrnForSheet formats real MRNs and converts missing / surrogate MRNs to N/A', () => {
       // Real MRNs must be preserved
