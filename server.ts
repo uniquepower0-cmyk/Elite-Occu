@@ -17252,12 +17252,13 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
     const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
 
     // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes OR, home care, dialysis, well baby
-    if (ds.hospitalData && ds.hospitalData.length > 0) {
+    if (occupancyRows && occupancyRows.length > 0) {
       const occRes = await sheetGen.generateOccupancyJpeg(
-        ds.hospitalData,
+        occupancyRows,
         dateLabel,
         isPatientVip,
-        ds.cumulativeDialysis || []
+        ds.cumulativeDialysis || [],
+        mrnLookups
       );
       if (occRes.count > 0) {
         items.push({
@@ -17307,7 +17308,8 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
         uniqueCleanDischarged,
         dateLabel,
         mrnLookups,
-        ds.cumulativeDialysis || []
+        ds.cumulativeDialysis || [],
+        isPatientVip
       );
       if (exitRes.count > 0) {
         items.push({
@@ -17320,7 +17322,7 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
     if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel, mrnLookups);
+      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel, mrnLookups, isPatientVip);
       if (debtsRes.count > 0) {
         const formattedPosRem = debtsRes.positiveRemaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         items.push({
@@ -17331,9 +17333,15 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
       }
     }
 
-    // 6. Patient Transfers Sheet (if any)
-    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-      const transRes = await sheetGen.generateTransfersJpeg(ds.cumulativeTransfers, dateLabel, mrnLookups);
+    // 6. Patient Transfers Sheet (if any) - filtered identically to addRefinedTransfersSheet
+    const todayOnlyTransfers = (ds.cumulativeTransfers || []).filter(t => {
+      if (ds.isHistorical) return true;
+      const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+      if (!rawDate) return false;
+      return isToday(rawDate, cairoCombTodayStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairoCombTodayStr);
+    });
+    if (todayOnlyTransfers.length > 0) {
+      const transRes = await sheetGen.generateTransfersJpeg(todayOnlyTransfers, dateLabel, mrnLookups);
       if (transRes.count > 0) {
         items.push({
           fileBuffer: transRes.buffer,

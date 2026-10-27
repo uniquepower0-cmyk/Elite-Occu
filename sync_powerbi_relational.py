@@ -644,6 +644,64 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
     }
 
 
+# --- HMIS (CYBERNETICS) PENDING DISCHARGE INTEGRATION ---
+
+HMIS_BASE_URL: Final[str] = os.getenv("HMIS_BASE_URL", "http://10.12.0.10").rstrip("/")
+HMIS_USER: Final[str] = os.getenv("ELITE_USER", "")
+HMIS_PASS: Final[str] = os.getenv("ELITE_PASS", "")
+HMIS_MEDICAL_ENTITY: Final[str] = os.getenv("HMIS_MEDICAL_ENTITY", "c1ed304b-5d45-43a8-be05-b0ccafe43391")
+# Nurse Portal "Pending Discharge" tile == occupied beds whose AdmissionStatus is FinancialDischarge.
+HMIS_PENDING_STATUS: Final[str] = "FinancialDischarge"
+# Dry-run by default: only logs what would be discharged. Set HMIS_PENDING_DRY_RUN=0 to write.
+HMIS_PENDING_DRY_RUN: Final[bool] = os.getenv("HMIS_PENDING_DRY_RUN", "1").lower() not in ("0", "false", "no")
+HMIS_PENDING_ENABLED: Final[bool] = os.getenv("HMIS_PENDING_ENABLED", "1").lower() not in ("0", "false", "no")
+
+
+def fetch_hmis_pending_discharges() -> list[dict[str, str]]:
+    """Reads the Nurse Portal 'Pending Discharge' list from the HMIS (read-only). Never raises."""
+    if not HMIS_USER or not HMIS_PASS:
+        log("[HMIS Pending] ELITE_USER/ELITE_PASS not set; skipping pending-discharge import.")
+        return []
+    try:
+        tok = requests.post(
+            f"{HMIS_BASE_URL}/Elite/api/Token",
+            data={"grant_type": "password", "username": HMIS_USER, "password": HMIS_PASS},
+            timeout=20,
+        )
+        tok.raise_for_status()
+        tok_json = tok.json()
+        res = requests.get(
+            f"{HMIS_BASE_URL}/NursingModule/api/Inpatient/GetHospitalStructure_Nurse_Modified",
+            params={
+                "patientSearch": "",
+                "roomSearch": "",
+                "empGUID": tok_json.get("UID", ""),
+                "MedicalEntity": HMIS_MEDICAL_ENTITY,
+            },
+            headers={"Authorization": f"Bearer {tok_json['access_token']}"},
+            timeout=60,
+        )
+        res.raise_for_status()
+        beds = res.json()
+    except Exception as e:
+        log(f"[HMIS Pending] Failed to fetch pending discharges (continuing without): {e}", level="warning")
+        return []
+
+    out: list[dict[str, str]] = []
+    for b in beds if isinstance(beds, list) else []:
+        if not isinstance(b, dict) or b.get("AdmissionStatus") != HMIS_PENDING_STATUS:
+            continue
+        out.append({
+            "mrn": clean_mrn_str(b.get("PatientBarcode") or b.get("PatientID") or ""),
+            # NOTE: the HMIS stores the Arabic name in "EnglishFullName" and the English one in "ArabicFullName".
+            "name": str(b.get("EnglishFullName") or b.get("ArabicFullName") or "").strip(),
+            "name_en": str(b.get("ArabicFullName") or "").strip(),
+            "bed": str(b.get("BedName_EN") or "").strip(),
+        })
+    log(f"[HMIS Pending] {len(out)} case(s) currently in Nurse Portal 'Pending Discharge'.")
+    return out
+
+
 # --- CLASSIFICATION HELPERS ---
 
 def is_doctor_case_or_physician_payment(
@@ -1028,6 +1086,53 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     raw_row=row
                 )
                 records.append(rec)
+
+            # 2b. Add HMIS Nurse Portal "Pending Discharge" cases to the cumulative discharged list
+            if HMIS_PENDING_ENABLED:
+                pending_cases = fetch_hmis_pending_discharges()
+                already_disc = existing.get("discharged", [])
+                new_count = 0
+                for pc in pending_cases:
+                    label = f"{pc['name'] or pc['name_en']} (MRN {pc['mrn']}, {pc['bed']})"
+                    if is_dialysis_room(pc["bed"]):
+                        log(f"[HMIS Pending] Skipped dialysis case: {label}")
+                        continue
+                    if is_patient_manually_discharged(pc["name"], pc["mrn"], manual_names, manual_mrns):
+                        log(f"[HMIS Pending] Already discharged, skipping: {label}")
+                        continue
+                    match_rec = next((r for r in records if pc["mrn"] and r.clean_mrn == pc["mrn"]), None)
+                    p_name = (match_rec.name if match_rec else pc["name"]) or pc["name_en"]
+                    if any(
+                        isinstance(dp, dict) and (
+                            (pc["mrn"] and clean_mrn_str(dp.get("mrn") or "") == pc["mrn"])
+                            or is_name_match(dp.get("name"), p_name)
+                        )
+                        for dp in already_disc
+                    ):
+                        log(f"[HMIS Pending] Already in cumulative discharged, skipping: {label}")
+                        continue
+                    new_count += 1
+                    if HMIS_PENDING_DRY_RUN:
+                        log(f"[HMIS Pending][DRY-RUN] Would add to cumulative discharged: {label}")
+                        continue
+                    already_disc.append({
+                        "room": match_rec.bed if match_rec else pc["bed"],
+                        "mrn": (match_rec.clean_mrn if match_rec else pc["mrn"]) or pc["mrn"],
+                        "name": p_name,
+                        "physician": match_rec.physician if match_rec else "",
+                        "contractor": match_rec.contractor if match_rec else "",
+                        "date": (match_rec.admission_date if match_rec else "") or "",
+                        "dischargeDate": cairo_date_str,
+                        "dischargeType": "manual",
+                        "source": "hmis_pending_discharge",
+                        "rawRow": None,
+                    })
+                    manual_names.append(p_name)
+                    if pc["mrn"]:
+                        manual_mrns.add(pc["mrn"])
+                    log(f"[HMIS Pending] Added to cumulative discharged: {label}")
+                if new_count:
+                    log(f"[HMIS Pending] {new_count} new case(s) {'detected (dry-run, nothing written)' if HMIS_PENDING_DRY_RUN else 'added'}.")
 
             # 3. Partition Data Streams (Admissions, Debts, Dialysis, Entries)
             rpc_payload: list[dict[str, Any]] = []

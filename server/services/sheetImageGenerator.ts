@@ -3,8 +3,15 @@ import fs from 'fs';
 import path from 'path';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from '../contractorOfficers.js';
 import { isNameMatch, normalizeArabicName, isOperatingRoom, isOrXRoom, cleanRoomStr } from '../nameUtils.js';
+import { formatRoomForSheet, formatMrnForSheet } from '../columnResolver.js';
 
 export { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay };
+
+const DIALYSIS_EXCLUSIONS = [
+  'homecare', 'home care', 'رعاية منزلية',
+  'wellbaby', 'well baby', 'حضانة طبيعية',
+  'endoscopy operation theatre', 'operation room', 'cath lab operation theatre', 'غرفة عمليات',
+];
 
 function escapeXml(unsafe: any): string {
   return String(unsafe || '').replace(/[<>&"'\\]/g, (c) => {
@@ -43,12 +50,70 @@ function getHeaderBgPath(): string | null {
 }
 
 /**
+ * Shared Refined Combined Sheet Department/Floor Grouping & Palette
+ */
+function getDepartmentGroup(roomRaw: string, defaultRoomNum = 0): string {
+  const roomStr = String(roomRaw || '').toUpperCase();
+  const roomNum = parseInt(roomStr.match(/\d+/)?.[0] || String(defaultRoomNum));
+  if (roomStr.includes('PICU')) return 'PICU';
+  if (roomStr.includes('NICU')) return 'NICU';
+  if (roomStr.includes('CCU')) return 'CCU';
+  if (roomStr.includes('SICU')) return 'SICU';
+  if (roomStr.includes('VIP') || roomStr.includes('VIP ISOLATION')) return 'VIP';
+  if (roomStr.includes('ICU')) return 'ICU';
+  if (roomNum >= 101 && roomNum <= 108) return 'First Floor';
+  if (roomNum >= 301 && roomNum <= 319) return 'Zone A (301-319)';
+  if (roomNum >= 320 && roomNum <= 329) return 'Zone B (320-329)';
+  if (roomNum >= 330 && roomNum <= 332) return 'Zone C (330-332)';
+  if (roomNum >= 401 && roomNum <= 422) return '4th Floor';
+  if (!isNaN(roomNum) && roomNum > 0) return 'Floor ' + Math.floor(roomNum / 100);
+  if (defaultRoomNum === -1 && !isNaN(roomNum) && roomNum === 0) return 'Floor 0';
+  return 'OTHER';
+}
+
+function groupOrderRank(g: string): number {
+  const u = g.toUpperCase();
+  if (
+    u.includes('ICU') &&
+    !u.includes('VIP') &&
+    !u.includes('SICU') &&
+    !u.includes('CCU') &&
+    !u.includes('NICU') &&
+    !u.includes('PICU')
+  ) {
+    return 1;
+  }
+  if (u.includes('VIP')) return 2;
+  if (u.includes('SICU')) return 3;
+  if (u.includes('CCU')) return 4;
+  if (u.includes('NICU')) return 5;
+  if (u.includes('PICU')) return 6;
+  if (u.includes('FIRST')) return 7;
+  if (u.includes('ZONE A')) return 8;
+  if (u.includes('ZONE B')) return 9;
+  if (u.includes('ZONE C')) return 9.5;
+  if (u.includes('4TH')) return 10;
+  return 100;
+}
+
+function getGroupColors(groupName: string): { badge: string; row: string } {
+  const g = groupName.toUpperCase();
+  if (g.includes('ICU') && !g.includes('VIP')) return { badge: '#3F889E', row: '#EBF2F5' };
+  if (g.includes('SICU')) return { badge: '#5C5A7F', row: '#F1EFF5' };
+  if (g.includes('VIP')) return { badge: '#2E7D32', row: '#EBF5EB' };
+  if (g.includes('CCU')) return { badge: '#1565C0', row: '#EBF5FB' };
+  if (g.includes('NICU')) return { badge: '#EF6C00', row: '#FFF5EB' };
+  if (g.includes('PICU')) return { badge: '#AD1457', row: '#FFEBEF' };
+  return { badge: '#455A64', row: '#F5F7F8' };
+}
+
+/**
  * Creates the signature Mohanad Excel header banner:
  * Header background image with centered frosted glass text box overlay.
  */
 async function createExcelHeaderBuffer(title: string, width: number, height = 180): Promise<Buffer> {
   const safeTitle = escapeXml(title);
-  const boxWidth = Math.min(500, width - 80);
+  const boxWidth = Math.min(540, width - 80);
   const boxX = (width - boxWidth) / 2;
 
   const overlaySvg = `
@@ -214,7 +279,7 @@ export function isOccupancyExcluded(
   ) {
     return true;
   }
-  if (dialysisCases && dialysisCases.some((dp) => 
+  if (dialysisCases && dialysisCases.some((dp) =>
     isNameMatch(dp.name, nLower) ||
     (dp.mrn && dp.mrn === nLower) ||
     (/^\d+$/.test(dp.name) && dp.name === nLower)
@@ -273,6 +338,7 @@ export class MrnResolver {
       cleanMrn.toLowerCase() === 'null' ||
       cleanMrn.startsWith('transfer-') ||
       cleanMrn.toLowerCase().includes('transfer') ||
+      cleanMrn.startsWith('UNKNOWN-') ||
       cleanMrn.length > 20
     ) {
       return;
@@ -307,7 +373,8 @@ export class MrnResolver {
       direct.toLowerCase() !== 'undefined' &&
       direct.toLowerCase() !== 'null' &&
       !direct.startsWith('transfer-') &&
-      !direct.toLowerCase().includes('transfer')
+      !direct.toLowerCase().includes('transfer') &&
+      !direct.startsWith('UNKNOWN-')
     ) {
       return direct;
     }
@@ -343,6 +410,37 @@ export class MrnResolver {
   }
 }
 
+function resolvePatientMrn(
+  patientName: string,
+  directMrn: string,
+  mrnLookupInput?: MrnResolver | Map<string, string> | any
+): string {
+  const cleanDirect = String(directMrn || '').trim();
+  if (
+    cleanDirect &&
+    cleanDirect !== '—' &&
+    cleanDirect !== '-' &&
+    cleanDirect.toLowerCase() !== 'n/a' &&
+    cleanDirect.toLowerCase() !== 'null' &&
+    cleanDirect.toLowerCase() !== 'undefined' &&
+    !cleanDirect.startsWith('transfer-') &&
+    !cleanDirect.toLowerCase().includes('transfer') &&
+    !cleanDirect.startsWith('UNKNOWN-')
+  ) {
+    return cleanDirect;
+  }
+  if (mrnLookupInput?.resolve) {
+    return mrnLookupInput.resolve(patientName, cleanDirect);
+  }
+  if (mrnLookupInput instanceof Map) {
+    return mrnLookupInput.get(patientName.toLowerCase()) || '—';
+  }
+  if (mrnLookupInput?.nameToMrn) {
+    return mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
+  }
+  return '—';
+}
+
 /**
  * Builds a comprehensive MRN resolver from all known sources (39-col raw, formatted, object arrays).
  */
@@ -355,28 +453,27 @@ export function buildMrnLookup(
   // 1. Index rawRows (handles both raw uploads with headers and pre-filtered arrays)
   (rawRows || []).forEach((r) => {
     if (!Array.isArray(r) || r.length === 0) return;
-    const isUnified = r.length >= 10 || (String(r[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ""))));
-    let room = "";
-    let name = "";
-    let physician = "";
-    let contractor = "";
-    let mrn = "";
+    const isUnified = r.length >= 10 || (String(r[0] || '').includes('T') || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(r[0] || ''))));
+    let room = '';
+    let name = '';
+    let physician = '';
+    let contractor = '';
+    let mrn = '';
 
     if (isUnified) {
-      room = String(r[1] || "").trim();
-      mrn = String(r[2] || "").trim();
-      name = String(r[3] || "").trim();
-      contractor = String(r[12] || "").trim();
-      physician = String(r[22] || "").trim();
+      room = String(r[1] || '').trim();
+      mrn = String(r[2] || '').trim();
+      name = String(r[3] || '').trim();
+      contractor = String(r[12] || '').trim();
+      physician = String(r[22] || '').trim();
     } else {
-      room = String(r[0] || "").trim();
-      name = String(r[1] || "").trim();
-      physician = String(r[2] || "").trim();
-      contractor = String(r[3] || "").trim();
-      mrn = String(r[5] || "").trim();
+      room = String(r[0] || '').trim();
+      name = String(r[1] || '').trim();
+      physician = String(r[2] || '').trim();
+      contractor = String(r[3] || '').trim();
+      mrn = String(r[5] || '').trim();
     }
 
-    // Skip table headers and empty rows
     const nameLower = name.toLowerCase();
     const mrnLower = mrn.toLowerCase();
     if (
@@ -387,7 +484,8 @@ export function buildMrnLookup(
       mrnLower === 'mrn' ||
       nameLower.includes('patient') ||
       room.toLowerCase().includes('bed#') ||
-      mrn.startsWith('transfer-')
+      mrn.startsWith('transfer-') ||
+      mrn.startsWith('UNKNOWN-')
     ) {
       return;
     }
@@ -400,12 +498,26 @@ export function buildMrnLookup(
     (list || []).forEach((item: any) => {
       if (!item) return;
       const name = String(item.name || item.patient || item.patientName || item.colD || '').trim();
-      const rawCandidate = String(item.mrn || item.patientId || item.barcode || item.colC || item.code || (item.id && !String(item.id).startsWith('transfer-') ? item.id : '') || '').trim();
+      const rawCandidate = String(
+        item.mrn ||
+        item.patientId ||
+        item.barcode ||
+        item.colC ||
+        item.code ||
+        (item.id && !String(item.id).startsWith('transfer-') && !String(item.id).startsWith('UNKNOWN-') ? item.id : '') ||
+        ''
+      ).trim();
       const physician = String(item.physician || item.doctor || item.colW || '').trim();
       const contractor = String(item.contractor || item.payment || item.colM || '').trim();
       const room = String(item.room || item.bed || item.colB || '').trim();
 
-      if (name && rawCandidate && !rawCandidate.startsWith('transfer-') && !rawCandidate.toLowerCase().includes('transfer')) {
+      if (
+        name &&
+        rawCandidate &&
+        !rawCandidate.startsWith('transfer-') &&
+        !rawCandidate.toLowerCase().includes('transfer') &&
+        !rawCandidate.startsWith('UNKNOWN-')
+      ) {
         resolver.add(name, rawCandidate, { room, physician, contractor });
       }
     });
@@ -415,7 +527,7 @@ export function buildMrnLookup(
 }
 
 /**
- * 1. Occupancy Sheet (Colored Structured Grid)
+ * 1. Occupancy Sheet (Colored Structured Grid - identical to addGridOccupancySheet)
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
  * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
@@ -423,27 +535,28 @@ export async function generateOccupancyJpeg(
   rawHospitalData: any[][],
   dateLabel: string,
   isVipFn?: (name: string) => boolean,
-  dialysisCases: any[] = []
+  dialysisCases: any[] = [],
+  mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1320;
+  const width = 1350;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 36;
-  const separatorHeight = 24;
+  const separatorHeight = 28;
 
   const cols = [
-    { label: '# / الرقم', width: 60 },
+    { label: '# / الرقم', width: 65 },
     { label: 'Room / الغرفة', width: 110 },
     { label: 'MRN / الملف', width: 110 },
     { label: 'Patient / اسم المريض', width: 270 },
     { label: 'Physician / الطبيب المعالج', width: 230 },
-    { label: 'Contract / التعاقد', width: 210 },
-    { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Booking Date / تاريخ الحجز', width: 120 },
-    { label: 'VIP STATUS', width: 70 },
+    { label: 'Contract / التعاقد', width: 205 },
+    { label: 'مسئول التعاقد', width: 135 },
+    { label: 'Booking Date / تاريخ الحجز', width: 150 },
+    { label: 'VIP STATUS', width: 75 },
   ];
 
-  // 1. Universal row parser: supports 39-col unified raw, 6-col formatted, and object lists
+  // 1. Universal row parser: supports getOccupancyRows output, 39-col unified raw, 6-col formatted, and object lists
   const rawList: any[] = [];
   (rawHospitalData || []).forEach((row: any) => {
     if (!row) return;
@@ -472,7 +585,7 @@ export async function generateOccupancyJpeg(
     const str2Low = str2.toLowerCase();
     const str3Low = str3.toLowerCase();
 
-    // Skip table headers and empty/metadata rows
+    // Skip table headers and empty/metadata rows (such as getOccupancyRows 3-row header)
     if (
       str0Low.includes('admissiondate') ||
       str0Low.includes('bed#') ||
@@ -483,12 +596,12 @@ export async function generateOccupancyJpeg(
       str1 === 'اسم المريض' ||
       str1Low === 'patient' ||
       str1 === 'المريض' ||
+      str0Low.includes('إشغال المستشفى') ||
       (!row[0] && !row[1] && !row[2] && !row[3])
     ) {
       return;
     }
 
-    // Unified raw table (>=10 cols) vs Formatted table (6 cols)
     const isUnified = row.length >= 10 || (str0Low.includes('t') || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(str0)));
 
     let room = '';
@@ -519,13 +632,12 @@ export async function generateOccupancyJpeg(
     }
   });
 
-  // 2. Strict Inpatient Exclusion Filter:
-  // Strictly excludes: OR, Home Care, Dialysis, Well Baby, Day Case
+  // 2. Strict Inpatient Exclusion Filter (OR, Home Care, Dialysis, Well Baby, Day Case)
   const processedData = rawList.filter(
     (p) => !isOccupancyExcluded(p.room, p.name, p.contractor, p.physician, dialysisCases)
   );
 
-  // 3. Sort identically to Excel coloured structured grid sheet
+  // 3. Sort identically to addGridOccupancySheet
   processedData.sort((a, b) => {
     const roomA = a.room.toUpperCase();
     const roomB = b.room.toUpperCase();
@@ -547,36 +659,10 @@ export async function generateOccupancyJpeg(
     return roomA.localeCompare(roomB);
   });
 
-  const getGroupColors = (groupName: string) => {
-    const g = groupName.toUpperCase();
-    if (g.includes('ICU') && !g.includes('VIP')) return { badge: '#3F889E', row: '#EBF2F5' };
-    if (g.includes('SICU')) return { badge: '#5C5A7F', row: '#F1EFF5' };
-    if (g.includes('VIP')) return { badge: '#2E7D32', row: '#EBF5EB' };
-    if (g.includes('CCU')) return { badge: '#1565C0', row: '#EBF5FB' };
-    if (g.includes('NICU')) return { badge: '#EF6C00', row: '#FFF5EB' };
-    if (g.includes('PICU')) return { badge: '#AD1457', row: '#FFEBEF' };
-    return { badge: '#455A64', row: '#F5F7F8' };
-  };
-
-  // 4. Group items by clinical department and floor zones
+  // 4. Group items identically to addGridOccupancySheet
   const groupedItems: { groupName: string; items: any[] }[] = [];
   processedData.forEach((p) => {
-    const roomStr = p.room.toUpperCase();
-    const roomNum = parseInt(roomStr.match(/\d+/)?.[0] || '0');
-    let groupName = 'OTHER';
-    if (roomStr.includes('PICU')) groupName = 'PICU';
-    else if (roomStr.includes('NICU')) groupName = 'NICU';
-    else if (roomStr.includes('CCU')) groupName = 'CCU';
-    else if (roomStr.includes('SICU')) groupName = 'SICU';
-    else if (roomStr.includes('VIP') || roomStr.includes('VIP ISOLATION')) groupName = 'VIP';
-    else if (roomStr.includes('ICU')) groupName = 'ICU';
-    else if (roomNum >= 101 && roomNum <= 108) groupName = '1st Floor (101-108)';
-    else if (roomNum >= 301 && roomNum <= 319) groupName = '301-319';
-    else if (roomNum >= 320 && roomNum <= 329) groupName = '320-329';
-    else if (roomNum >= 330 && roomNum <= 332) groupName = '330-332';
-    else if (roomNum >= 401 && roomNum <= 422) groupName = '4th Floor (401-422)';
-    else if (!isNaN(roomNum) && roomNum > 0) groupName = 'Floor ' + Math.floor(roomNum / 100);
-
+    const groupName = getDepartmentGroup(p.room, 0);
     let existing = groupedItems.find((g) => g.groupName === groupName);
     if (!existing) {
       existing = { groupName, items: [] };
@@ -585,7 +671,6 @@ export async function generateOccupancyJpeg(
     existing.items.push(p);
   });
 
-  // Calculate table height including #FCE4D6 separator rows between groups
   let totalTableHeight = tableHeaderHeight;
   groupedItems.forEach((g) => {
     totalTableHeight += separatorHeight + g.items.length * rowHeight;
@@ -594,7 +679,6 @@ export async function generateOccupancyJpeg(
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
-    <!-- Table Header Row (Dark Slate #37474F) -->
     <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#37474F"/>
   `;
 
@@ -614,32 +698,24 @@ export async function generateOccupancyJpeg(
     const rColors = getGroupColors(group.groupName);
     const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
 
-    // Coloured Structured Grid Separator Row:
-    // Rendered in exact Excel separator color #FCE4D6 with cell borders #B2B2B2
-    let sepX = 0;
-    cols.forEach((col) => {
-      tableSvgContent += `
-        <rect x="${sepX}" y="${currentY}" width="${col.width}" height="${separatorHeight}" fill="#FCE4D6" stroke="#B2B2B2" stroke-width="0.8"/>
-      `;
-      sepX += col.width;
-    });
-
+    // Merged department separator row matching addGridOccupancySheet (rColors.badge + white bold text)
     tableSvgContent += `
-      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#7C3B14" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+      <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
     `;
     currentY += separatorHeight;
 
-    // Patient rows for this group
     group.items.forEach((p) => {
       const formattedDate = formatDateForSheet(p.date);
       const responsibleOfficer = getResponsibleOfficer(p.contractor);
       const cleanedContractor = cleanContractorForDisplay(p.contractor);
       const isVip = isVipFn ? isVipFn(p.name) : false;
+      const resolvedMrn = resolvePatientMrn(p.name, p.mrn, mrnLookupInput);
 
       const rowValues = [
         String(serial++),
-        p.room,
-        p.mrn || '—',
+        formatRoomForSheet(p.room),
+        formatMrnForSheet(resolvedMrn),
         p.name,
         p.physician,
         cleanedContractor,
@@ -677,9 +753,9 @@ export async function generateOccupancyJpeg(
 }
 
 /**
- * 2. Admissions Sheet (Formatted Entry)
+ * 2. Admissions Sheet (Refined Entry - identical to addRefinedEntrySheet)
  * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
- * STRICTLY EXCLUDES: Dialysis cases.
+ * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateEntriesJpeg(
   entryPatients: any[],
@@ -687,24 +763,26 @@ export async function generateEntriesJpeg(
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
   dialysisCases: any[] = []
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1260;
+  const width = 1280;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
+  const separatorHeight = 28;
 
   const cols = [
-    { label: '# / الرقم', width: 60 },
+    { label: '# / الرقم', width: 65 },
     { label: 'Room / الغرفة', width: 110 },
     { label: 'MRN / الملف', width: 110 },
     { label: 'Patient / اسم المريض', width: 270 },
     { label: 'Physician / الطبيب المعالج', width: 230 },
-    { label: 'Contract / التعاقد', width: 210 },
+    { label: 'Contract / التعاقد', width: 205 },
     { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Booking Date / تاريخ الحجز', width: 130 },
+    { label: 'Booking Date / تاريخ الحجز', width: 150 },
   ];
 
   // Strictly exclude non-inpatient admissions: OR/Cath Lab, HomeCare, Dialysis, Well Baby
   const processedData = (entryPatients || []).filter((p) => {
+    if (!p) return false;
     const roomStr = String(p.room || p.colB || '').trim();
     const nameStr = String(p.name || p.colD || '').trim();
     const contractorStr = String(p.contractor || p.colM || '').trim();
@@ -712,19 +790,47 @@ export async function generateEntriesJpeg(
     return !isOccupancyExcluded(roomStr, nameStr, contractorStr, physicianStr, dialysisCases);
   });
 
-  const totalTableHeight = tableHeaderHeight + Math.max(processedData.length, 1) * rowHeight + 30;
+  // Group and sort identically to addRefinedEntrySheet
+  const groupedItems: { groupName: string; items: any[] }[] = [];
+  processedData.forEach((p) => {
+    const roomStr = String(p.room || p.colB || '');
+    const groupName = getDepartmentGroup(roomStr, 0);
+    let existing = groupedItems.find((g) => g.groupName === groupName);
+    if (!existing) {
+      existing = { groupName, items: [] };
+      groupedItems.push(existing);
+    }
+    existing.items.push(p);
+  });
+
+  groupedItems.sort((a, b) => groupOrderRank(a.groupName) - groupOrderRank(b.groupName));
+  groupedItems.forEach((g) => {
+    g.items.sort((a, b) => {
+      const rA = String(a.room || a.colB || '');
+      const rB = String(b.room || b.colB || '');
+      const numA = parseInt(rA.match(/\d+/)?.[0] || '0');
+      const numB = parseInt(rB.match(/\d+/)?.[0] || '0');
+      if (numA !== numB) return numA - numB;
+      return rA.localeCompare(rB);
+    });
+  });
+
+  let totalTableHeight = tableHeaderHeight;
+  groupedItems.forEach((g) => {
+    totalTableHeight += separatorHeight + g.items.length * rowHeight;
+  });
+  totalTableHeight += 30;
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
-    <!-- Table Header Row (Soft Light Blue #DDEBF7) -->
-    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#DDEBF7"/>
+    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#37474F"/>
   `;
 
   let colX = 0;
   cols.forEach((col) => {
     tableSvgContent += `
-      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#DDEBF7" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10" font-weight="bold" fill="#000000" text-anchor="middle">${escapeXml(col.label)}</text>
+      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -732,52 +838,51 @@ export async function generateEntriesJpeg(
   let currentY = tableHeaderHeight;
   let serial = 1;
 
-  processedData.forEach((p) => {
-    const contractorVal = p.contractor || p.colM || '';
-    const cleanedContractor = cleanContractorForDisplay(contractorVal);
-    const patientName = String(p.name || p.colD || '').trim();
-    const directMrn = String(p.mrn || p.colC || p.id || p.patientId || '').trim();
+  groupedItems.forEach((group) => {
+    const rColors = getGroupColors(group.groupName);
+    const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
 
-    let resolvedMrn = directMrn;
-    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
-      if (mrnLookupInput?.resolve) {
-        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
-      } else if (mrnLookupInput instanceof Map) {
-        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
-      } else if (mrnLookupInput?.nameToMrn) {
-        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
-      } else {
-        resolvedMrn = '—';
-      }
-    }
+    tableSvgContent += `
+      <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+    `;
+    currentY += separatorHeight;
 
-    const rowValues = [
-      String(serial++),
-      p.room || p.colB || '',
-      resolvedMrn || '—',
-      patientName,
-      p.physician || p.colW || '',
-      cleanedContractor,
-      getResponsibleOfficer(contractorVal),
-      formatDateForSheet(p.date || p.colA),
-    ];
+    group.items.forEach((p) => {
+      const contractorVal = p.contractor || p.colM || '';
+      const cleanedContractor = cleanContractorForDisplay(contractorVal);
+      const patientName = String(p.name || p.colD || '').trim();
+      const directMrn = String(p.mrn || p.colC || p.id || p.patientId || '').trim();
+      const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
 
-    let cellX = 0;
-    rowValues.forEach((val, idx) => {
-      const colDef = cols[idx];
-      const isBold = idx >= 1 && idx <= 6;
-      const cellId = `cp_ent_${serial}_${idx}`;
-      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
-      const displayVal = truncateText(val, maxChars);
+      const rowValues = [
+        String(serial++),
+        formatRoomForSheet(p.room || p.colB || ''),
+        formatMrnForSheet(resolvedMrn),
+        patientName,
+        p.physician || p.colW || '',
+        cleanedContractor,
+        getResponsibleOfficer(contractorVal),
+        formatDateForSheet(p.date || p.colA),
+      ];
 
-      tableSvgContent += `
-        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
-        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
-      `;
-      cellX += colDef.width;
+      let cellX = 0;
+      rowValues.forEach((val, idx) => {
+        const colDef = cols[idx];
+        const isBold = idx >= 1 && idx <= 6;
+        const cellId = `cp_ent_${serial}_${idx}`;
+        const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+        const displayVal = truncateText(val, maxChars);
+
+        tableSvgContent += `
+          <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
+          <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
+          <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
+        `;
+        cellX += colDef.width;
+      });
+      currentY += rowHeight;
     });
-    currentY += rowHeight;
   });
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
@@ -787,7 +892,7 @@ export async function generateEntriesJpeg(
 }
 
 /**
- * 3. Dialysis Sheet (Formatted Dialysis)
+ * 3. Dialysis Sheet (Refined Dialysis - identical to addRefinedDialysisSheet)
  * Includes: ALL Dialysis cases ONLY, with MRN, Patient Name, Contractor Officer (مسئول التعاقد).
  */
 export async function generateDialysisJpeg(
@@ -795,56 +900,56 @@ export async function generateDialysisJpeg(
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1260;
+  const width = 1310;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
+  const separatorHeight = 28;
 
   const cols = [
-    { label: '# / الرقم', width: 60 },
+    { label: '# / الرقم', width: 65 },
     { label: 'Room / الغرفة', width: 140 },
     { label: 'MRN / الملف', width: 110 },
     { label: 'Patient / اسم المريض', width: 270 },
     { label: 'Physician / الطبيب المعالج', width: 230 },
-    { label: 'Contract / التعاقد', width: 210 },
+    { label: 'Contract / التعاقد', width: 205 },
     { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Admission Date / تاريخ الدخول', width: 100 },
+    { label: 'Booking Date / تاريخ الحجز', width: 150 },
   ];
 
-  // Deduplicate dialysis patients while resolving any MRN-only entries
+  // Filter identically to addRefinedDialysisSheet and deduplicate while resolving MRN
+  const filteredRaw = (dialysisPatients || []).filter((p) => {
+    if (!p) return false;
+    const room = String(p.room || '').trim();
+    if (isOperatingRoom(room) || room.includes('323')) return false;
+    const rowAsString = Object.values(p).join(' ').toLowerCase();
+    return !DIALYSIS_EXCLUSIONS.some((kw) => rowAsString.includes(kw));
+  });
+
   const resolvedList: any[] = [];
-  (dialysisPatients || []).forEach((p) => {
+  filteredRaw.forEach((p) => {
     let patientName = String(p.name || '').trim();
     let physicianVal = String(p.physician || '').trim();
     let contractorVal = String(p.contractor || p.payment || '').trim();
-    let roomVal = String(p.room || 'غسيل كلوي').trim();
+    let roomVal = String(p.room || 'Dialysis').trim();
     let directMrn = String(p.mrn || p.id || '').trim();
 
     let resolvedMrn = directMrn;
     if (/^\d{4,}$/.test(patientName)) {
       resolvedMrn = patientName;
-      const matched = mrnLookupInput?.getPatientByMrn ? mrnLookupInput.getPatientByMrn(resolvedMrn) : mrnLookupInput?.mrnToPatient?.get(resolvedMrn);
+      const matched = mrnLookupInput?.getPatientByMrn
+        ? mrnLookupInput.getPatientByMrn(resolvedMrn)
+        : mrnLookupInput?.mrnToPatient?.get(resolvedMrn);
       if (matched) {
         patientName = matched.name || patientName;
         if (!physicianVal) physicianVal = matched.physician || '';
         if (!contractorVal) contractorVal = matched.contractor || '';
-        if (roomVal === 'غسيل كلوي' && matched.room) roomVal = matched.room;
+        if ((roomVal === 'غسيل كلوي' || roomVal === 'Dialysis') && matched.room) roomVal = matched.room;
       }
     } else {
-      if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
-        if (mrnLookupInput?.resolve) {
-          resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
-        } else if (mrnLookupInput instanceof Map) {
-          resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
-        } else if (mrnLookupInput?.nameToMrn) {
-          resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
-        } else {
-          resolvedMrn = '—';
-        }
-      }
+      resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
     }
 
-    // Check duplicate by MRN or Name
     const isDup = resolvedList.some((existing) => {
       if (resolvedMrn !== '—' && existing.mrn === resolvedMrn) return true;
       if (patientName && existing.name && isNameMatch(patientName, existing.name)) return true;
@@ -863,18 +968,59 @@ export async function generateDialysisJpeg(
     }
   });
 
-  const totalTableHeight = tableHeaderHeight + Math.max(resolvedList.length, 1) * rowHeight + 30;
+  // Group and sort identically to addRefinedDialysisSheet
+  const groupedItems: { groupName: string; items: any[] }[] = [];
+  resolvedList.forEach((p) => {
+    const roomStr = String(p.room || '').toUpperCase();
+    const roomNum = parseInt(roomStr.match(/\d+/)?.[0] || '-1');
+    let groupName = 'OTHER';
+    if (roomStr.includes('PICU')) groupName = 'PICU';
+    else if (roomStr.includes('NICU')) groupName = 'NICU';
+    else if (roomStr.includes('CCU')) groupName = 'CCU';
+    else if (roomStr.includes('SICU')) groupName = 'SICU';
+    else if (roomStr.includes('VIP') || roomStr.includes('VIP ISOLATION')) groupName = 'VIP';
+    else if (roomStr.includes('ICU')) groupName = 'ICU';
+    else if (roomNum >= 101 && roomNum <= 108) groupName = 'First Floor';
+    else if (roomNum >= 301 && roomNum <= 319) groupName = 'Zone A (301-319)';
+    else if (roomNum >= 320 && roomNum <= 329) groupName = 'Zone B (320-329)';
+    else if (roomNum >= 330 && roomNum <= 332) groupName = 'Zone C (330-332)';
+    else if (roomNum >= 401 && roomNum <= 422) groupName = '4th Floor';
+    else if (!isNaN(roomNum) && roomNum >= 0) groupName = 'Floor ' + Math.floor(roomNum / 100);
+
+    let existing = groupedItems.find((g) => g.groupName === groupName);
+    if (!existing) {
+      existing = { groupName, items: [] };
+      groupedItems.push(existing);
+    }
+    existing.items.push(p);
+  });
+
+  groupedItems.sort((a, b) => groupOrderRank(a.groupName) - groupOrderRank(b.groupName));
+  groupedItems.forEach((g) => {
+    g.items.sort((a, b) => {
+      const numA = parseInt(String(a.room || '').match(/\d+/)?.[0] || '0');
+      const numB = parseInt(String(b.room || '').match(/\d+/)?.[0] || '0');
+      if (numA !== numB) return numA - numB;
+      return String(a.room || '').localeCompare(String(b.room || ''));
+    });
+  });
+
+  let totalTableHeight = tableHeaderHeight;
+  groupedItems.forEach((g) => {
+    totalTableHeight += separatorHeight + g.items.length * rowHeight;
+  });
+  totalTableHeight += 30;
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
-    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#DDEBF7"/>
+    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#37474F"/>
   `;
 
   let colX = 0;
   cols.forEach((col) => {
     tableSvgContent += `
-      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#DDEBF7" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10" font-weight="bold" fill="#000000" text-anchor="middle">${escapeXml(col.label)}</text>
+      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -882,95 +1028,140 @@ export async function generateDialysisJpeg(
   let currentY = tableHeaderHeight;
   let serial = 1;
 
-  resolvedList.forEach((p) => {
-    const cleanedContractor = cleanContractorForDisplay(p.contractor);
+  groupedItems.forEach((group) => {
+    const rColors = getGroupColors(group.groupName);
+    const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
+    const sepText =
+      displayGroupName === 'Floor 0' || displayGroupName === 'OTHER'
+        ? `■  Dialysis Beds (Total cases of dialysis: ${group.items.length})  ■`
+        : `■  ${displayGroupName}  ■`;
 
-    const rowValues = [
-      String(serial++),
-      p.room,
-      p.mrn,
-      p.name,
-      p.physician,
-      cleanedContractor,
-      getResponsibleOfficer(p.contractor),
-      formatDateForSheet(p.date),
-    ];
+    tableSvgContent += `
+      <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(sepText)}</text>
+    `;
+    currentY += separatorHeight;
 
-    let cellX = 0;
-    rowValues.forEach((val, idx) => {
-      const colDef = cols[idx];
-      const isBold = idx >= 1 && idx <= 6;
-      const cellId = `cp_dia_${serial}_${idx}`;
-      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
-      const displayVal = truncateText(val, maxChars);
+    group.items.forEach((p) => {
+      const cleanedContractor = cleanContractorForDisplay(p.contractor);
 
-      tableSvgContent += `
-        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
-        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
-      `;
-      cellX += colDef.width;
+      const rowValues = [
+        String(serial++),
+        formatRoomForSheet(p.room),
+        formatMrnForSheet(p.mrn),
+        p.name,
+        p.physician,
+        cleanedContractor,
+        getResponsibleOfficer(p.contractor),
+        formatDateForSheet(p.date),
+      ];
+
+      let cellX = 0;
+      rowValues.forEach((val, idx) => {
+        const colDef = cols[idx];
+        const isBold = idx >= 1 && idx <= 6;
+        const cellId = `cp_dia_${serial}_${idx}`;
+        const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+        const displayVal = truncateText(val, maxChars);
+
+        tableSvgContent += `
+          <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
+          <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
+          <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
+        `;
+        cellX += colDef.width;
+      });
+      currentY += rowHeight;
     });
-    currentY += rowHeight;
   });
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
-  const headerBuf = await createExcelHeaderBuffer('غسيل كلوى', width, headerHeight);
+  const headerBuf = await createExcelHeaderBuffer('حالات الغسيل الكلوي', width, headerHeight);
   const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
   return { buffer, count: resolvedList.length };
 }
 
 /**
- * 4. Discharges Sheet (Formatted Exit)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
- * STRICTLY EXCLUDES: Dialysis cases.
+ * 4. Discharges Sheet (Refined Exit - identical to addRefinedExitSheet)
+ * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد), VIP STATUS.
+ * STRICTLY EXCLUDES: OR, Home Care, Dialysis, Well Baby.
  */
 export async function generateExitJpeg(
   dischargedPatients: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any,
-  dialysisCases: any[] = []
+  dialysisCases: any[] = [],
+  isVipFn?: (name: string) => boolean
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1260;
+  const width = 1360;
   const headerHeight = 180;
   const rowHeight = 30;
   const tableHeaderHeight = 36;
+  const separatorHeight = 28;
 
   const cols = [
-    { label: '# / الرقم', width: 60 },
+    { label: '# / الرقم', width: 65 },
     { label: 'Room / الغرفة', width: 110 },
     { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 280 },
-    { label: 'Physician / الطبيب المعالج', width: 240 },
-    { label: 'Contract / التعاقد', width: 220 },
-    { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Discharge Date / تاريخ الخروج', width: 100 },
+    { label: 'Patient / اسم المريض', width: 270 },
+    { label: 'Physician / الطبيب المعالج', width: 230 },
+    { label: 'Contract / التعاقد', width: 205 },
+    { label: 'مسئول التعاقد', width: 135 },
+    { label: 'Admission Date / تاريخ الدخول', width: 160 },
+    { label: 'VIP STATUS', width: 75 },
   ];
 
+  // Filter identically to addRefinedExitSheet + exclude dialysis cases
   const processedData = (dischargedPatients || []).filter((p) => {
-    const roomStr = p.room || p.lastRoom || '';
-    if (isDialysisRoom(roomStr)) return false;
-    const nameVal = String(p.name || '').trim();
-    if (dialysisCases && dialysisCases.some((dp) => 
-      isNameMatch(dp.name, nameVal) ||
-      (dp.mrn && p.mrn && dp.mrn === p.mrn) ||
-      (/^\d+$/.test(dp.name) && dp.name === p.mrn)
-    )) return false;
-    return true;
+    if (!p) return false;
+    const roomStr = String(p.room || p.lastRoom || '').trim();
+    const nameStr = String(p.name || '').trim();
+    const contractorStr = String(p.contractor || '').trim();
+    const physicianStr = String(p.physician || '').trim();
+    return !isOccupancyExcluded(roomStr, nameStr, contractorStr, physicianStr, dialysisCases);
   });
 
-  const totalTableHeight = tableHeaderHeight + Math.max(processedData.length, 1) * rowHeight + 30;
+  // Group and sort identically to addRefinedExitSheet
+  const groupedItems: { groupName: string; items: any[] }[] = [];
+  processedData.forEach((p) => {
+    const roomStr = String(p.room || p.lastRoom || '');
+    const groupName = getDepartmentGroup(roomStr, 0);
+    let existing = groupedItems.find((g) => g.groupName === groupName);
+    if (!existing) {
+      existing = { groupName, items: [] };
+      groupedItems.push(existing);
+    }
+    existing.items.push(p);
+  });
+
+  groupedItems.sort((a, b) => groupOrderRank(a.groupName) - groupOrderRank(b.groupName));
+  groupedItems.forEach((g) => {
+    g.items.sort((a, b) => {
+      const rA = String(a.room || a.lastRoom || '');
+      const rB = String(b.room || b.lastRoom || '');
+      const numA = parseInt(rA.match(/\d+/)?.[0] || '0');
+      const numB = parseInt(rB.match(/\d+/)?.[0] || '0');
+      if (numA !== numB) return numA - numB;
+      return rA.localeCompare(rB);
+    });
+  });
+
+  let totalTableHeight = tableHeaderHeight;
+  groupedItems.forEach((g) => {
+    totalTableHeight += separatorHeight + g.items.length * rowHeight;
+  });
+  totalTableHeight += 30;
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
-    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#DDEBF7"/>
+    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#37474F"/>
   `;
 
   let colX = 0;
   cols.forEach((col) => {
     tableSvgContent += `
-      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#DDEBF7" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10" font-weight="bold" fill="#000000" text-anchor="middle">${escapeXml(col.label)}</text>
+      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -978,52 +1169,55 @@ export async function generateExitJpeg(
   let currentY = tableHeaderHeight;
   let serial = 1;
 
-  processedData.forEach((p) => {
-    const contractorVal = p.contractor || '';
-    const cleanedContractor = cleanContractorForDisplay(contractorVal);
-    const patientName = String(p.name || '').trim();
-    const directMrn = String(p.mrn || p.id || '').trim();
+  groupedItems.forEach((group) => {
+    const rColors = getGroupColors(group.groupName);
+    const displayGroupName = group.groupName === 'VIP' ? 'VIP ICU' : group.groupName;
 
-    let resolvedMrn = directMrn;
-    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
-      if (mrnLookupInput?.resolve) {
-        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
-      } else if (mrnLookupInput instanceof Map) {
-        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
-      } else if (mrnLookupInput?.nameToMrn) {
-        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
-      } else {
-        resolvedMrn = '—';
-      }
-    }
+    tableSvgContent += `
+      <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="${rColors.badge}" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■  ${escapeXml(displayGroupName)}  ■</text>
+    `;
+    currentY += separatorHeight;
 
-    const rowValues = [
-      String(serial++),
-      p.room || p.lastRoom || '',
-      resolvedMrn || '—',
-      patientName,
-      p.physician || '',
-      cleanedContractor,
-      getResponsibleOfficer(contractorVal),
-      formatDateForSheet(p.dischargeDate || p.date),
-    ];
+    group.items.forEach((p) => {
+      const contractorVal = p.contractor || '';
+      const cleanedContractor = cleanContractorForDisplay(contractorVal);
+      const patientName = String(p.name || '').trim();
+      const directMrn = String(p.mrn || p.id || '').trim();
+      const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
+      const isVip = isVipFn ? isVipFn(patientName) : false;
 
-    let cellX = 0;
-    rowValues.forEach((val, idx) => {
-      const colDef = cols[idx];
-      const isBold = idx >= 1 && idx <= 6;
-      const cellId = `cp_exit_${serial}_${idx}`;
-      const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
-      const displayVal = truncateText(val, maxChars);
+      const rowValues = [
+        String(serial++),
+        formatRoomForSheet(p.room || p.lastRoom || ''),
+        formatMrnForSheet(resolvedMrn),
+        patientName,
+        p.physician || '',
+        cleanedContractor,
+        getResponsibleOfficer(contractorVal),
+        formatDateForSheet(p.date || p.admissionDate || p.dischargeDate),
+        isVip ? 'VIP' : '',
+      ];
 
-      tableSvgContent += `
-        <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
-        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
-      `;
-      cellX += colDef.width;
+      let cellX = 0;
+      rowValues.forEach((val, idx) => {
+        const colDef = cols[idx];
+        const isVipCell = idx === 8 && Boolean(val);
+        const textColor = isVipCell ? '#D32F2F' : '#000000';
+        const isBold = idx >= 1 && idx <= 6;
+        const cellId = `cp_exit_${serial}_${idx}`;
+        const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
+        const displayVal = truncateText(val, maxChars);
+
+        tableSvgContent += `
+          <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
+          <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
+          <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold || isVipCell ? 'bold' : 'normal'}" fill="${textColor}" text-anchor="middle">${escapeXml(displayVal)}</text>
+        `;
+        cellX += colDef.width;
+      });
+      currentY += rowHeight;
     });
-    currentY += rowHeight;
   });
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
@@ -1033,34 +1227,93 @@ export async function generateExitJpeg(
 }
 
 /**
- * 5. General Debts Sheet (Cash Debts)
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
+ * 5. General Debts Sheet (Cash Debts - identical to addRefinedDebtsSheet)
+ * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد), 50% threshold separator, and department row colors.
  */
 export async function generateDebtsJpeg(
   debts: any[],
   dateLabel: string,
-  mrnLookupInput?: MrnResolver | Map<string, string> | any
+  mrnLookupInput?: MrnResolver | Map<string, string> | any,
+  isVipFn?: (name: string) => boolean
 ): Promise<{ buffer: Buffer; count: number; positiveRemaining: number }> {
-  const width = 1420;
+  const width = 1720;
   const headerHeight = 180;
   const rowHeight = 32;
   const tableHeaderHeight = 38;
+  const separatorHeight = 30;
 
   const cols = [
-    { label: '# / م', width: 45 },
-    { label: 'Admission / الدخول', width: 120 },
-    { label: 'Room / الغرفة', width: 90 },
-    { label: 'MRN / الملف', width: 95 },
-    { label: 'Patient / اسم المريض', width: 230 },
-    { label: 'Physician / الطبيب', width: 190 },
+    { label: '# / م', width: 50 },
+    { label: 'تاريخ الدخول / Date', width: 130 },
+    { label: 'Room / الغرفة', width: 95 },
+    { label: 'MRN / كود المريض', width: 125 },
+    { label: 'Patient / اسم المريض', width: 240 },
+    { label: 'Physician / الطبيب المعالج', width: 200 },
     { label: 'Contract / التعاقد', width: 180 },
     { label: 'مسئول التعاقد', width: 130 },
-    { label: 'Total / الفاتورة', width: 120 },
-    { label: 'Remaining / المتبقي', width: 130 },
-    { label: 'Pct / النسبة', width: 90 },
+    { label: 'Total Bill / إجمالي الحساب (Z)', width: 170 },
+    { label: 'Remaining Amount / المبلغ المتبقي', width: 180 },
+    { label: 'Remaining Pct / نسبة المتبقي (%)', width: 145 },
+    { label: 'VIP STATUS', width: 75 },
   ];
 
-  const totalTableHeight = tableHeaderHeight + Math.max((debts || []).length, 1) * rowHeight + 30;
+  // Process, compute pct, and split into above50 (>= 50%) and below50 (< 50%) identically to addRefinedDebtsSheet
+  let totalPositiveRemaining = 0;
+  const processedDebts = (debts || []).map((p) => {
+    let valAB =
+      typeof p.valAB === 'number'
+        ? p.valAB
+        : parseFloat(
+            String(
+              p.valAB !== undefined
+                ? p.valAB
+                : p.remainingAmount !== undefined
+                ? p.remainingAmount
+                : p.remaining !== undefined
+                ? p.remaining
+                : p.colAB || ''
+            ).replace(/[^0-9.-]+/g, '')
+          ) || 0;
+    let valZ =
+      typeof p.valZ === 'number'
+        ? p.valZ
+        : parseFloat(
+            String(
+              p.valZ !== undefined
+                ? p.valZ
+                : p.totalInvoice !== undefined
+                ? p.totalInvoice
+                : p.total !== undefined
+                ? p.total
+                : p.colZ || ''
+            ).replace(/[^0-9.-]+/g, '')
+          ) || 0;
+    if (valZ === 0 && valAB > 0) valZ = valAB;
+    const pct = valZ > 0 ? valAB / valZ : valAB > 0 ? 1 : 0;
+    if (valAB > 0) {
+      totalPositiveRemaining += valAB;
+    }
+    return { ...p, valAB, valZ, pct };
+  });
+
+  const above50 = processedDebts.filter((p) => p.pct >= 0.5);
+  const below50 = processedDebts.filter((p) => p.pct < 0.5);
+
+  above50.sort((a, b) => {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    return b.valAB - a.valAB;
+  });
+  below50.sort((a, b) => {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    return b.valAB - a.valAB;
+  });
+
+  const hasSeparator = above50.length > 0 && below50.length > 0;
+  const totalTableHeight =
+    tableHeaderHeight +
+    Math.max(processedDebts.length, 1) * rowHeight +
+    (hasSeparator ? separatorHeight : 0) +
+    30;
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
@@ -1073,135 +1326,169 @@ export async function generateDebtsJpeg(
     tableSvgContent += `
       <clipPath id="${hdrCellId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
       <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#37474F" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text clip-path="url(#${hdrCellId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
+      <text clip-path="url(#${hdrCellId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10.5" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
 
   let currentY = tableHeaderHeight;
   let serial = 1;
-  let totalPositiveRemaining = 0;
 
-  (debts || []).forEach((p) => {
-    const rawContract = p.contractor || p.colM || p.colF || 'Cash';
+  const renderDebtRow = (p: any) => {
+    const rawContract =
+      p.contractor && String(p.contractor).trim() !== ''
+        ? String(p.contractor).trim()
+        : p.colM && String(p.colM).trim() !== ''
+        ? String(p.colM).trim()
+        : 'Cash';
     const cleanedContractor = cleanContractorForDisplay(rawContract);
 
-    // Patient Name: check colD, name, patientName, patient, or MRN lookup
-    let patientName = String(p.name || p.colD || p.patientName || p.patient || '').trim();
+    let patientName = String(p.colD || p.name || p.patientName || p.patient || '').trim();
     let mrnVal = String(p.mrn || p.id || p.colC || '').trim();
     if (!patientName && mrnVal && mrnLookupInput?.getPatientByMrn) {
       const fromMrn = mrnLookupInput.getPatientByMrn(mrnVal);
       if (fromMrn?.name) patientName = fromMrn.name;
     }
-    if ((!mrnVal || mrnVal.startsWith('transfer-') || mrnVal === '—') && patientName && mrnLookupInput?.resolve) {
-      const resolved = mrnLookupInput.resolve(patientName);
-      if (resolved && resolved !== '—') mrnVal = resolved;
-    }
+    const resolvedMrn = resolvePatientMrn(patientName, mrnVal, mrnLookupInput);
 
-    // Physician
     let physicianVal = String(p.physician || p.doctor || p.colW || '').trim();
-    if (!physicianVal && mrnVal && mrnLookupInput?.getPatientByMrn) {
-      const fromMrn = mrnLookupInput.getPatientByMrn(mrnVal);
+    if (!physicianVal && resolvedMrn !== '—' && mrnLookupInput?.getPatientByMrn) {
+      const fromMrn = mrnLookupInput.getPatientByMrn(resolvedMrn);
       if (fromMrn?.physician) physicianVal = fromMrn.physician;
     }
 
-    // Total Bill (colZ)
-    const valZ = typeof p.valZ === 'number'
-      ? p.valZ
-      : (typeof p.totalInvoice === 'number'
-        ? p.totalInvoice
-        : (parseFloat(String(p.colZ || p.totalBill || p.total || '0').replace(/[^0-9.-]+/g, '')) || 0));
+    const roomRaw = String(p.room || p.bed || p.colB || '');
+    const groupName = getDepartmentGroup(roomRaw, 0);
+    const rColors = getGroupColors(groupName);
+    const isVip = isVipFn ? isVipFn(patientName) : false;
 
-    // Remaining Amount (colAB)
-    const valAB = typeof p.valAB === 'number'
-      ? p.valAB
-      : (typeof p.remainingAmount === 'number'
-        ? p.remainingAmount
-        : (parseFloat(String(p.colAB || p.remaining || p.amount || '0').replace(/[^0-9.-]+/g, '')) || 0));
-
-    if (valAB > 0) {
-      totalPositiveRemaining += valAB;
-    }
-
-    const pctStr = valZ > 0 ? ((valAB / valZ) * 100).toFixed(1) + '%' : (p.remainingPct ? `${p.remainingPct}%` : '0%');
-    const valZDisplay = valZ > 0 ? valZ.toFixed(2) : String(p.colZ || p.totalBill || '0');
-    const valABDisplay = valAB !== 0 ? valAB.toFixed(2) : String(p.colAB || p.remainingAmount || '0');
+    const valZFormatted = p.valZ.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const valABFormatted = p.valAB.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const pctFormatted = `${(p.pct * 100).toFixed(1)}%`;
 
     const rowValues = [
       String(serial++),
-      formatDateForSheet(p.date || p.admissionDate || p.colA || ''),
-      p.room || p.bed || p.colB || '',
-      mrnVal || '—',
+      formatDateForSheet(p.colA || p.date || p.admissionDate || ''),
+      formatRoomForSheet(roomRaw),
+      formatMrnForSheet(resolvedMrn),
       patientName,
       physicianVal,
       cleanedContractor,
       getResponsibleOfficer(rawContract),
-      valZDisplay,
-      valABDisplay,
-      pctStr,
+      valZFormatted,
+      valABFormatted,
+      pctFormatted,
+      isVip ? 'VIP' : '',
     ];
 
     let cellX = 0;
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
-      const isBold = idx >= 2 && idx <= 6;
       const cellId = `cp_debt_${serial}_${idx}`;
       const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
       const displayVal = truncateText(val, maxChars);
 
+      let textColor = '#000000';
+      let isBold = false;
+      if (idx === 2 || idx === 4 || idx === 5 || idx === 6 || idx === 7) {
+        isBold = true;
+      } else if (idx === 9) {
+        isBold = true;
+        textColor = '#C00000';
+      } else if (idx === 10) {
+        isBold = true;
+        textColor = '#1F4E79';
+      } else if (idx === 11 && Boolean(val)) {
+        isBold = true;
+        textColor = '#D32F2F';
+      }
+
       tableSvgContent += `
         <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
-        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
+        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rColors.row}" stroke="#D2D7D9" stroke-width="0.8"/>
+      `;
+
+      // Subtle dataBar on Remaining Pct column (idx === 10) matching addRefinedDebtsSheet
+      if (idx === 10 && p.pct > 0) {
+        const clampedPct = Math.min(Math.max(p.pct, 0), 1);
+        const barW = Math.max(Math.floor((colDef.width - 6) * clampedPct), 2);
+        tableSvgContent += `
+          <rect x="${cellX + 3}" y="${currentY + 4}" width="${barW}" height="${rowHeight - 8}" rx="2" ry="2" fill="#638EC6" fill-opacity="0.28"/>
+        `;
+      }
+
+      tableSvgContent += `
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="${textColor}" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
+
     currentY += rowHeight;
-  });
+  };
+
+  // 1. Patients with >= 50% remaining
+  above50.forEach((p) => renderDebtRow(p));
+
+  // 2. 50% threshold crimson separator row matching addRefinedDebtsSheet
+  if (hasSeparator) {
+    tableSvgContent += `
+      <rect x="0" y="${currentY}" width="${width}" height="${separatorHeight}" fill="#D32F2F" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text x="${width / 2}" y="${currentY + separatorHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="12" font-weight="bold" fill="#FFFFFF" text-anchor="middle">■ متبقي أقل من 50% / Remaining Less Than 50% ■</text>
+    `;
+    currentY += separatorHeight;
+  }
+
+  // 3. Patients with < 50% remaining
+  below50.forEach((p) => renderDebtRow(p));
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
   const headerBuf = await createExcelHeaderBuffer('مديونيات المرضى (نقدي) / Cash Debts', width, headerHeight);
   const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
-  return { buffer, count: (debts || []).length, positiveRemaining: totalPositiveRemaining };
+  return { buffer, count: processedDebts.length, positiveRemaining: totalPositiveRemaining };
 }
 
 /**
- * 6. Patient Transfers Sheet
- * Includes: MRN, Patient Name, Contractor Officer (مسئول التعاقد).
+ * 6. Patient Transfers Sheet (identical to addRefinedTransfersSheet)
+ * Includes: MRN, Patient Name, Transfer Journey, From Room, Current Room, Transfer Date, Physician, Contractor, Contractor Officer (مسئول التعاقد).
  */
 export async function generateTransfersJpeg(
   transfers: any[],
   dateLabel: string,
   mrnLookupInput?: MrnResolver | Map<string, string> | any
 ): Promise<{ buffer: Buffer; count: number }> {
-  const width = 1240;
+  const width = 1600;
   const headerHeight = 180;
-  const rowHeight = 30;
-  const tableHeaderHeight = 36;
+  const rowHeight = 32;
+  const tableHeaderHeight = 38;
 
   const cols = [
-    { label: '# / الرقم', width: 60 },
-    { label: 'MRN / الملف', width: 110 },
-    { label: 'Patient / اسم المريض', width: 270 },
-    { label: 'From / من غرفة', width: 120 },
-    { label: 'To / إلى غرفة', width: 120 },
-    { label: 'Physician / الطبيب', width: 230 },
-    { label: 'مسئول التعاقد', width: 140 },
-    { label: 'Date / التاريخ', width: 150 },
+    { label: '# / م', width: 50 },
+    { label: 'MRN / الملف', width: 105 },
+    { label: 'اسم المريض / Patient Name', width: 240 },
+    { label: 'مسار التحويلات / Transfer Journey', width: 250 },
+    { label: 'الغرفة السابقة / From Room', width: 155 },
+    { label: 'الغرفة الحالية / Current Room', width: 165 },
+    { label: 'تاريخ التحويل / Transfer Date', width: 160 },
+    { label: 'الطبيب المعالج / Physician', width: 190 },
+    { label: 'الجهة والتعاقد / Contractor', width: 165 },
+    { label: 'مسئول التعاقد', width: 120 },
   ];
 
-  const totalTableHeight = tableHeaderHeight + Math.max((transfers || []).length, 1) * rowHeight + 30;
+  const list = transfers || [];
+  const totalTableHeight = tableHeaderHeight + Math.max(list.length, 1) * rowHeight + 30;
 
   let tableSvgContent = `
     <rect width="${width}" height="${totalTableHeight}" fill="#FFFFFF"/>
-    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#DDEBF7"/>
+    <rect y="0" width="${width}" height="${tableHeaderHeight}" fill="#0B3C34"/>
   `;
 
   let colX = 0;
-  cols.forEach((col) => {
+  cols.forEach((col, idx) => {
+    const hdrCellId = `cp_trhdr_${idx}`;
     tableSvgContent += `
-      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#DDEBF7" stroke="#B2B2B2" stroke-width="0.8"/>
-      <text x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10" font-weight="bold" fill="#000000" text-anchor="middle">${escapeXml(col.label)}</text>
+      <clipPath id="${hdrCellId}"><rect x="${colX + 2}" y="0" width="${col.width - 4}" height="${tableHeaderHeight}"/></clipPath>
+      <rect x="${colX}" y="0" width="${col.width}" height="${tableHeaderHeight}" fill="#0B3C34" stroke="#B2B2B2" stroke-width="0.8"/>
+      <text clip-path="url(#${hdrCellId})" x="${colX + col.width / 2}" y="${tableHeaderHeight / 2 + 5}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="10.5" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${escapeXml(col.label)}</text>
     `;
     colX += col.width;
   });
@@ -1209,56 +1496,94 @@ export async function generateTransfersJpeg(
   let currentY = tableHeaderHeight;
   let serial = 1;
 
-  (transfers || []).forEach((t) => {
+  list.forEach((t, rowIdx) => {
     const contractorVal = t.contractor || '';
-    const patientName = String(t.name || t.patientName || '').trim();
+    const cleanedContractor = cleanContractorForDisplay(contractorVal) || '-';
+    const responsibleOfficer = getResponsibleOfficer(contractorVal);
+    const patientName = String(t.name || t.patientName || '').trim() || '-';
 
-    // Sanitize candidate MRN: Never use transfer UUID / internal ID as MRN
     let directMrn = '';
     const cand = String(t.mrn || t.patientId || t.barcode || '').trim();
-    if (cand && !cand.startsWith('transfer-') && !cand.toLowerCase().includes('transfer') && !cand.includes('-') && cand !== '—' && cand !== '-') {
+    if (
+      cand &&
+      !cand.startsWith('transfer-') &&
+      !cand.toLowerCase().includes('transfer') &&
+      !cand.startsWith('UNKNOWN-') &&
+      !cand.includes('-') &&
+      cand !== '—' &&
+      cand !== '-'
+    ) {
       directMrn = cand;
     }
 
-    let resolvedMrn = directMrn;
-    if (!resolvedMrn || resolvedMrn === '—' || resolvedMrn === '-') {
-      if (mrnLookupInput?.resolve) {
-        resolvedMrn = mrnLookupInput.resolve(patientName, directMrn);
-      } else if (mrnLookupInput instanceof Map) {
-        resolvedMrn = mrnLookupInput.get(patientName.toLowerCase()) || '—';
-      } else if (mrnLookupInput?.nameToMrn) {
-        resolvedMrn = mrnLookupInput.nameToMrn.get(patientName.toLowerCase()) || '—';
-      } else {
-        resolvedMrn = '—';
-      }
-    }
-    if (resolvedMrn.startsWith('transfer-') || resolvedMrn.toLowerCase().includes('transfer')) {
-      resolvedMrn = '—';
-    }
+    const resolvedMrn = resolvePatientMrn(patientName, directMrn, mrnLookupInput);
+
+    const journeyStr =
+      Array.isArray(t.journey) && t.journey.length > 0
+        ? t.journey.map((r: any) => formatRoomForSheet(r)).join(' ➔ ')
+        : `${formatRoomForSheet(t.initialRoom || t.fromRoom || '')} ➔ ${formatRoomForSheet(t.currentRoom || t.toRoom || '')}`;
+
+    const prevRoom =
+      formatRoomForSheet(
+        t.history && t.history.length > 0
+          ? t.history[t.history.length - 1].fromRoom
+          : t.initialRoom || t.fromRoom || '-'
+      ) || '-';
+
+    const currRoom = formatRoomForSheet(t.currentRoom || t.toRoom || '-') || '-';
+    const rawDate =
+      t.lastTransferDate ||
+      t.date ||
+      (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') ||
+      '';
+    const formattedDate = formatDateForSheet(rawDate) || '-';
 
     const rowValues = [
       String(serial++),
-      resolvedMrn || '—',
+      formatMrnForSheet(resolvedMrn),
       patientName,
-      t.initialRoom || t.fromRoom || '',
-      t.currentRoom || t.toRoom || '',
-      t.physician || '',
-      getResponsibleOfficer(contractorVal),
-      formatDateForSheet(t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '')),
+      journeyStr,
+      prevRoom,
+      currRoom,
+      formattedDate,
+      t.physician || '-',
+      cleanedContractor,
+      responsibleOfficer,
     ];
+
+    const rowBg = rowIdx % 2 === 0 ? '#FFFFFF' : '#F4F9F8';
 
     let cellX = 0;
     rowValues.forEach((val, idx) => {
       const colDef = cols[idx];
-      const isBold = idx >= 1 && idx <= 5;
       const cellId = `cp_trans_${serial}_${idx}`;
       const maxChars = Math.max(Math.floor(colDef.width / 6.8), 5);
       const displayVal = truncateText(val, maxChars);
 
+      let textColor = '#000000';
+      let isBold = false;
+      if (idx === 1) {
+        isBold = true;
+      } else if (idx === 2) {
+        isBold = true;
+        textColor = '#0B3C34';
+      } else if (idx === 3) {
+        isBold = true;
+        textColor = '#0070BA';
+      } else if (idx === 4) {
+        isBold = true;
+        textColor = '#555555';
+      } else if (idx === 5) {
+        isBold = true;
+        textColor = '#2E7D32';
+      } else if (idx === 7 || idx === 8 || idx === 9) {
+        isBold = true;
+      }
+
       tableSvgContent += `
         <clipPath id="${cellId}"><rect x="${cellX + 2}" y="${currentY}" width="${colDef.width - 4}" height="${rowHeight}"/></clipPath>
-        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="#FFFFFF" stroke="#B2B2B2" stroke-width="0.8"/>
-        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="#000000" text-anchor="middle">${escapeXml(displayVal)}</text>
+        <rect x="${cellX}" y="${currentY}" width="${colDef.width}" height="${rowHeight}" fill="${rowBg}" stroke="#D2D7D9" stroke-width="0.8"/>
+        <text clip-path="url(#${cellId})" x="${cellX + colDef.width / 2}" y="${currentY + rowHeight / 2 + 4}" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="11" font-weight="${isBold ? 'bold' : 'normal'}" fill="${textColor}" text-anchor="middle">${escapeXml(displayVal)}</text>
       `;
       cellX += colDef.width;
     });
@@ -1266,7 +1591,7 @@ export async function generateTransfersJpeg(
   });
 
   const tableSvg = `<svg width="${width}" height="${totalTableHeight}" xmlns="http://www.w3.org/2000/svg">${tableSvgContent}</svg>`;
-  const headerBuf = await createExcelHeaderBuffer('التحويلات', width, headerHeight);
+  const headerBuf = await createExcelHeaderBuffer('سجل تحويلات المرضى بين الغرف', width, headerHeight);
   const buffer = await assembleSheetImage(headerBuf, tableSvg, width, headerHeight, totalTableHeight);
-  return { buffer, count: (transfers || []).length };
+  return { buffer, count: list.length };
 }
