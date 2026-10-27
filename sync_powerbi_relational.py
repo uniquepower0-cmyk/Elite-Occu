@@ -161,6 +161,8 @@ RE_INPATIENT_ROOM: Final = re.compile(r"^(room\s*)?(10[1-8]|3[0-3][0-9]|4[0-2][0
 RE_HD_CHAIR: Final = re.compile(r"\b(hd|hemo|dial)\s*[-#_]?\s*\d*\b", re.IGNORECASE)
 RE_DATE_SEP: Final = re.compile(r"^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$")
 RE_DC_KW: Final = re.compile(r"\b(dc|d\.c\.|d\.c)\b")
+# Matches "ER" as a standalone word in a bed name (e.g. "ER V-BED"), not inside words like "intermediate".
+RE_ER_ROOM: Final = re.compile(r"\bER\b", re.IGNORECASE)
 
 ARABIC_DIGITS_TRANS: Final = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
@@ -697,6 +699,8 @@ def fetch_hmis_pending_discharges() -> list[dict[str, str]]:
             "name": str(b.get("EnglishFullName") or b.get("ArabicFullName") or "").strip(),
             "name_en": str(b.get("ArabicFullName") or "").strip(),
             "bed": str(b.get("BedName_EN") or "").strip(),
+            # Portal label is "<bed> - <structure>", e.g. "Observation 1 - ER"; the ER part lives in the structure name.
+            "structure": str(b.get("FloorStructureName_EN") or "").strip(),
         })
     log(f"[HMIS Pending] {len(out)} case(s) currently in Nurse Portal 'Pending Discharge'.")
     return out
@@ -1096,6 +1100,9 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     label = f"{pc['name'] or pc['name_en']} (MRN {pc['mrn']}, {pc['bed']})"
                     if is_dialysis_room(pc["bed"]):
                         log(f"[HMIS Pending] Skipped dialysis case: {label}")
+                        continue
+                    if RE_ER_ROOM.search(f"{pc['bed']} - {pc.get('structure', '')}"):
+                        log(f"[HMIS Pending] Skipped ER case: {label}")
                         continue
                     if is_patient_manually_discharged(pc["name"], pc["mrn"], manual_names, manual_mrns):
                         log(f"[HMIS Pending] Already discharged, skipping: {label}")
