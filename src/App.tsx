@@ -83,6 +83,7 @@ const PatientTransfersTable = React.lazy(() => import('./components/PatientTrans
 const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
 const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then(m => ({ default: m.ORHistoryView })));
 const AuditLogsView = React.lazy(() => import('./components/AuditLogsView'));
+const MaintenanceView = React.lazy(() => import('./components/MaintenanceView'));
 const MedicalDirectorView = React.lazy(() => import('./components/MedicalDirectorView').then(m => ({ default: m.MedicalDirectorView })));
 const DutyManagerView = React.lazy(() => import('./components/DutyManagerView').then(m => ({ default: m.DutyManagerView })));
 
@@ -144,7 +145,7 @@ const ViewLoadingFallback = () => (
   </div>
 );
 
-type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs';
+type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured';
 
@@ -605,8 +606,17 @@ export default function App() {
       if (currentView === 'audit-logs') {
         fetchLoginLogs();
       }
+      // Ensure the sync supervisor is running whenever any authenticated user opens the app
+      fetch('/api/sync/ensure', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': user?.email || '',
+        },
+        body: JSON.stringify({ email: user?.email || '' }),
+      }).catch(() => {});
     }
-  }, [isAuthenticated, currentView]);
+  }, [isAuthenticated, currentView, user?.email]);
 
   useEffect(() => {
     // 0. Check for OAuth error redirected back in URL
@@ -3059,6 +3069,14 @@ export default function App() {
                   label="User Login Audit Logs"
                   highlighted={true}
                 />
+                <NavItem 
+                  active={currentView === 'maintenance'} 
+                  onClick={() => handleNav('maintenance')}
+                  icon={<Activity />}
+                  label="Maintenance"
+                  badge="SYNC"
+                  highlighted={true}
+                />
               </nav>
             </div>
           )}
@@ -4878,7 +4896,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {(currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs') && (
+            {(currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
               <motion.div 
                 key="role-workflows"
                 initial={{ opacity: 0, y: 10 }}
@@ -5400,6 +5418,18 @@ export default function App() {
                         loadingLogs={loadingLogs}
                         onRefreshLogs={() => fetchLoginLogs(true)}
                       />
+                    </React.Suspense>
+                  </ErrorBoundary>
+                )}
+
+                {/* Section: Maintenance & Sync Supervisor */}
+                {currentView === 'maintenance' && user?.email?.toLowerCase() === 'mohanad.md07@gmail.com' && (
+                  <ErrorBoundary
+                    fallbackTitle="Maintenance View Unavailable"
+                    fallbackSubtitle="Could not load the sync supervisor status. Please retry."
+                  >
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <MaintenanceView userEmail={user.email} />
                     </React.Suspense>
                   </ErrorBoundary>
                 )}

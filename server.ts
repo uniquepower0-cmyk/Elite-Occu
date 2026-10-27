@@ -43,6 +43,7 @@ import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } 
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
+import { SyncSupervisor } from './server/syncSupervisor.js';
 
 process.env.DOTENV_CONFIG_QUIET = 'true';
 dotenv.config({ quiet: true });
@@ -17985,6 +17986,86 @@ async function addSpecialtyOccupancySheet(
   ];
 }
 
+// --- SYNC SUPERVISOR & MAINTENANCE API ROUTES ---
+const syncSupervisor = new SyncSupervisor(supabaseAdmin);
+
+function isMaintenanceAdmin(req: any): boolean {
+  const email = String(req.headers['x-user-email'] || req.body?.email || req.query?.email || '').trim().toLowerCase();
+  return email === 'mohanad.md07@gmail.com';
+}
+
+// Called automatically whenever any logged-in user opens the web app
+app.post('/api/sync/ensure', async (req, res) => {
+  try {
+    const email = String(req.body?.email || req.headers['x-user-email'] || '').trim();
+    const status = await syncSupervisor.ensureRunning(email || undefined);
+    res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/maintenance/sync-status', async (req, res) => {
+  if (!isMaintenanceAdmin(req)) {
+    return res.status(403).json({ error: 'Forbidden: Maintenance access restricted to mohanad.md07@gmail.com' });
+  }
+  try {
+    const status = await syncSupervisor.getFullStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/maintenance/sync-control', async (req, res) => {
+  if (!isMaintenanceAdmin(req)) {
+    return res.status(403).json({ error: 'Forbidden: Maintenance access restricted to mohanad.md07@gmail.com' });
+  }
+  try {
+    const action = String(req.body?.action || '').trim();
+    const email = String(req.headers['x-user-email'] || req.body?.email || 'mohanad.md07@gmail.com').trim();
+    const current = await syncSupervisor.loadControlState();
+
+    if (action === 'pause') {
+      await syncSupervisor.saveControlState({
+        paused: true,
+        desiredState: 'paused',
+        updatedBy: email,
+      });
+    } else if (action === 'resume') {
+      await syncSupervisor.saveControlState({
+        paused: false,
+        desiredState: 'running',
+        updatedBy: email,
+      });
+    } else if (action === 'run-now') {
+      await syncSupervisor.saveControlState({
+        paused: false,
+        desiredState: 'running',
+        runNowRequestId: Date.now(),
+        updatedBy: email,
+      });
+    } else if (action === 'restart') {
+      await syncSupervisor.saveControlState({
+        paused: false,
+        desiredState: 'running',
+        restartRequestId: Date.now(),
+        updatedBy: email,
+      });
+    } else {
+      return res.status(400).json({ error: `Unknown action: ${action}` });
+    }
+
+    if (!process.env.VERCEL) {
+      await syncSupervisor.ensureRunning(email);
+    }
+    const status = await syncSupervisor.getFullStatus();
+    res.json({ success: true, action, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 // Catch-all for unknown /api routes - strictly return JSON 404
 app.all('/api/*', (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.originalUrl || req.url} not found` });
@@ -18034,6 +18115,9 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+    syncSupervisor.start().catch((err) => {
+      console.error('Failed to start SyncSupervisor:', err);
+    });
   });
 }
 

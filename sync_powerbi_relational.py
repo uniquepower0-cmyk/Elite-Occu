@@ -1691,8 +1691,34 @@ def check_cairo_day_rollover() -> None:
             run_sync_job()
 
 
-def run_sync_job() -> None:
+def is_recent_sync_fresh(min_interval_sec: int = 180) -> bool:
+    """Checks if state/metadata was updated very recently to avoid duplicate sync collisions across runners."""
+    if os.getenv("FORCE_SYNC_NOW", "").strip() == "1":
+        return False
+    try:
+        session = get_supabase_session()
+        res = session.get(
+            f"{SUPABASE_REST_URL}?path=eq.state/metadata&select=updated_at",
+            timeout=10,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+        if res.status_code == 200 and res.json():
+            updated_at = res.json()[0].get("updated_at")
+            if updated_at:
+                dt = datetime.datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+                age_sec = (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()
+                if 0 <= age_sec < min_interval_sec:
+                    log(f"[Sync Dedup] Another runner synced {int(age_sec)}s ago (<{min_interval_sec}s). Skipping duplicate cycle.")
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def run_sync_job(force: bool = False) -> None:
     """Executes a complete sync job sequence."""
+    if not force and is_recent_sync_fresh(180):
+        return
     log("=== STARTING SYNC JOB CYCLE ===")
     fortinet_reconnect()
     fetch_powerbi_and_sync()
@@ -1708,8 +1734,16 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
+    force_now = "--force" in sys.argv or os.getenv("FORCE_SYNC_NOW", "").strip() == "1"
+    run_once = "--once" in sys.argv
+
     log("Hospital Occupancy Sync Service Online (Python 3.12+ Architecture). Initializing first run...")
-    run_sync_job()
+    run_sync_job(force=force_now)
+
+    if run_once:
+        log("Single sync cycle (--once) completed. Exiting.")
+        sys.exit(0)
+
     schedule.every(30).minutes.do(run_sync_job)
 
     while True:
