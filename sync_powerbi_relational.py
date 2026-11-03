@@ -26,6 +26,8 @@ import signal
 import logging
 import datetime
 import zoneinfo
+import platform
+import socket
 from dataclasses import dataclass, field
 from typing import Any, Final, Optional
 from urllib.parse import urlparse, parse_qs
@@ -69,6 +71,10 @@ def log(msg: str, level: str = "info") -> None:
         logger.warning(msg)
     else:
         logger.info(msg)
+    try:
+        _record_standalone_log(level, msg)
+    except Exception:
+        pass
 
 
 def failure_countdown(seconds: int, task_name: str) -> None:
@@ -109,6 +115,7 @@ POWERBI_EXPORT_URL: Final[str] = os.getenv(
 )
 POWERBI_USER: Final[str] = os.getenv("POWERBI_USER", "")
 POWERBI_PASS: Final[str] = os.getenv("POWERBI_PASS", "")
+POWERBI_TIMEOUT: Final[int] = int(os.getenv("POWERBI_TIMEOUT", "90"))
 
 # SSL Verification configuration (defaults to True; set SUPABASE_SSL_VERIFY=0 only if internal proxy intercepts SSL)
 SUPABASE_SSL_VERIFY: Final[bool] = os.getenv("SUPABASE_SSL_VERIFY", "1").lower() not in ("0", "false", "no")
@@ -949,7 +956,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 POWERBI_EXPORT_URL,
                 json=current_payload,
                 auth=auth,
-                timeout=25
+                timeout=(15, POWERBI_TIMEOUT)
             )
             try:
                 response.raise_for_status()
@@ -1715,13 +1722,236 @@ def is_recent_sync_fresh(min_interval_sec: int = 180) -> bool:
     return False
 
 
+# --- STANDALONE RUNNER TELEMETRY & REMOTE CONTROL (NO NODE.JS REQUIRED) ---
+
+_sys_plat = platform.system().lower()
+RUNNER_PLATFORM: Final[str] = "mac" if _sys_plat == "darwin" else ("windows" if _sys_plat.startswith("win") else "linux")
+RUNNER_HOSTNAME: Final[str] = socket.gethostname() or "host"
+RUNNER_ID: Final[str] = f"{RUNNER_PLATFORM}-{RUNNER_HOSTNAME}"
+RUNNER_STARTED_AT: Final[str] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+_runner_log_seq: int = 1
+_runner_logs: list[dict[str, Any]] = []
+_runner_state: dict[str, Any] = {
+    "runnerId": RUNNER_ID,
+    "hostname": RUNNER_HOSTNAME,
+    "platform": RUNNER_PLATFORM,
+    "osLabel": f"{platform.system()} ({platform.release()})",
+    "pid": os.getpid(),
+    "startedAt": RUNNER_STARTED_AT,
+    "lastHeartbeatAt": RUNNER_STARTED_AT,
+    "onPremReachable": True,
+    "status": "running",
+    "childPid": os.getpid(),
+    "restartCount": 0,
+    "lastCycleStartedAt": None,
+    "lastSuccessAt": None,
+    "lastError": None,
+    "nextRunEta": None,
+    "pendingDischarge": {
+        "lastCheckedAt": None,
+        "totalDetected": 0,
+        "addedCount": 0,
+        "skippedDialysisCount": 0,
+        "skippedErCount": 0,
+        "skippedAlreadyDischargedCount": 0,
+        "recentCases": [],
+    },
+}
+_last_seen_run_now_id: int = 0
+_last_seen_restart_id: int = 0
+_is_paused: bool = False
+
+
+def _record_standalone_log(level: str, msg: str) -> None:
+    global _runner_log_seq
+    clean = str(msg).strip()
+    if not clean or "Next sync in:" in clean:
+        return
+    for sec in (HMIS_PASS, POWERBI_PASS, FORTINET_PASS, SUPABASE_KEY):
+        if sec and len(sec) > 3:
+            clean = clean.replace(sec, "***")
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _runner_logs.append({
+        "id": _runner_log_seq,
+        "timestamp": now_iso,
+        "level": level if level in ("info", "warning", "error") else "info",
+        "message": clean,
+        "runnerId": RUNNER_ID,
+        "platform": RUNNER_PLATFORM,
+    })
+    _runner_log_seq += 1
+    if len(_runner_logs) > 250:
+        del _runner_logs[:-250]
+
+    pd_stats = _runner_state["pendingDischarge"]
+    if "=== STARTING SYNC JOB CYCLE ===" in clean:
+        _runner_state["status"] = "syncing"
+        _runner_state["lastCycleStartedAt"] = now_iso
+        _runner_state["pendingDischarge"] = {
+            "lastCheckedAt": now_iso,
+            "totalDetected": 0,
+            "addedCount": 0,
+            "skippedDialysisCount": 0,
+            "skippedErCount": 0,
+            "skippedAlreadyDischargedCount": 0,
+            "recentCases": [],
+        }
+    elif "successfully committed:" in clean or "[Sync Dedup]" in clean:
+        _runner_state["status"] = "running"
+        if "successfully committed:" in clean:
+            _runner_state["lastSuccessAt"] = now_iso
+            _runner_state["lastError"] = None
+        _runner_state["nextRunEta"] = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)
+        ).isoformat()
+    elif "Sync error encountered:" in clean or "Max retry attempts" in clean:
+        _runner_state["lastError"] = clean
+        _runner_state["status"] = "error"
+    elif "[HMIS Pending]" in clean:
+        pd_stats["lastCheckedAt"] = now_iso
+        m = re.search(r"\[HMIS Pending\]\s+(\d+)\s+case\(s\)\s+currently", clean)
+        if m:
+            pd_stats["totalDetected"] = int(m.group(1))
+        elif "Skipped dialysis case:" in clean:
+            pd_stats["skippedDialysisCount"] += 1
+        elif "Skipped ER case:" in clean:
+            pd_stats["skippedErCount"] += 1
+        elif "Already discharged" in clean or "Already in cumulative discharged" in clean:
+            pd_stats["skippedAlreadyDischargedCount"] += 1
+        elif "Added to cumulative discharged:" in clean or "Would add to cumulative discharged:" in clean:
+            pd_stats["addedCount"] += 1
+
+
+def _check_on_prem_socket() -> bool:
+    for host in ("10.12.0.10", "10.12.0.11"):
+        try:
+            with socket.create_connection((host, 80), timeout=2.5):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def publish_standalone_heartbeat() -> None:
+    """Publishes runner status & logs directly to Supabase so the cloud Maintenance tab works without Node.js."""
+    if not SUPABASE_KEY:
+        return
+    try:
+        session = get_supabase_session()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        _runner_state["lastHeartbeatAt"] = now_iso
+        _runner_state["onPremReachable"] = _check_on_prem_socket()
+        if _is_paused:
+            _runner_state["status"] = "paused"
+        elif not _runner_state["onPremReachable"]:
+            _runner_state["status"] = "idle-off-prem"
+
+        res = session.get(
+            f"{SUPABASE_REST_URL}?path=eq.settings/sync_runners&select=data",
+            timeout=10,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+        existing_runners: list[dict[str, Any]] = []
+        existing_logs: list[dict[str, Any]] = []
+        if res.status_code == 200 and res.json():
+            d = res.json()[0].get("data") or {}
+            if isinstance(d.get("runners"), list):
+                existing_runners = d["runners"]
+            if isinstance(d.get("logs"), list):
+                existing_logs = d["logs"]
+
+        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        fresh_others = []
+        for r in existing_runners:
+            if not isinstance(r, dict) or r.get("runnerId") == RUNNER_ID or r.get("platform") == RUNNER_PLATFORM:
+                continue
+            try:
+                hb = datetime.datetime.fromisoformat(str(r.get("lastHeartbeatAt", "")).replace("Z", "+00:00")).timestamp()
+                if now_ts - hb < 45:
+                    fresh_others.append(r)
+            except Exception:
+                pass
+
+        merged_runners = [_runner_state] + fresh_others[:1]
+        other_logs = [l for l in existing_logs if isinstance(l, dict) and l.get("runnerId") != RUNNER_ID]
+        merged_logs = (other_logs + _runner_logs)[-300:]
+
+        session.post(
+            SUPABASE_REST_URL,
+            json=[{
+                "path": "settings/sync_runners",
+                "data": {"runners": merged_runners, "logs": merged_logs, "updatedAt": now_iso},
+                "updated_at": now_iso,
+            }],
+            timeout=10,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+    except Exception:
+        pass
+
+
+def poll_standalone_control(init_only: bool = False) -> None:
+    """Polls settings/sync_control in Supabase for Pause / Resume / Run Now / Restart commands."""
+    global _last_seen_run_now_id, _last_seen_restart_id, _is_paused
+    if not SUPABASE_KEY:
+        return
+    try:
+        session = get_supabase_session()
+        res = session.get(
+            f"{SUPABASE_REST_URL}?path=eq.settings/sync_control&select=data",
+            timeout=10,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+        if res.status_code != 200 or not res.json():
+            return
+        ctrl = res.json()[0].get("data") or {}
+        run_now_id = int(ctrl.get("runNowRequestId") or 0)
+        restart_id = int(ctrl.get("restartRequestId") or 0)
+        paused_flag = bool(ctrl.get("paused"))
+
+        if init_only:
+            _last_seen_run_now_id = run_now_id
+            _last_seen_restart_id = restart_id
+            _is_paused = paused_flag
+            return
+
+        if paused_flag != _is_paused:
+            _is_paused = paused_flag
+            log(f"[Control] Sync state changed to {'PAUSED' if _is_paused else 'RESUMED'} by admin.")
+            publish_standalone_heartbeat()
+
+        if restart_id > _last_seen_restart_id:
+            _last_seen_restart_id = restart_id
+            _runner_state["restartCount"] = int(_runner_state.get("restartCount") or 0) + 1
+            log("[Control] Remote Restart requested from Maintenance tab. Running fresh cycle...")
+            if not _is_paused:
+                run_sync_job(force=True)
+
+        if run_now_id > _last_seen_run_now_id:
+            _last_seen_run_now_id = run_now_id
+            log("[Control] Remote Run-Now requested from Maintenance tab. Executing immediate sync...")
+            _is_paused = False
+            run_sync_job(force=True)
+    except Exception:
+        pass
+
+
 def run_sync_job(force: bool = False) -> None:
     """Executes a complete sync job sequence."""
+    if _is_paused and not force:
+        log("[Sync Paused] Skipping scheduled sync cycle while paused.")
+        publish_standalone_heartbeat()
+        return
     if not force and is_recent_sync_fresh(180):
+        publish_standalone_heartbeat()
         return
     log("=== STARTING SYNC JOB CYCLE ===")
+    publish_standalone_heartbeat()
     fortinet_reconnect()
     fetch_powerbi_and_sync()
+    publish_standalone_heartbeat()
 
 
 def handle_shutdown(signum: int, frame: Any) -> None:
@@ -1737,7 +1967,9 @@ if __name__ == "__main__":
     force_now = "--force" in sys.argv or os.getenv("FORCE_SYNC_NOW", "").strip() == "1"
     run_once = "--once" in sys.argv
 
-    log("Hospital Occupancy Sync Service Online (Python 3.12+ Architecture). Initializing first run...")
+    poll_standalone_control(init_only=True)
+    log(f"Hospital Occupancy Sync Service Online ({RUNNER_ID}). Initializing first run...")
+    publish_standalone_heartbeat()
     run_sync_job(force=force_now)
 
     if run_once:
@@ -1746,15 +1978,29 @@ if __name__ == "__main__":
 
     schedule.every(30).minutes.do(run_sync_job)
 
+    _last_hb_ts = time.time()
+    _last_ctrl_ts = time.time()
+
     while True:
         check_cairo_day_rollover()
-        schedule.run_pending()
+        if not _is_paused:
+            schedule.run_pending()
+
+        now_ts = time.time()
+        if now_ts - _last_ctrl_ts >= 4.0:
+            _last_ctrl_ts = now_ts
+            poll_standalone_control(init_only=False)
+        if now_ts - _last_hb_ts >= 12.0:
+            _last_hb_ts = now_ts
+            publish_standalone_heartbeat()
+
         next_run = schedule.next_run()
         if next_run:
             now = datetime.datetime.now()
             time_remaining = (next_run - now).total_seconds()
             if time_remaining > 0 and sys.stdout.isatty():
                 mins, secs = divmod(int(time_remaining), 60)
-                sys.stdout.write(f"\r[{now.strftime('%Y-%m-%d %H:%M:%S')}] Next sync in: {mins:02d}:{secs:02d}   ")
+                state_tag = "PAUSED" if _is_paused else "ACTIVE"
+                sys.stdout.write(f"\r[{now.strftime('%Y-%m-%d %H:%M:%S')}] [{state_tag}] Next sync in: {mins:02d}:{secs:02d}   ")
                 sys.stdout.flush()
         time.sleep(1)

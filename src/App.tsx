@@ -465,7 +465,7 @@ export default function App() {
           userId: l.userId || '',
           email: l.email || '',
           displayName: l.displayName || '',
-          timestamp: l.timestamp ? new Date(l.timestamp).toLocaleString() : new Date().toLocaleString()
+          timestamp: l.timestamp ? new Date(l.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Cairo' }) : new Date().toLocaleString('en-GB', { timeZone: 'Africa/Cairo' })
         })));
       }
     } catch (err) {
@@ -503,15 +503,15 @@ export default function App() {
   const isFetchingRef = useRef<boolean>(false);
   const lastVisibilityFetchRef = useRef<number>(Date.now());
 
-  // Formatted Dashboard Timestamps (Asia/Riyadh)
+  // Formatted Dashboard Timestamps (Africa/Cairo)
   const uploadedAtFormatted = useMemo(() => {
     if (!uploadedAt) return null;
     const d = new Date(uploadedAt);
     if (isNaN(d.getTime())) return null;
     return {
-      date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }),
-      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' }),
-      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}`
+      date: d.toLocaleDateString('en-GB', { timeZone: 'Africa/Cairo' }),
+      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Africa/Cairo' }),
+      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Africa/Cairo' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Africa/Cairo' })}`
     };
   }, [uploadedAt]);
 
@@ -520,9 +520,9 @@ export default function App() {
     const d = new Date(cloudDatabaseUpdatedAt);
     if (isNaN(d.getTime())) return null;
     return {
-      date: d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }),
-      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' }),
-      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}`
+      date: d.toLocaleDateString('en-GB', { timeZone: 'Africa/Cairo' }),
+      time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Africa/Cairo' }),
+      full: `${d.toLocaleDateString('en-GB', { timeZone: 'Africa/Cairo' })} at ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Africa/Cairo' })}`
     };
   }, [cloudDatabaseUpdatedAt]);
 
@@ -3198,9 +3198,9 @@ export default function App() {
               <span className="text-xs font-bold text-brand-primary dark:text-emerald-400 uppercase tracking-wider">MOHANAD M.D.</span>
               <span className="text-[10px] font-mono font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
                 {(() => {
-                  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+                  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
                   return `${now.getDate()}-${now.getMonth() + 1}-${now.getFullYear()}`;
-                })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Riyadh' })}
+                })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Africa/Cairo' })}
               </span>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-2 sm:pl-3 sm:border-l sm:border-slate-200/40 dark:sm:border-slate-800">
@@ -3399,7 +3399,7 @@ export default function App() {
                     {/* Timestamp 1: Last Manual Sheet Upload */}
                     <div 
                       className="flex items-center gap-2.5 px-3.5 py-2 bg-slate-50 border border-slate-200/90 rounded-xl shadow-2xs hover:bg-slate-100/70 transition-colors"
-                      title={uploadedAtFormatted ? `Manual sheet uploaded on ${uploadedAtFormatted.full} (Asia/Riyadh)` : 'No manual sheet uploaded yet'}
+                      title={uploadedAtFormatted ? `Manual sheet uploaded on ${uploadedAtFormatted.full} (Africa/Cairo)` : 'No manual sheet uploaded yet'}
                     >
                       <div className="p-1.5 bg-blue-100/90 text-blue-700 rounded-lg shrink-0">
                         <FileSpreadsheet className="h-4 w-4" />
@@ -3427,7 +3427,7 @@ export default function App() {
                       className={`flex items-center gap-2.5 px-3.5 py-2 bg-slate-50 border rounded-xl shadow-2xs transition-all ${
                         isDbUpdatePulsing ? "border-amber-400/80 bg-amber-50/50 ring-2 ring-amber-400/20" : "border-slate-200/90 hover:bg-slate-100/70"
                       }`}
-                      title={cloudDbFormatted ? `Cloud database last updated on ${cloudDbFormatted.full} (Asia/Riyadh)` : 'In sync with Supabase Cloud DB'}
+                      title={cloudDbFormatted ? `Cloud database last updated on ${cloudDbFormatted.full} (Africa/Cairo)` : 'In sync with Supabase Cloud DB'}
                     >
                       <div className={`p-1.5 rounded-lg shrink-0 transition-colors ${isDbUpdatePulsing ? "bg-amber-200 text-amber-800" : "bg-emerald-100/90 text-emerald-700"}`}>
                         <Database className={`h-4 w-4 ${isDbUpdatePulsing ? "animate-bounce" : ""}`} />
@@ -4776,7 +4776,7 @@ export default function App() {
                 className="bg-white/60 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm flex flex-col overflow-hidden"
               >
                 <div className="p-4 bg-white/30 backdrop-blur-md border-b border-white/20 flex justify-between items-center shrink-0">
-                  <h3 className="font-extrabold text-brand-primary text-xs uppercase tracking-wider">Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Asia/Riyadh' })}</h3>
+                  <h3 className="font-extrabold text-brand-primary text-xs uppercase tracking-wider">Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Africa/Cairo' })}</h3>
                   <div className="flex gap-2">
                     <span 
                       onClick={() => setPaymentFilter('all')}

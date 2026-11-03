@@ -1485,8 +1485,8 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
     }
   }
 
-  // Check against today's calendar date in Cairo/Riyadh timezones
-  const timezones = ["Africa/Cairo", "Asia/Riyadh"];
+  // Check against today's calendar date in Cairo timezone
+  const timezones = ["Africa/Cairo"];
   for (const tz of timezones) {
     try {
       const today = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
@@ -1512,7 +1512,7 @@ function getTodayRiyadhDateStr(): string {
 }
 
 function getTodayRiyadhDateTimeStr(): string {
-  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
   const year = d.getFullYear();
   const month = d.getMonth() + 1;
   const day = d.getDate();
@@ -8344,7 +8344,7 @@ app.all('/api/vip-cases/formatted', async (req, res) => {
   await ensureVipCasesLoaded();
   const currentText = (req.body && typeof req.body.text === 'string') ? req.body.text : vipCasesText;
   if (!currentText) {
-    return res.json({ text: "*Admitted VIP Cases as of " + new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Riyadh' }) + "*\n(No VIP cases in the text box)" });
+    return res.json({ text: "*Admitted VIP Cases as of " + new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Cairo' }) + "*\n(No VIP cases in the text box)" });
   }
 
   function isPatientVipCustom(patientName: string, text: string): boolean {
@@ -8425,7 +8425,7 @@ app.all('/api/vip-cases/formatted', async (req, res) => {
     return roomA.localeCompare(roomB);
   });
 
-  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
   const day = today.getDate();
   const month = today.getMonth() + 1;
   const year = today.getFullYear();

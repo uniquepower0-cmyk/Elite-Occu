@@ -73,7 +73,7 @@ export function AuditLogsView({
               <tbody className="divide-y divide-slate-100">
                 {loginLogs.map((log) => {
                   const d = new Date(log.timestamp);
-                  const localDate = !isNaN(d.getTime()) ? d.toLocaleString() : (log.timestamp || new Date().toLocaleString());
+                  const localDate = !isNaN(d.getTime()) ? d.toLocaleString('en-GB', { timeZone: 'Africa/Cairo' }) : (log.timestamp || new Date().toLocaleString('en-GB', { timeZone: 'Africa/Cairo' }));
                   return (
                     <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="py-3.5 pl-4 font-semibold text-slate-800 flex items-center gap-2">

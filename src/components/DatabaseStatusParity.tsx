@@ -253,7 +253,7 @@ export const DatabaseStatusParity: React.FC = () => {
             </div>
             <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between text-xs text-teal-100">
               <span>Last Parity Verification:</span>
-              <span className="font-mono text-[11px]">{data?.checkedAt ? new Date(data.checkedAt).toLocaleTimeString() : 'Just now'}</span>
+              <span className="font-mono text-[11px]">{data?.checkedAt ? new Date(data.checkedAt).toLocaleTimeString('en-US', { timeZone: 'Africa/Cairo' }) : 'Just now'}</span>
             </div>
           </div>
         </div>

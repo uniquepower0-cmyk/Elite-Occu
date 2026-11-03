@@ -419,7 +419,7 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
             filteredLogs.map((l) => (
               <div key={`${l.runnerId}-${l.id}`} className="flex items-start gap-2 leading-relaxed">
                 <span className="text-slate-500 shrink-0 select-none">
-                  {new Date(l.timestamp).toLocaleTimeString()}
+                  {new Date(l.timestamp).toLocaleTimeString('en-US', { timeZone: 'Africa/Cairo' })}
                 </span>
                 <span
                   className={`px-1.5 py-0.2 rounded text-[10px] font-bold uppercase shrink-0 ${

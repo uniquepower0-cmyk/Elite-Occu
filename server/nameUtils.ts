@@ -304,8 +304,8 @@ export function isToday(dateStr: any, referenceDate?: string | Date | null): boo
     }
   }
 
-  // Check against today's calendar date in Cairo/Riyadh timezones
-  const timezones = ["Africa/Cairo", "Asia/Riyadh"];
+  // Check against today's calendar date in Cairo timezone
+  const timezones = ["Africa/Cairo"];
   for (const tz of timezones) {
     try {
       const today = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
@@ -326,7 +326,7 @@ export function isToday(dateStr: any, referenceDate?: string | Date | null): boo
 }
 
 export function getTodayRiyadhDateStr(): string {
-  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -334,7 +334,7 @@ export function getTodayRiyadhDateStr(): string {
 }
 
 export function getTodayRiyadhDateTimeStr(): string {
-  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
