@@ -121,7 +121,11 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
 
   useEffect(() => {
     fetchStatus();
-    const timer = setInterval(fetchStatus, 5000);
+    const timer = setInterval(() => {
+      if (!document.hidden) {
+        fetchStatus();
+      }
+    }, 30000);
     return () => clearInterval(timer);
   }, [fetchStatus]);
 

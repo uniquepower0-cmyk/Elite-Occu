@@ -529,9 +529,18 @@ function formatDateToUserFormat(dateObj: Date): string {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, '0');
   const d = String(dateObj.getDate()).padStart(2, '0');
-  const h = dateObj.getHours();
+  const h = String(dateObj.getHours()).padStart(2, '0');
   const min = String(dateObj.getMinutes()).padStart(2, '0');
   return `${d}-${m}-${y} ${h}:${min}`;
+}
+
+function cleanExpectedDischargeDateStr(val: any): string {
+  if (val === undefined || val === null) return "";
+  let s = String(val).trim();
+  if (!s) return "";
+  // Sanitize 5-digit year typos from hospital data entry (e.g. "20265-09-26 08:00" -> "2026-09-26 08:00")
+  s = s.replace(/^(\d{4})\d([-/.]\d{1,2}[-/.]\d{1,2})/, "$1$2");
+  return cleanAdmissionDateStr(s);
 }
 
 function cleanAdmissionDateStr(val: any): string {
@@ -800,10 +809,10 @@ function extractDialysisRowsFromData(sourceData: any[][], skip: number = 0): any
   const colBedIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1, 'room');
   const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف"], is30Col ? -1 : 2, 'id');
   const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم"], is30Col ? 2 : 3, 'name');
-  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال"], 4, 'phone');
-  const colFinIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5, 'text');
-  const colFloorIdx = findCol(["floor name", "floorname_en", "floor", "floorstructurename_en", "الطابق", "الدور", "القسم"], 7, 'text');
-  const colVisitIdx = findCol(["visittype", "visit type", "visit", "visittypeguid", "نوع الزيارة"], 10, 'text');
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال"], is30Col ? -1 : 4, 'phone');
+  const colFinIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], is30Col ? -1 : 5, 'text');
+  const colFloorIdx = findCol(["floor name", "floorname_en", "floor", "floorstructurename_en", "الطابق", "الدور", "القسم"], is30Col ? -1 : 7, 'text');
+  const colVisitIdx = findCol(["visittype", "visit type", "visit", "visittypeguid", "نوع الزيارة"], is30Col ? 4 : 10, 'text');
   const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], is30Col ? 6 : 12, 'text');
   const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], is30Col ? 7 : 14, 'text');
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], is30Col ? 14 : 22, 'name');
@@ -1003,13 +1012,15 @@ function getOccupancyRows(data: any[][] | null): any[][] {
       }
     }
 
-    // Safeguard numeric name (Age leak)
-    if (/^\d+$/.test(nameStr)) {
-      if (mrnStr && !/^\d+$/.test(mrnStr)) {
+    // Safeguard numeric or clinical-note leaked name (Age / SBAR leak)
+    if (/^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) {
+      if (mrnStr && !/^\d+$/.test(mrnStr) && !isClinicalProgressNote(mrnStr)) {
         nameStr = mrnStr;
         mrnStr = "";
-      } else if (row[2] && !/^\d+$/.test(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
+      } else if (row.length < 35 && row[2] && !/^\d+$/.test(String(row[2]).trim()) && !isClinicalProgressNote(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
         nameStr = String(row[2]).trim();
+      } else if (row.length >= 35 && row[3] && !/^\d+$/.test(String(row[3]).trim()) && !isClinicalProgressNote(String(row[3]).trim()) && !cleanRoomStr(String(row[3])).includes(roomStr)) {
+        nameStr = String(row[3]).trim();
       }
     }
 
@@ -1124,13 +1135,15 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
       }
     }
 
-    // Safeguard numeric name (Age leak)
-    if (/^\d+$/.test(nameStr)) {
-      if (mrnStr && !/^\d+$/.test(mrnStr)) {
+    // Safeguard numeric or clinical-note leaked name (Age / SBAR leak)
+    if (/^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) {
+      if (mrnStr && !/^\d+$/.test(mrnStr) && !isClinicalProgressNote(mrnStr)) {
         nameStr = mrnStr;
         mrnStr = "";
-      } else if (row[2] && !/^\d+$/.test(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
+      } else if (row.length < 35 && row[2] && !/^\d+$/.test(String(row[2]).trim()) && !isClinicalProgressNote(String(row[2]).trim()) && !cleanRoomStr(String(row[2])).includes(roomStr)) {
         nameStr = String(row[2]).trim();
+      } else if (row.length >= 35 && row[3] && !/^\d+$/.test(String(row[3]).trim()) && !isClinicalProgressNote(String(row[3]).trim()) && !cleanRoomStr(String(row[3])).includes(roomStr)) {
+        nameStr = String(row[3]).trim();
       }
     }
 
@@ -1374,10 +1387,15 @@ function isPatientMatch(
   a: { mrn?: string; name: string },
   b: { mrn?: string; name: string }
 ): boolean {
-  const cleanMrnA = String(a.mrn || "").trim().replace(/^0+/, "");
-  const cleanMrnB = String(b.mrn || "").trim().replace(/^0+/, "");
-  if (cleanMrnA && cleanMrnB) {
-    return cleanMrnA === cleanMrnB;
+  const rawMrnA = String(a.mrn || "").trim().replace(/^0+/, "");
+  const rawMrnB = String(b.mrn || "").trim().replace(/^0+/, "");
+  const isRealMrnA = Boolean(rawMrnA && !rawMrnA.startsWith("UNKNOWN-") && !rawMrnA.startsWith("transfer-") && /\d/.test(rawMrnA));
+  const isRealMrnB = Boolean(rawMrnB && !rawMrnB.startsWith("UNKNOWN-") && !rawMrnB.startsWith("transfer-") && /\d/.test(rawMrnB));
+  if (isRealMrnA && isRealMrnB) {
+    return rawMrnA === rawMrnB;
+  }
+  if (!isRealMrnA && !isRealMrnB && rawMrnA && rawMrnB && rawMrnA === rawMrnB) {
+    return true;
   }
   return isNameMatch(a.name, b.name);
 }
@@ -1391,6 +1409,8 @@ function parseDateComponents(dateStr: any): { y: number; m: number; d: number } 
   let s = String(dateStr || "").trim();
   if (!s) return null;
   s = s.replace(/[٠-٩]/g, ch => "0123456789"["٠١٢٣٤٥٦٧٨٩".indexOf(ch)]);
+  // Sanitize 5-digit year typos (e.g. "20265-09-26" -> "2026-09-26")
+  s = s.replace(/^(\d{4})\d([-/.]\d{1,2}[-/.]\d{1,2})/, "$1$2");
 
   // Handle ISO-like format: 2026-09-13T... or 2026-09-13
   if (s.includes('T')) {
@@ -1404,6 +1424,8 @@ function parseDateComponents(dateStr: any): { y: number; m: number; d: number } 
     }
   }
 
+  const datePartOnly = s.split(/\s+/)[0];
+  const hasSlash = datePartOnly.includes('/');
   const numbers = s.match(/\d+/g)?.map(n => parseInt(n, 10)) || [];
   if (numbers.length >= 3) {
     const [n1, n2, n3] = numbers;
@@ -1411,29 +1433,22 @@ function parseDateComponents(dateStr: any): { y: number; m: number; d: number } 
     if (n1 >= 2000 && n1 <= 2100 && n2 >= 1 && n2 <= 12 && n3 >= 1 && n3 <= 31) {
       return { y: n1, m: n2, d: n3 };
     }
-    // Format MM/DD/YYYY or DD/MM/YYYY or MM/DD/YY or DD/MM/YY
+    // Format MM/DD/YYYY or DD-MM-YYYY or MM/DD/YY or DD-MM-YY
     const y = (n3 >= 0 && n3 <= 99) ? (2000 + n3) : n3;
     if (y >= 2000 && y <= 2100) {
       if (n1 > 12 && n2 <= 12) {
-        // Definitely DD/MM/YYYY (Day=n1, Month=n2)
+        // Definitely DD-MM-YYYY or DD/MM/YYYY (Day=n1, Month=n2)
         return { y, m: n2, d: n1 };
       }
       if (n2 > 12 && n1 <= 12) {
         // Definitely MM/DD/YYYY (Month=n1, Day=n2)
         return { y, m: n1, d: n2 };
       }
-      // Both n1 and n2 <= 12: Disambiguate using Cairo today context
-      const cairo = getCairoDateTime();
-      const [cYr, cMo, cDy] = cairo.dateStr.split('-').map(x => parseInt(x, 10));
-      if (y === cYr && n1 === cDy && n2 === cMo) {
-        // Matches Cairo today: n1 is Day, n2 is Month
-        return { y, m: cMo, d: cDy };
+      // Both n1 and n2 <= 12:
+      // PowerBI / Excel slash format ("10/3/26") is Month/Day/Year; canonical dash format ("03-10-2026") is Day-Month-Year
+      if (hasSlash) {
+        return { y, m: n1, d: n2 };
       }
-      if (y === cYr && n1 === cMo && n2 === cDy) {
-        // Matches Cairo today: n1 is Month, n2 is Day
-        return { y, m: cMo, d: cDy };
-      }
-      // Hospital default standard format is DD-MM-YYYY (day first, month second)
       return { y, m: n2, d: n1 };
     }
   }
@@ -1471,17 +1486,11 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
   const inputComp = parseDateComponents(dateStr);
   if (!inputComp) return false;
 
-  // Check against referenceDate if provided
+  // Check against referenceDate if provided (strictly Year, Month, Day — never swap Month and Day!)
   if (referenceDate) {
     const refComp = parseDateComponents(referenceDate);
     if (refComp) {
-      if (inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d) {
-        return true;
-      }
-      if (inputComp.y === refComp.y && inputComp.m === refComp.d && inputComp.d === refComp.m) {
-        return true;
-      }
-      return false;
+      return inputComp.y === refComp.y && inputComp.m === refComp.m && inputComp.d === refComp.d;
     }
   }
 
@@ -1495,9 +1504,6 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
       const day = today.getDate();
 
       if (inputComp.y === year && inputComp.m === month && inputComp.d === day) {
-        return true;
-      }
-      if (inputComp.y === year && inputComp.m === day && inputComp.d === month) {
         return true;
       }
     } catch (e) {}
@@ -1542,6 +1548,57 @@ function isDateStringFromPreviousDay(dateStr: string, cairoTodayStr: string): bo
     return formatted < cairoTodayStr;
   }
   return false;
+}
+
+function isClinicalProgressNote(val: string): boolean {
+  if (!val) return false;
+  const s = String(val).trim();
+  if (!s) return false;
+  if (s.length > 80 || s.includes("\n")) return true;
+  const low = s.toLowerCase();
+  return (
+    low.includes("situation:") ||
+    low.includes("background:") ||
+    low.includes("assessment:") ||
+    low.includes("recommendation:") ||
+    low.includes("vitals:") ||
+    low.includes("sbar") ||
+    low.includes("vital") ||
+    low.includes("conscious") ||
+    low.includes("hemodynamically") ||
+    low.includes("oriented") ||
+    /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(s)
+  );
+}
+
+function sanitizeEntryRecords(entries: any[]): any[] {
+  if (!Array.isArray(entries)) return [];
+  const cleaned: any[] = [];
+  for (const rawP of entries) {
+    if (!rawP) continue;
+    let p = { ...rawP };
+    if (p.room) p.room = cleanRoomStr(String(p.room));
+    let nameStr = String(p.name || p.colD || "").trim();
+    if ((!nameStr || /^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) && Array.isArray(p.rawRow)) {
+      const candidateIdx = p.rawRow.length < 35 ? 2 : 3;
+      const candidateName = String(p.rawRow[candidateIdx] || "").trim();
+      if (candidateName && !/^\d+$/.test(candidateName) && !isClinicalProgressNote(candidateName)) {
+        nameStr = candidateName;
+        p.name = candidateName;
+        if (!p.mrn || String(p.mrn).startsWith("UNKNOWN-")) {
+          p.mrn = buildDeterministicUnknownMrn(candidateName, p.room || "");
+        }
+      }
+    }
+    if (!nameStr || /^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) {
+      continue;
+    }
+    p.name = nameStr;
+    if (!cleaned.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+      cleaned.push(p);
+    }
+  }
+  return cleaned;
 }
 
 function isProcedureOrTemporaryRoom(room: string): boolean {
@@ -1643,13 +1700,15 @@ function extractRawPatientsFromRows(data: any): { name: string; mrn: string; roo
       }
     }
 
-    // Guard 2: Patient Name must not be a pure number (e.g. "39" which is age)
-    if (/^\d+$/.test(rawName)) {
-      if (rawMrn && !/^\d+$/.test(rawMrn)) {
+    // Guard 2: Patient Name must not be a pure number (e.g. "39" which is age) or clinical SBAR note
+    if (/^\d+$/.test(rawName) || isClinicalProgressNote(rawName)) {
+      if (rawMrn && !/^\d+$/.test(rawMrn) && !isClinicalProgressNote(rawMrn)) {
         rawName = rawMrn;
         rawMrn = "";
-      } else if (r[2] && !/^\d+$/.test(String(r[2]).trim()) && !cleanRoomStr(String(r[2])).includes(rawRoom)) {
+      } else if (r.length < 35 && r[2] && !/^\d+$/.test(String(r[2]).trim()) && !isClinicalProgressNote(String(r[2]).trim()) && !cleanRoomStr(String(r[2])).includes(rawRoom)) {
         rawName = String(r[2]).trim();
+      } else if (r.length >= 35 && r[3] && !/^\d+$/.test(String(r[3]).trim()) && !isClinicalProgressNote(String(r[3]).trim()) && !cleanRoomStr(String(r[3])).includes(rawRoom)) {
+        rawName = String(r[3]).trim();
       }
     }
 
@@ -1719,7 +1778,7 @@ function processPatientTransfers(
   sheetDate?: string
 ): boolean {
   if (!patients || !Array.isArray(patients) || patients.length === 0) return false;
-  const transferDateStr = sheetDate || getTodayRiyadhDateTimeStr();
+  const transferDateStr = sheetDate ? cleanAdmissionDateStr(sheetDate) || getTodayRiyadhDateTimeStr() : getTodayRiyadhDateTimeStr();
   let transfersModified = false;
 
   // Deduplicate input if not already deduplicated
@@ -1730,7 +1789,8 @@ function processPatientTransfers(
     const rawMrn = String(p.mrn || "").trim().replace(/^0+/, "");
     const rawRoom = cleanRoomStr(String(p.room || "").trim());
     if (!rawName || !rawRoom) return;
-    const key = rawMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
+    const isRealMrn = Boolean(rawMrn && !rawMrn.startsWith("UNKNOWN-") && !rawMrn.startsWith("transfer-") && /\d/.test(rawMrn));
+    const key = isRealMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
     if (!seenKeys.has(key)) {
       seenKeys.add(key);
       uniquePatients.push({ ...p, name: rawName, mrn: rawMrn, room: rawRoom });
@@ -1741,12 +1801,13 @@ function processPatientTransfers(
     const rawName = p.name;
     const rawMrn = p.mrn || "";
     const rawRoom = p.room;
+    const isRealRawMrn = Boolean(rawMrn && !rawMrn.startsWith("UNKNOWN-") && !rawMrn.startsWith("transfer-") && /\d/.test(rawMrn));
 
     let matchedKey: string | null = null;
     let matchedRegistryItem: { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string } | null = null;
 
-    // First try exact MRN lookup
-    if (rawMrn) {
+    // First try exact real MRN lookup
+    if (isRealRawMrn) {
       for (const key in patientRoomRegistry) {
         const item = patientRoomRegistry[key];
         const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
@@ -1758,13 +1819,14 @@ function processPatientTransfers(
       }
     }
 
-    // If not matched by MRN, try strict patient match
+    // If not matched by real MRN, try strict patient match (allowing surrogate UNKNOWN-* to match by name)
     if (!matchedRegistryItem) {
       for (const key in patientRoomRegistry) {
         const item = patientRoomRegistry[key];
         const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
-        // If both have MRN and they differ, do not match!
-        if (rawMrn && itemMrn && rawMrn !== itemMrn) continue;
+        const isRealItemMrn = Boolean(itemMrn && !itemMrn.startsWith("UNKNOWN-") && !itemMrn.startsWith("transfer-") && /\d/.test(itemMrn));
+        // If both have real numeric MRNs and they differ, do not match!
+        if (isRealRawMrn && isRealItemMrn && rawMrn !== itemMrn) continue;
 
         if (isPatientMatch({ mrn: rawMrn, name: rawName }, { mrn: itemMrn, name: item.name || key })) {
           matchedKey = key;
@@ -1779,17 +1841,16 @@ function processPatientTransfers(
       const normPrev = normalizeRoom(prevRoom);
       const normCurr = normalizeRoom(rawRoom);
 
-      const isPrevProc = isProcedureOrTemporaryRoom(prevRoom);
-      const isCurrProc = isProcedureOrTemporaryRoom(rawRoom);
+      const isPrevProc = isProcedureOrTemporaryRoom(prevRoom) || KEYWORDS_TO_EXCLUDE.some(kw => prevRoom.toLowerCase().includes(kw));
+      const isCurrProc = isProcedureOrTemporaryRoom(rawRoom) || KEYWORDS_TO_EXCLUDE.some(kw => rawRoom.toLowerCase().includes(kw));
 
-      // Only track transfers between genuine inpatient rooms, ignoring procedure rooms
+      // Only track transfers between genuine inpatient rooms, ignoring procedure and excluded rooms
       if (!isPrevProc && !isCurrProc && normPrev && normCurr && normPrev !== normCurr) {
         console.log(`[Patient Transfer] "${rawName}" (MRN: ${rawMrn}) moved from "${prevRoom}" to "${rawRoom}"`);
 
         // Look for existing record
         let transferRecord = cumulativeTransfers.find(t => {
           const tMrn = String(t.mrn || "").trim().replace(/^0+/, "");
-          if (rawMrn && tMrn) return rawMrn === tMrn;
           return isPatientMatch({ mrn: rawMrn, name: rawName }, { mrn: tMrn, name: t.name });
         });
 
@@ -1843,6 +1904,7 @@ function processPatientTransfers(
             });
             transferRecord.currentRoom = rawRoom;
             transferRecord.lastTransferDate = transferDateStr;
+            if (isRealRawMrn) transferRecord.mrn = rawMrn;
             if (p.physician) transferRecord.physician = p.physician;
             if (p.contractor) transferRecord.contractor = p.contractor;
             transfersModified = true;
@@ -1853,19 +1915,23 @@ function processPatientTransfers(
 
       if (!isCurrProc) {
         matchedRegistryItem.lastRoom = rawRoom;
+        if (isRealRawMrn) matchedRegistryItem.mrn = rawMrn;
         if (p.physician) matchedRegistryItem.physician = p.physician;
         if (p.contractor) matchedRegistryItem.contractor = p.contractor;
       }
     } else {
-      const regKey = rawMrn ? `mrn:${rawMrn}` : rawName;
-      patientRoomRegistry[regKey] = {
-        name: rawName,
-        mrn: rawMrn,
-        lastRoom: rawRoom,
-        physician: p.physician || "",
-        contractor: p.contractor || "",
-        date: p.date || transferDateStr
-      };
+      const isCurrProc = isProcedureOrTemporaryRoom(rawRoom) || KEYWORDS_TO_EXCLUDE.some(kw => rawRoom.toLowerCase().includes(kw));
+      if (!isCurrProc) {
+        const regKey = isRealRawMrn ? `mrn:${rawMrn}` : `name:${normalizeArabicName(rawName)}`;
+        patientRoomRegistry[regKey] = {
+          name: rawName,
+          mrn: rawMrn,
+          lastRoom: rawRoom,
+          physician: p.physician || "",
+          contractor: p.contractor || "",
+          date: p.date || transferDateStr
+        };
+      }
     }
   });
 
@@ -1888,7 +1954,8 @@ function sanitizeAndDeduplicateTransfers(): boolean {
     if (!t || !t.name) return;
     const name = String(t.name || "").trim();
     const mrn = String(t.mrn || "").trim().replace(/^0+/, "");
-    const patientKey = mrn ? `mrn:${mrn}` : `name:${normalizeArabicName(name)}`;
+    const isRealMrn = Boolean(mrn && !mrn.startsWith("UNKNOWN-") && !mrn.startsWith("transfer-") && /\d/.test(mrn));
+    const patientKey = isRealMrn ? `mrn:${mrn}` : `name:${normalizeArabicName(name)}`;
 
     // Always preserve seed records like Khadija
     if (t.id === "transfer-khadija-seed" || name.includes("خديجه")) {
@@ -1911,10 +1978,9 @@ function sanitizeAndDeduplicateTransfers(): boolean {
       }
     });
 
-    // Check if this was an artifact ping-pong between 2 rooms (e.g. [A, B, A, B, ...])
+    // Only discard extreme oscillation artifacts (> 4 steps between just 2 rooms), preserving legitimate [Ward -> ICU -> Ward] (3-step) journeys
     const uniqueRooms = Array.from(new Set(dedupedJourney.map(r => normalizeRoom(r))));
-    if (uniqueRooms.length <= 2 && dedupedJourney.length > 2) {
-      // Artifact ping-pong from previous bug! Discard it!
+    if (uniqueRooms.length <= 2 && dedupedJourney.length > 4) {
       changed = true;
       return;
     }
@@ -2005,14 +2071,17 @@ function isExcludedDebtCase(p: {
   financialStatus: string;
   contractor: string;
   paymentBy: string;
+  visitType?: string;
   physician?: string;
   notes?: string;
 }): boolean {
   if (isOperatingRoom(p.room) || isProcedureOrTemporaryRoom(p.room)) return true;
 
+  const rLower = (p.room || "").toLowerCase().trim();
   const fLower = (p.financialStatus || "").toLowerCase().trim();
   const mLower = (p.contractor || "").toLowerCase().trim();
   const lLower = (p.paymentBy || "").toLowerCase().trim();
+  const vLower = (p.visitType || "").toLowerCase().trim();
   const nLower = (p.notes || "").toLowerCase().trim();
   const dLower = (p.patientName || "").toLowerCase().trim();
   const physLower = (p.physician || "").toLowerCase().trim();
@@ -2021,7 +2090,7 @@ function isExcludedDebtCase(p: {
   if (dLower === "patient" || dLower === "المريض" || dLower === "patient name" || dLower === "اسم المريض" || dLower === "name" || dLower === "patient_name") return true;
 
   // Exclude Home Care
-  if (mLower.includes("home care") || mLower.includes("homecare") || fLower.includes("home care") || fLower.includes("homecare")) return true;
+  if (rLower.includes("homecare") || rLower.includes("home care") || mLower.includes("home care") || mLower.includes("homecare") || fLower.includes("home care") || fLower.includes("homecare")) return true;
 
   // 1. Exclude if payment is by physician
   if (
@@ -2064,7 +2133,13 @@ function isExcludedDebtCase(p: {
     return true;
   }
 
-  // 2. Exclude Doctor Cases / حالات الأطباء
+  // Explicit Business Rule:
+  // When a case is a DoctorCase AND contractor is Cash AND payment is by Patient (or empty, i.e. not Physician),
+  // it MUST BE INCLUDED in the Cash Debts sheet!
+  const isPaidByPatient = (lLower === "patient" || lLower === "مريض" || lLower === "cash" || lLower === "نقدي" || lLower === "نقدى" || lLower === "self" || lLower === "");
+  const isContractorCash = hasCashIndicator(mLower);
+
+  // 2. Exclude Doctor Cases / حالات الأطباء ONLY when NOT (Cash contractor paid by Patient)
   const doctorCaseKeywords = [
     "doctor case", "doctor_case", "doctorcase", "doctor-case",
     "حالة طبيب", "حاله طبيب", "حالة دكتور", "حاله دكتور",
@@ -2075,14 +2150,17 @@ function isExcludedDebtCase(p: {
     "خصم دكتور", "خصم طبيب"
   ];
   for (const kw of doctorCaseKeywords) {
-    if (lLower.includes(kw) || fLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
+    if (lLower.includes(kw) || mLower.includes(kw) || nLower.includes(kw) || dLower.includes(kw)) {
+      return true;
+    }
+    if ((fLower.includes(kw) || vLower.includes(kw)) && !(isContractorCash && isPaidByPatient)) {
       return true;
     }
   }
 
-  // Check for standalone DC / D.C. abbreviation
-  const combined = ` ${lLower} ${fLower} ${mLower} ${nLower} `;
-  if (/\b(dc|d\.c\.|d\.c)\b/i.test(combined)) {
+  // Check for standalone DC / D.C. abbreviation (excluding clinical notes)
+  const combined = ` ${lLower} ${fLower} ${mLower} `;
+  if (/\b(dc|d\.c\.|d\.c)\b/i.test(combined) && !(isContractorCash && isPaidByPatient)) {
     return true;
   }
 
@@ -2102,7 +2180,10 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
     }
   }
 
-  const { findCol } = buildColumnIndexResolver(rows);
+  const { headerRowIdx, findCol } = buildColumnIndexResolver(rows);
+  if (headerRowIdx >= 0) {
+    startIdx = headerRowIdx + 1;
+  }
   const sampleRow = rows.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || rows[0] || [];
   const is30Col = sampleRow.length < 35 && sampleRow.length >= 15;
 
@@ -2112,12 +2193,13 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
   const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], is30Col ? 14 : 22, 'name');
   const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], is30Col ? 6 : 12, 'text');
-  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5, 'text');
-  const colPaymentByIdx = findCol(["payment by", "paymentby", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11, 'text');
-  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8, 'text');
-  const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], 25, 'number');
-  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], 27, 'number');
-  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4, 'phone');
+  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], is30Col ? -1 : 5, 'text');
+  const colVisitTypeIdx = findCol(["visittype", "visit type", "visit", "visittypeguid", "نوع الزيارة"], is30Col ? 4 : 10, 'text');
+  const colPaymentByIdx = findCol(["payment by", "paymentby", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], is30Col ? 5 : 11, 'text');
+  const colRemarksIdx = findCol(["remarks", "notes", "allnotes", "ملاحظات"], is30Col ? -1 : 8, 'text');
+  const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], is30Col ? 16 : 25, 'number');
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], is30Col ? 18 : 27, 'number');
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], is30Col ? -1 : 4, 'phone');
 
   const rawDebts = rows.slice(startIdx).map(row => {
     const rawZ = colTotalIdx >= 0 ? row[colTotalIdx] : 0;
@@ -2125,11 +2207,11 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
     const valZ = parseFloat(String(rawZ || "").replace(/[^0-9.-]+/g, "")) || 0;
     const valAB = parseFloat(String(rawAB || "").replace(/[^0-9.-]+/g, "")) || 0;
     let mobile = colMobileIdx >= 0 ? cleanPhoneStr(row[colMobileIdx]) : "";
-    if (!mobile && colMobileIdx !== 4 && row[4]) {
+    if (!is30Col && !mobile && colMobileIdx !== 4 && row[4]) {
       const mob4 = cleanPhoneStr(row[4]);
       if (mob4.length >= 7) mobile = mob4;
     }
-    if (!mobile && colMobileIdx !== 32 && row[32]) {
+    if (!is30Col && !mobile && colMobileIdx !== 32 && row[32]) {
       const mob32 = cleanPhoneStr(row[32]);
       if (mob32.length >= 7) mobile = mob32;
     }
@@ -2140,6 +2222,7 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
         : (row[0] !== undefined ? row[0] : "")
     );
     const payBy = colPaymentByIdx >= 0 ? String(row[colPaymentByIdx] || "").trim() : "";
+    const visitTypeVal = colVisitTypeIdx >= 0 ? String(row[colVisitTypeIdx] || "").trim() : "";
     const remarks = colRemarksIdx >= 0 ? String(row[colRemarksIdx] || "").trim() : "";
     let contractorVal = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const financialVal = colFinancialIdx >= 0 ? String(row[colFinancialIdx] || "").trim() : "";
@@ -2191,6 +2274,7 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
       colD: nameVal,
       colF: financialVal,
       financialStatus: financialVal,
+      visitType: visitTypeVal,
       colM: contractorVal,
       contractor: contractorVal,
       colL: payBy,
@@ -2212,13 +2296,14 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
     const isCash = isCashPatient(p.colM, p.colF);
     if (!isCash) return false;
 
-    // Must not be excluded debt case (doctor cases, payment by physician, OR/procedure room, home care, etc.)
+    // Must not be excluded debt case (physician-paid doctor cases, OR/procedure room, home care, etc.)
     const isExcluded = isExcludedDebtCase({
       room: p.room,
       patientName: p.colD,
       financialStatus: p.colF,
       contractor: p.colM,
       paymentBy: p.colL,
+      visitType: p.visitType,
       physician: p.physician,
       notes: p.notes
     });
@@ -2236,6 +2321,7 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
       financialStatus: p.colF,
       contractor: p.colM,
       paymentBy: p.colL,
+      visitType: p.visitType,
       physician: p.physician,
       notes: p.notes
     });
@@ -2264,7 +2350,10 @@ function extractSubsheetsFromHospitalData(rows: any) {
   }
 
   // Dynamically build column index resolver to handle exports with dynamic/reordered column positions
-  const { findCol } = buildColumnIndexResolver(rows);
+  const { headerRowIdx, findCol } = buildColumnIndexResolver(rows);
+  if (headerRowIdx >= 0) {
+    startIdx = headerRowIdx + 1;
+  }
 
   const sampleR = rows.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || rows[0] || [];
   const is30Col = sampleR.length < 35 && sampleR.length >= 15;
@@ -2275,19 +2364,19 @@ function extractSubsheetsFromHospitalData(rows: any) {
   const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
   const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج", "طبيب"], is30Col ? 14 : 22, 'name');
   const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], is30Col ? 6 : 12, 'text');
-  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], 5, 'text');
-  const colPaymentByIdx = findCol(["payment by", "paymentby", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], 11, 'text');
-  const colRemarksIdx = findCol(["remarks", "notes", "ملاحظات"], 8, 'text');
-  const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], 25, 'number');
-  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], 27, 'number');
-  const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], 33, 'text');
-  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], 34, 'text');
-  const colUpdateDateIdx = findCol(["prograssnotes creation date", "handover creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], 32, 'date');
+  const colFinancialIdx = findCol(["financial status", "financialstatus", "financial class", "financialclass", "الفئة المالية", "الفئة", "الحالة المالية", "نوع المريض"], is30Col ? -1 : 5, 'text');
+  const colPaymentByIdx = findCol(["payment by", "paymentby", "طريقة الدفع", "الدفع بواسطة", "جهة السداد", "السداد بواسطة", "الدفع"], is30Col ? 5 : 11, 'text');
+  const colRemarksIdx = findCol(["remarks", "notes", "allnotes", "ملاحظات"], is30Col ? -1 : 8, 'text');
+  const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي الحساب", "إجمالي الحساب (z)", "إجمالي", "اجمالي", "الفاتورة"], is30Col ? 16 : 25, 'number');
+  const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي", "المبلغ المتبقي", "متبقي", "باقي"], is30Col ? 18 : 27, 'number');
+  const colSbarIdx = findCol(["handover", "prograssnotes", "medical plan ah", "sbar", "progress notes", "الخطة الطبية", "notes"], is30Col ? 20 : 33, 'text');
+  const colNotesIdx = findCol(["prograssnotes", "hand over", "medical plan ai", "ملاحظات", "notes", "remarks"], is30Col ? 21 : 34, 'text');
+  const colUpdateDateIdx = findCol(["prograssnotes creation date", "handover creation date", "creation date", "medical plan ag", "تاريخ الخطة", "تاريخ التحديث"], is30Col ? 19 : 32, 'date');
   const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], is30Col ? 10 : 16, 'number');
   const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], is30Col ? 12 : 36, 'number');
   const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], is30Col ? 7 : 14, 'text');
-  const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "discharge expected date", "expected discharge"], 20, 'date');
-  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4, 'phone');
+  const colExpectedDiscIdx = findCol(["dischargeexpecteddate", "discharge expected date", "expected discharge"], is30Col ? -1 : 31, 'date');
+  const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], is30Col ? -1 : 4, 'phone');
   const colSpecIdx = findCol(["specialty", "speciality", "التخصص"], is30Col ? 15 : 23, 'text');
 
   // 1. Extract Entries (Today's admissions)
@@ -2310,13 +2399,15 @@ function extractSubsheetsFromHospitalData(rows: any) {
       }
     }
 
-    // Safeguard numeric name
-    if (/^\d+$/.test(name)) {
-      if (mrn && !/^\d+$/.test(mrn)) {
+    // Safeguard numeric or clinical-note leaked name
+    if (/^\d+$/.test(name) || isClinicalProgressNote(name)) {
+      if (mrn && !/^\d+$/.test(mrn) && !isClinicalProgressNote(mrn)) {
         name = mrn;
         mrn = "";
-      } else if (row[2] && !/^\d+$/.test(String(row[2]).trim())) {
+      } else if (row.length < 35 && row[2] && !/^\d+$/.test(String(row[2]).trim()) && !isClinicalProgressNote(String(row[2]).trim())) {
         name = String(row[2]).trim();
+      } else if (row.length >= 35 && row[3] && !/^\d+$/.test(String(row[3]).trim()) && !isClinicalProgressNote(String(row[3]).trim())) {
+        name = String(row[3]).trim();
       }
     }
 
@@ -2334,10 +2425,10 @@ function extractSubsheetsFromHospitalData(rows: any) {
     }
     return { room, name, physician, contractor, date, mrn, rawRow: [...row] };
   }).filter(p => {
-    if (!p.room || !p.name || /^\d+$/.test(p.name)) return false;
+    if (!p.room || !p.name || /^\d+$/.test(p.name) || isClinicalProgressNote(p.name)) return false;
     const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
     const isOR = isOperatingRoom(p.room);
-    const rowAsString = Object.values(p).join(" ").toLowerCase();
+    const rowAsString = `${p.room || ""} ${p.name || ""} ${p.contractor || ""}`.toLowerCase();
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
   });
 
@@ -2350,14 +2441,16 @@ function extractSubsheetsFromHospitalData(rows: any) {
     }
   });
 
+  cumulativeEntries = sanitizeEntryRecords(cumulativeEntries);
   if (cumulativeEntries.length === 0) {
-    cumulativeEntries = newEntries;
+    cumulativeEntries = sanitizeEntryRecords(newEntries);
   } else {
     newEntries.forEach(p => {
-      if (!cumulativeEntries.some(existing => isPatientMatch(existing, p))) {
+      if (!cumulativeEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
         cumulativeEntries.push(p);
       }
     });
+    cumulativeEntries = sanitizeEntryRecords(cumulativeEntries);
   }
 
   // 2. Extract Dialysis (active cases present in current operational census with date = today)
@@ -2381,7 +2474,7 @@ function extractSubsheetsFromHospitalData(rows: any) {
   const medicalPlansRaw = rows.slice(startIdx).map(row => {
     const rawSbar = colSbarIdx >= 0 ? String(row[colSbarIdx] || "").trim() : "";
     const rawNotes = colNotesIdx >= 0 ? String(row[colNotesIdx] || "").trim() : "";
-    const rawUpdate = colUpdateDateIdx >= 0 ? String(row[colUpdateDateIdx] || "").trim() : "";
+    const rawUpdate = colUpdateDateIdx >= 0 ? cleanAdmissionDateStr(row[colUpdateDateIdx]) : "";
     const sbarText = rawSbar || rawNotes || "خطة علاجية تحت المتابعة السريرية";
     const admDate = colAdmIdx >= 0 ? cleanAdmissionDateStr(row[colAdmIdx]) : "";
     const room = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
@@ -2411,13 +2504,16 @@ function extractSubsheetsFromHospitalData(rows: any) {
   }).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
+    const mLower = (p.colM || "").toLowerCase();
     if (!p.colB || p.colB === "") return false;
     const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
                      dLower === "patient" || dLower === "المريض" || dLower === "name" ||
                      bLower === "id" || dLower === "patient name" ||
                      (bLower.includes("bed") && dLower.includes("patient"));
     if (isHeader) return false;
-    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
+    if (isOperatingRoom(p.colB) || isProcedureOrTemporaryRoom(p.colB)) return false;
+    if (isManuallyDischarged(p.colD)) return false;
+    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw) || mLower.includes(kw));
   });
   cumulativeMedicalPlans = medicalPlansRaw;
 
@@ -2425,10 +2521,25 @@ function extractSubsheetsFromHospitalData(rows: any) {
   const companionStatusRaw = rows.slice(startIdx).map(row => {
     const admDate = colAdmIdx >= 0 ? cleanAdmissionDateStr(row[colAdmIdx]) : "";
     const room = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
-    const name = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
-    const contractor = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
-    const physician = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
-    const remarks = colRemarksIdx >= 0 ? String(row[colRemarksIdx] || "").trim() : "";
+    let name = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
+    let contractor = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
+    let physician = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
+    const rawRemarks = colRemarksIdx >= 0 ? String(row[colRemarksIdx] || "").trim() : "";
+    const remarks = isClinicalProgressNote(rawRemarks) ? "" : rawRemarks;
+
+    // Safeguard numeric contractor
+    if (/^\d+(\.\d+)?$/.test(contractor)) {
+      if (row.length < 35 && row[6] && !/^\d+(\.\d+)?$/.test(String(row[6]).trim())) {
+        contractor = String(row[6]).trim();
+      } else if (row.length >= 35 && row[12] && !/^\d+(\.\d+)?$/.test(String(row[12]).trim())) {
+        contractor = String(row[12]).trim();
+      } else {
+        contractor = "";
+      }
+    }
+    if (/^\d+$/.test(name) && row[2] && !/^\d+$/.test(String(row[2]).trim())) {
+      name = String(row[2]).trim();
+    }
     return {
       colA: admDate,
       colB: room,
@@ -2440,13 +2551,23 @@ function extractSubsheetsFromHospitalData(rows: any) {
   }).filter(p => {
     const bLower = p.colB.toLowerCase();
     const dLower = p.colD.toLowerCase();
-    if (!p.colB || p.colB === "") return false;
+    const mLower = (p.colM || "").toLowerCase();
+    if (!p.colB || p.colB === "" || !p.colD) return false;
     const isHeader = bLower === "bed" || bLower === "room" || bLower === "الغرفة" || 
                      dLower === "patient" || dLower === "المريض" || dLower === "name" ||
                      bLower === "id" || dLower === "patient name" ||
                      (bLower.includes("bed") && dLower.includes("patient"));
     if (isHeader) return false;
-    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw));
+    if (isOperatingRoom(p.colB) || isProcedureOrTemporaryRoom(p.colB) || bLower.includes("nicu")) return false;
+    if (isManuallyDischarged(p.colD)) return false;
+    return !KEYWORDS_TO_EXCLUDE.some(kw => bLower.includes(kw) || mLower.includes(kw));
+  }).sort((a, b) => {
+    const roomA = String(a.colB || "").toUpperCase();
+    const roomB = String(b.colB || "").toUpperCase();
+    const numA = parseInt(roomA.match(/\d+/)?.[0] || "999999", 10);
+    const numB = parseInt(roomB.match(/\d+/)?.[0] || "999999", 10);
+    if (numA !== numB) return numA - numB;
+    return roomA.localeCompare(roomB);
   });
   cumulativeCompanionStatus = companionStatusRaw;
 
@@ -2470,7 +2591,7 @@ function extractSubsheetsFromHospitalData(rows: any) {
     }
     const contractor = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const diagnosis = colDiagIdx >= 0 ? String(row[colDiagIdx] || "").trim() : "";
-    const expectedDisc = colExpectedDiscIdx >= 0 ? String(row[colExpectedDiscIdx] || "").trim() : "";
+    const expectedDisc = colExpectedDiscIdx >= 0 ? cleanExpectedDischargeDateStr(row[colExpectedDiscIdx]) : "";
     const physician = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
 
     return {
@@ -2657,30 +2778,18 @@ async function executeLoadData(force = false) {
     };
 
     // Query granular state and settings nodes using a 2-stage egress-optimized fetch:
-    // Stage 1: Only query path and updated_at (tiny metadata payload) for state/% and settings/%
-    const [sbStateMetaRes, sbSettingsMetaRes] = await Promise.all([
-      supabaseAdmin
-        .from('rtdb_nodes')
-        .select('path, updated_at')
-        .like('path', 'state/%')
-        .neq('path', 'state/dataset'),
-      supabaseAdmin
-        .from('rtdb_nodes')
-        .select('path, updated_at')
-        .like('path', 'settings/%')
-    ]);
+    // Stage 1: Single combined query for path and updated_at (tiny metadata payload) across state/% and settings/%
+    const sbMetaRes = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('path, updated_at')
+      .or('path.like.state/%,path.like.settings/%')
+      .neq('path', 'state/dataset');
 
-    if (sbStateMetaRes.error) {
-      console.error('Supabase granular state metadata query error:', sbStateMetaRes.error);
-    }
-    if (sbSettingsMetaRes.error) {
-      console.error('Supabase settings metadata query error:', sbSettingsMetaRes.error);
+    if (sbMetaRes.error) {
+      console.error('Supabase granular state/settings metadata query error:', sbMetaRes.error);
     }
 
-    const metaNodes = [
-      ...(sbStateMetaRes.data || []),
-      ...(sbSettingsMetaRes.data || [])
-    ];
+    const metaNodes = sbMetaRes.data || [];
 
     const pathsToFetch: string[] = [];
     let latestNodeUpdated: string | null = null;
@@ -2921,15 +3030,25 @@ async function executeLoadData(force = false) {
       // Non-blocking
     }
 
-    // Snapshot fallbacks: Ensure active data for today is NEVER lost on database restart
+    // Snapshot fallbacks: Ensure active data for today is NEVER lost on database restart,
+    // while honoring explicit 0-count metadata so we don't fetch ~250KB snapshots when counts are legitimately 0.
     const cairoNow = getCairoDateTime();
     const isTodayActive = Boolean(lastActiveDate && lastActiveDate === cairoNow.dateStr);
     const isTodayNotReset = lastEgyptianAutoResetDate !== cairoNow.dateStr;
 
-    const needsOccFallback = (!hospitalData || hospitalData.length === 0) && isTodayActive;
-    const needsDiscFallback = (!cumulativeDischarged || cumulativeDischarged.length === 0) && isTodayActive && isTodayNotReset;
-    const needsDialFallback = (!cumulativeDialysis || cumulativeDialysis.length === 0) && isTodayActive && isTodayNotReset;
-    const needsTransFallback = (!cumulativeTransfers || cumulativeTransfers.length === 0) && isTodayActive && isTodayNotReset;
+    const metaCounts = (stateMap['state/metadata'] && typeof stateMap['state/metadata'] === 'object')
+      ? (stateMap['state/metadata'].counts || {})
+      : {};
+    const hasExplicitZeroOcc = stateMap['state/occupancy'] !== undefined && metaCounts.occupiedBeds === 0;
+    const hasExplicitZeroDisc = stateMap['state/discharged'] !== undefined && metaCounts.discharged === 0;
+    const hasExplicitZeroDial = stateMap['state/dialysis'] !== undefined && metaCounts.dialysis === 0;
+    const hasExplicitZeroTrans = stateMap['state/transfers'] !== undefined && metaCounts.transfers === 0;
+    const hasExplicitZeroOr = stateMap['state/or_list'] !== undefined && metaCounts.orList === 0;
+
+    const needsOccFallback = (!hospitalData || hospitalData.length === 0) && isTodayActive && !hasExplicitZeroOcc;
+    const needsDiscFallback = (!cumulativeDischarged || cumulativeDischarged.length === 0) && isTodayActive && isTodayNotReset && !hasExplicitZeroDisc;
+    const needsDialFallback = (!cumulativeDialysis || cumulativeDialysis.length === 0) && isTodayActive && isTodayNotReset && !hasExplicitZeroDial;
+    const needsTransFallback = (!cumulativeTransfers || cumulativeTransfers.length === 0) && isTodayActive && isTodayNotReset && !hasExplicitZeroTrans;
 
     if (needsOccFallback || needsDiscFallback || needsDialFallback || needsTransFallback) {
       try {
@@ -2963,7 +3082,7 @@ async function executeLoadData(force = false) {
     }
 
     // OR List Snapshot: Only restore from TODAY'S snapshot if available and active (never resurrect old historical OR lists or reset lists)
-    if ((!cumulativeORList || cumulativeORList.length === 0) && isTodayActive && isTodayNotReset) {
+    if ((!cumulativeORList || cumulativeORList.length === 0) && isTodayActive && isTodayNotReset && !hasExplicitZeroOr) {
       try {
         const todaySnap = await getORSnapshot(cairoNow.dateStr);
         if (todaySnap && Array.isArray(todaySnap.orList) && todaySnap.orList.length > 0) {
@@ -3063,10 +3182,21 @@ async function executeLoadData(force = false) {
     .filter(Boolean);
   manuallyDischargedNames = Array.from(new Set(activeManualFromDischarged));
 
-  cumulativeEntries = (cumulativeEntries || []).filter(p => {
+  cumulativeEntries = (cumulativeEntries || []).map(p => {
+    if (!p) return null;
+    // Recover real patient name from rawRow if p.name was polluted by a clinical SBAR note or age number
+    if (p.name && (isClinicalProgressNote(String(p.name)) || /^\d+$/.test(String(p.name).trim())) && Array.isArray(p.rawRow)) {
+      const candidateIdx = p.rawRow.length < 35 ? 2 : 3;
+      const candidateName = String(p.rawRow[candidateIdx] || "").trim();
+      if (candidateName && !/^\d+$/.test(candidateName) && !isClinicalProgressNote(candidateName)) {
+        p = { ...p, name: candidateName };
+      }
+    }
+    return p;
+  }).filter(p => {
     if (!p) return false;
-    // Drop corrupted entries where name is a pure number (e.g. "39" which is age)
-    if (!p.name || /^\d+$/.test(String(p.name).trim())) {
+    // Drop corrupted entries where name is a pure number or clinical SBAR note
+    if (!p.name || /^\d+$/.test(String(p.name).trim()) || isClinicalProgressNote(String(p.name))) {
       return false;
     }
     const dDate = p.date || p.rawDate;
@@ -3953,13 +4083,20 @@ async function saveData() {
 
         // Upsert in small batches (CHUNK_SIZE = 4) to prevent PostgreSQL statement_timeout (error 57014)
         let sbErr: any = null;
+        const upsertedTimestamps: { path: string; updated_at: string }[] = [];
         const CHUNK_SIZE = 4;
         for (let i = 0; i < nodesToUpsert.length; i += CHUNK_SIZE) {
           const chunk = nodesToUpsert.slice(i, i + CHUNK_SIZE);
           for (let attempt = 1; attempt <= 3; attempt++) {
-            const { error } = await supabaseAdmin.from('rtdb_nodes').upsert(chunk);
+            const { data: upData, error } = await supabaseAdmin
+              .from('rtdb_nodes')
+              .upsert(chunk)
+              .select('path, updated_at');
             if (!error) {
               sbErr = null;
+              if (upData && Array.isArray(upData)) {
+                upsertedTimestamps.push(...upData);
+              }
               break;
             }
             sbErr = error;
@@ -3983,33 +4120,42 @@ async function saveData() {
             inMemoryNodeTimestamps[un.path] = un.updated_at;
             inMemoryStateMap[un.path] = un.data;
           }
-          // Synchronize inMemoryNodeTimestamps and lastKnownDatabaseUpdatedAt with PostgreSQL's trigger-assigned updated_at
-          try {
-            const [sMeta, setMeta] = await Promise.all([
-              supabaseAdmin.from('rtdb_nodes').select('path, updated_at').like('path', 'state/%'),
-              supabaseAdmin.from('rtdb_nodes').select('path, updated_at').like('path', 'settings/%')
-            ]);
-            const dbTsRows = [...(sMeta?.data || []), ...(setMeta?.data || [])];
-            for (const row of dbTsRows) {
-              if (row?.path && row?.updated_at) {
-                inMemoryNodeTimestamps[row.path] = String(row.updated_at);
-                if (row.path === 'state/metadata') {
-                  lastKnownDatabaseUpdatedAt = String(row.updated_at);
-                }
+          // Synchronize inMemoryNodeTimestamps and lastKnownDatabaseUpdatedAt with PostgreSQL's trigger-assigned updated_at returned by .select('path, updated_at')
+          for (const row of upsertedTimestamps) {
+            if (row?.path && row?.updated_at) {
+              inMemoryNodeTimestamps[row.path] = String(row.updated_at);
+              if (row.path === 'state/metadata') {
+                lastKnownDatabaseUpdatedAt = String(row.updated_at);
               }
             }
-          } catch (_) {
-            // Non-blocking fallback
           }
         }
       }
 
-      // 3. Automatically create/update the database snapshot for the active date on every change
+      // 3. Automatically create/update the database snapshot and relational tables ONLY for dirty content nodes
+      const dirtyPathSet = new Set(dirtyContentNodes.map(n => n.path));
+      const isOccupancySnapshotDirty =
+        dirtyPathSet.has('state/occupancy') ||
+        dirtyPathSet.has('state/discharged') ||
+        dirtyPathSet.has('state/entries') ||
+        dirtyPathSet.has('state/dialysis') ||
+        dirtyPathSet.has('state/transfers') ||
+        dirtyPathSet.has('state/debts') ||
+        dirtyPathSet.has('state/insured_debts') ||
+        dirtyPathSet.has('state/medical_plans') ||
+        dirtyPathSet.has('state/companion_status') ||
+        dirtyPathSet.has('state/los_data');
+      const isOrSnapshotDirty = dirtyPathSet.has('state/or_list');
+      const isBedCensusDirty = dirtyPathSet.has('state/occupancy') || dirtyPathSet.has('state/discharged');
+      const isOccupancyNodeDirty = dirtyPathSet.has('state/occupancy');
+      const isTransfersNodeDirty = dirtyPathSet.has('state/transfers');
+      const isDebtsNodeDirty = dirtyPathSet.has('state/debts') || dirtyPathSet.has('state/insured_debts');
+
       try {
         const cairo = getCairoDateTime();
         const activeDateStr = uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || cairo.dateStr);
         // INVARIANT GUARD: Never overwrite an already closed & reset date's snapshot!
-        if (activeDateStr !== lastEgyptianAutoResetDate) {
+        if (isOccupancySnapshotDirty && activeDateStr !== lastEgyptianAutoResetDate) {
           if (
             (hospitalData && hospitalData.length > 0) ||
             (cumulativeDischarged && cumulativeDischarged.length > 0) ||
@@ -4021,7 +4167,7 @@ async function saveData() {
             console.log(`Automatic occupancy database snapshot saved for date ${activeDateStr}.`);
           }
         }
-        if (cumulativeORList && cumulativeORList.length > 0) {
+        if (isOrSnapshotDirty && cumulativeORList && cumulativeORList.length > 0) {
           const rawOrDate = cumulativeORList[0]?.orListDate || '';
           const targetOrDate = normalizeToISODate(rawOrDate) || activeDateStr;
           if (targetOrDate !== lastEgyptianAutoResetDate) {
@@ -4030,8 +4176,8 @@ async function saveData() {
           }
         }
 
-        // Continuously capture peak daily bed & OR occupancy in Supabase
-        if (activeDateStr !== lastEgyptianAutoResetDate) {
+        // Continuously capture peak daily bed & OR occupancy in Supabase when census data changes
+        if (isBedCensusDirty && activeDateStr !== lastEgyptianAutoResetDate) {
           const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
           if (occRows && occRows.length > 3) {
             cumulativeOccupancy.recordPeakBedCensus(activeDateStr, occRows, cumulativeDischarged || [], 'provisional').catch(err => {
@@ -4039,7 +4185,7 @@ async function saveData() {
             });
           }
         }
-        if (cumulativeORList && cumulativeORList.length > 0) {
+        if (isOrSnapshotDirty && cumulativeORList && cumulativeORList.length > 0) {
           const rawOrDate = cumulativeORList[0]?.orListDate || '';
           const targetOrDate = normalizeToISODate(rawOrDate) || activeDateStr;
           if (targetOrDate !== lastEgyptianAutoResetDate) {
@@ -4049,13 +4195,13 @@ async function saveData() {
           }
         }
 
-        if (hospitalData && hospitalData.length > 0) {
+        if (isOccupancyNodeDirty && hospitalData && hospitalData.length > 0) {
           syncOccupancyToRelationalSchema(hospitalData).catch(err => console.error('[Relational Occupancy Sync Error]:', err?.message || err));
         }
-        if (cumulativeTransfers && cumulativeTransfers.length > 0) {
+        if (isTransfersNodeDirty && cumulativeTransfers && cumulativeTransfers.length > 0) {
           syncTransfersToRelationalSchema(cumulativeTransfers).catch(err => console.error('[Relational Transfers Sync Error]:', err?.message || err));
         }
-        if ((cumulativeDebts && cumulativeDebts.length > 0) || (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0)) {
+        if (isDebtsNodeDirty && ((cumulativeDebts && cumulativeDebts.length > 0) || (cumulativeInsuredDebts && cumulativeInsuredDebts.length > 0))) {
           syncDebtsToRelationalSchema(cumulativeDebts, cumulativeInsuredDebts).catch(err => console.error('[Relational Debts Sync Error]:', err?.message || err));
         }
       } catch (snapErr) {
@@ -4231,17 +4377,15 @@ function setupServerDatabaseAutoSync() {
   }
 }
 
-// Trigger loadData asynchronously during startup
-loadData().then(() => {
-  if (!IS_VERCEL) {
+// Trigger loadData asynchronously during startup only on persistent servers (not on Vercel Serverless cold import)
+if (!IS_VERCEL) {
+  loadData().then(() => {
     setupServerDatabaseAutoSync();
-  }
-}).catch(err => {
-  console.error("Async startup data load failed:", err);
-  if (!IS_VERCEL) {
+  }).catch(err => {
+    console.error("Async startup data load failed:", err);
     setupServerDatabaseAutoSync();
-  }
-});
+  });
+}
 
 const GLOBAL_EXCLUSIONS = [
   "homecare", "home care", 
@@ -4312,9 +4456,11 @@ async function handleUnifiedUpload(req: any, res: any) {
     // Dynamically find where data starts
     let startIdx = 3; // default
     for(let i = 0; i < Math.min(rows.length, 10); i++) {
+        const r0 = String(rows[i][0] || "").toLowerCase();
         const r1 = String(rows[i][1] || "").toLowerCase();
+        const r2 = String(rows[i][2] || "").toLowerCase();
         const r3 = String(rows[i][3] || "").toLowerCase();
-        if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة")) {
+        if ((r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r2.includes("patient") || r2.includes("المريض") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r2 === "name" || r3 === "name" || r1 === "غرفة")) {
             startIdx = i + 1;
             break;
         }
@@ -4366,16 +4512,17 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     // CRITICAL: manuallyDischargedNames and manual discharges are persistent and must NOT be wiped or reverted when uploading a sheet
     const headerRow = rows.slice(0, startIdx);
-    const dataRowsFiltered = rows.slice(startIdx).filter(row => {
-      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
-      const is30Col = row.length < 35 && row.length >= 15;
-      const patientName = is30Col ? String(row[2] || "").trim() : (isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim());
-      const patientMrn = is30Col ? "" : (isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, ""));
+    const sampleUploadRow = rows.slice(startIdx).find(r => r && r.length >= 15) || rows[startIdx] || [];
+    const isUpload30Col = sampleUploadRow.length >= 15 && sampleUploadRow.length < 35;
+    const { findCol: findUploadCol } = buildColumnIndexResolver(rows);
+    const uploadNameIdx = findUploadCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم"], isUpload30Col ? 2 : 3, 'name');
+    const uploadMrnIdx = findUploadCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف"], isUpload30Col ? -1 : 2, 'id');
 
-      if (isManuallyDischarged(patientName)) return false;
-      if (isManuallyDischarged(String(row[3] || "").trim())) return false;
-      if (isManuallyDischarged(String(row[2] || "").trim())) return false;
-      if (isManuallyDischarged(String(row[1] || "").trim())) return false;
+    const dataRowsFiltered = rows.slice(startIdx).filter(row => {
+      const patientName = uploadNameIdx >= 0 ? String(row[uploadNameIdx] || "").trim() : "";
+      const patientMrn = uploadMrnIdx >= 0 ? String(row[uploadMrnIdx] || "").trim().replace(/^0+/, "") : "";
+
+      if (patientName && isManuallyDischarged(patientName)) return false;
 
       if (cumulativeDischarged && cumulativeDischarged.some(p => 
         (p.dischargeType === 'manual' || isManuallyDischarged(p.name)) &&
@@ -4390,9 +4537,9 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     const extractRowsFromData = (sourceData: any[][], skip: number) => {
       if (!sourceData || sourceData.length <= skip) return [];
-      const extracted = extractRawPatientsFromRows(sourceData.slice(skip));
+      const extracted = extractRawPatientsFromRows(sourceData);
       return extracted.filter(p => {
-        if (!p.room || !p.name || /^\d+$/.test(p.name)) return false;
+        if (!p.room || !p.name || /^\d+$/.test(p.name) || isClinicalProgressNote(p.name)) return false;
         const rowAsString = Object.values(p).join(" ").toLowerCase();
         const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
         const isOR = isOperatingRoom(p.room);
@@ -4445,20 +4592,43 @@ async function handleUnifiedUpload(req: any, res: any) {
       }
     }
 
-    // Seed patient room registry from baseline if currently empty to ensure transfer detection
-    if (baselineData && Object.keys(patientRoomRegistry).length === 0) {
+    // Always synchronize patientRoomRegistry from baselineData before transfer detection
+    // so every patient present in baselineData has their baseline room registered prior to comparing with the new sheet
+    if (baselineData) {
       const basePatients = extractRawPatientsFromRows(baselineData);
       basePatients.forEach(p => {
         if (p.name && p.room) {
-          const regKey = p.mrn ? `mrn:${p.mrn}` : p.name.trim();
-          patientRoomRegistry[regKey] = {
-            name: p.name.trim(),
-            mrn: p.mrn || "",
-            lastRoom: cleanRoomStr(p.room),
-            physician: p.physician || "",
-            contractor: p.contractor || "",
-            date: p.date || p.rawDate || ""
-          };
+          const normRoom = cleanRoomStr(p.room);
+          if (isOperatingRoom(normRoom) || isProcedureOrTemporaryRoom(normRoom)) return;
+          const rowStr = `${normRoom} ${p.name}`.toLowerCase();
+          if (KEYWORDS_TO_EXCLUDE.some(kw => rowStr.includes(kw))) return;
+          const realMrn = (p.mrn && !String(p.mrn).startsWith("UNKNOWN-")) ? String(p.mrn).replace(/^0+/, "") : "";
+          const existingEntryKey = Object.keys(patientRoomRegistry).find(k => {
+            const entry = patientRoomRegistry[k];
+            if (!entry) return false;
+            const entryRealMrn = (entry.mrn && !String(entry.mrn).startsWith("UNKNOWN-")) ? String(entry.mrn).replace(/^0+/, "") : "";
+            if (realMrn && entryRealMrn) return realMrn === entryRealMrn;
+            return isNameMatch(entry.name || k, p.name);
+          });
+          if (!existingEntryKey) {
+            const regKey = realMrn ? `mrn:${realMrn}` : p.name.trim();
+            patientRoomRegistry[regKey] = {
+              name: p.name.trim(),
+              mrn: realMrn || p.mrn || "",
+              lastRoom: normRoom,
+              physician: p.physician || "",
+              contractor: p.contractor || "",
+              date: p.date || p.rawDate || ""
+            };
+          } else {
+            const existing = patientRoomRegistry[existingEntryKey];
+            if (existing) {
+              if (!existing.lastRoom) existing.lastRoom = normRoom;
+              if (realMrn && (!existing.mrn || String(existing.mrn).startsWith("UNKNOWN-"))) {
+                existing.mrn = realMrn;
+              }
+            }
+          }
         }
       });
     }
@@ -4521,6 +4691,7 @@ async function handleUnifiedUpload(req: any, res: any) {
     }
 
     // Update cumulative entries (today's entries)
+    cumulativeEntries = sanitizeEntryRecords(cumulativeEntries);
     newRows.forEach(p => {
       const isEntryToday = isToday(p.date) || isToday(p.rawDate) || isToday((p.date || "").split(" ")[0]) || isToday((p.rawDate || "").split(" ")[0]);
       if (isEntryToday) {
@@ -4530,6 +4701,7 @@ async function handleUnifiedUpload(req: any, res: any) {
         }
       }
     });
+    cumulativeEntries = sanitizeEntryRecords(cumulativeEntries);
     
     // Track and record patient room transfers
     const deduplicatedPatients = extractRawPatientsFromRows(rows);
@@ -4791,28 +4963,32 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
     for (let i = 0; i < Math.min(rows.length, 10); i++) {
       const r0 = String(rows[i][0] || "").toLowerCase();
       const r1 = String(rows[i][1] || "").toLowerCase();
+      const r2 = String(rows[i][2] || "").toLowerCase();
       const r3 = String(rows[i][3] || "").toLowerCase();
-      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name") {
+      if (r0.includes("admission") || r0.includes("تاريخ") || r1.includes("room") || r1.includes("الغرفة") || r2.includes("patient") || r2.includes("المريض") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r2 === "name" || r3 === "name") {
         startIdx = i + 1;
         break;
       }
     }
 
+    const sampleDataRow = rows.slice(startIdx).find(r => r && r.length >= 15) || rows[startIdx] || [];
+    const is30Col = sampleDataRow.length >= 15 && sampleDataRow.length < 35;
+
     const { findCol } = buildColumnIndexResolver(rows);
     const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
     const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1, 'room');
-    const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], 2, 'id');
-    const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة"], 3, 'name');
-    const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], 25, 'number');
-    const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], 27, 'number');
-    const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], 12, 'text');
-    const colFinancialIdx = findCol(["financial status", "financial class", "payment by", "paymentby", "الفئة", "نوع"], 5, 'text');
-    const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22, 'name');
-    const colSpecIdx = findCol(["specialty", "speciality", "التخصص"], 23, 'text');
-    const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14, 'text');
-    const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], 4, 'phone');
-    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 16, 'number');
-    const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], 36, 'number');
+    const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], is30Col ? -1 : 2, 'id');
+    const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة"], is30Col ? 2 : 3, 'name');
+    const colTotalIdx = findCol(["invoice total", "total invoice", "sum of ftotal", "ftotal", "total bill", "total amount", "total", "إجمالي الفاتورة", "إجمالي", "اجمالي"], is30Col ? 16 : 25, 'number');
+    const colRemainingIdx = findCol(["remaining", "sum of difference", "remaining amount", "difference", "balance", "المتبقي", "الباقي"], is30Col ? 18 : 27, 'number');
+    const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "الجهة", "الشركة", "جهة الدفع"], is30Col ? 6 : 12, 'text');
+    const colFinancialIdx = findCol(["financial status", "financial class", "الفئة", "نوع"], is30Col ? -1 : 5, 'text');
+    const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], is30Col ? 14 : 22, 'name');
+    const colSpecIdx = findCol(["specialty", "speciality", "التخصص"], is30Col ? 15 : 23, 'text');
+    const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], is30Col ? 7 : 14, 'text');
+    const colMobileIdx = findCol(["defaultmobile", "mobile", "phone", "الجوال", "الهاتف", "رقم الجوال", "رقم الهاتف"], is30Col ? -1 : 4, 'phone');
+    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], is30Col ? 10 : 16, 'number');
+    const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], is30Col ? 12 : 36, 'number');
 
     const rpcPayload: any[] = [];
     rows.slice(startIdx).forEach(row => {
@@ -5152,37 +5328,43 @@ async function syncDebtsToRelationalSchema(cashDebts: any[], insuredDebts: any[]
         (insertedPts || []).forEach(p => { if (p.mrn) patientMap.set(p.mrn, p.id); });
       }
 
-      // 3. Batch query active admissions for matched patients
+      // 3. Batch query active admissions for matched patients (including existing invoice/debt values to skip unchanged updates)
       const resolvedPatientIds = itemMetas.map(item => {
         const pId = (item.cleanMrn ? patientMap.get(item.cleanMrn) : null) || (item.rawMrn ? patientMap.get(item.rawMrn) : null);
         item.patientId = pId;
         return pId;
       }).filter(Boolean) as string[];
 
-      const activeAdmissionsMap = new Map<string, string>();
+      const activeAdmissionsMap = new Map<string, any>();
       if (resolvedPatientIds.length > 0) {
         const { data: activeAdms } = await supabaseAdmin
           .from('admissions')
-          .select('id, patient_id')
+          .select('id, patient_id, total_invoice, remaining_debt, contractor_name, financial_status')
           .in('patient_id', resolvedPatientIds)
           .eq('status', 'Admitted');
-        (activeAdms || []).forEach(a => activeAdmissionsMap.set(a.patient_id, a.id));
+        (activeAdms || []).forEach(a => activeAdmissionsMap.set(a.patient_id, a));
       }
 
-      // 4. Update or insert admissions in batch
+      // 4. Update or insert admissions in batch, skipping rows whose values are already up-to-date
       for (const item of itemMetas) {
         if (!item.patientId) continue;
-        const updatePayload: any = {
-          total_invoice: item.totalVal,
-          remaining_debt: item.remainingVal,
-          updated_at: new Date().toISOString()
-        };
-        if (item.contractor) updatePayload.contractor_name = item.contractor;
-        if (item.financial) updatePayload.financial_status = item.financial;
-
-        const activeAdmId = activeAdmissionsMap.get(item.patientId);
-        if (activeAdmId) {
-          await supabaseAdmin.from('admissions').update(updatePayload).eq('id', activeAdmId);
+        const activeAdm = activeAdmissionsMap.get(item.patientId);
+        if (activeAdm) {
+          const sameTotal = Math.abs((Number(activeAdm.total_invoice) || 0) - (Number(item.totalVal) || 0)) < 0.01;
+          const sameRem = Math.abs((Number(activeAdm.remaining_debt) || 0) - (Number(item.remainingVal) || 0)) < 0.01;
+          const sameContractor = !item.contractor || String(activeAdm.contractor_name || '').trim() === item.contractor;
+          const sameFinancial = !item.financial || String(activeAdm.financial_status || '').trim() === item.financial;
+          if (sameTotal && sameRem && sameContractor && sameFinancial) {
+            continue;
+          }
+          const updatePayload: any = {
+            total_invoice: item.totalVal,
+            remaining_debt: item.remainingVal,
+            updated_at: new Date().toISOString()
+          };
+          if (item.contractor) updatePayload.contractor_name = item.contractor;
+          if (item.financial) updatePayload.financial_status = item.financial;
+          await supabaseAdmin.from('admissions').update(updatePayload).eq('id', activeAdm.id);
           updatedCount++;
         } else {
           await supabaseAdmin.from('admissions').insert({
@@ -5682,10 +5864,10 @@ async function addRefinedEntrySheet(workbook: ExcelJS.Workbook, entryPatients: a
     views: [{ rightToLeft: false }] 
   });
 
-  const processedData = entryPatients.filter(p => {
+  const processedData = sanitizeEntryRecords(entryPatients).filter(p => {
     const roomStr = p.room || p.colB || "";
     if (isOperatingRoom(roomStr)) return false;
-    const rowAsString = Object.values(p).join(" ").toLowerCase();
+    const rowAsString = `${roomStr} ${p.name || ""} ${p.contractor || ""}`.toLowerCase();
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
 
@@ -7246,10 +7428,10 @@ function addEntrySheet(workbook: ExcelJS.Workbook, entryPatients: any[]) {
   });
 
   // Apply room filter to entries: if they moved to an excluded room, hide them
-  const processedData = entryPatients.filter(p => {
+  const processedData = sanitizeEntryRecords(entryPatients).filter(p => {
     const roomStr = p.room || p.colB || "";
     if (isOperatingRoom(roomStr)) return false;
-    const rowAsString = Object.values(p).join(" ").toLowerCase();
+    const rowAsString = `${roomStr} ${p.name || ""} ${p.contractor || ""}`.toLowerCase();
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
 
@@ -7790,9 +7972,9 @@ async function updateHospitalState(rows: any[][]) {
 
   const extractRowsFromData = (sourceData: any[][], skip: number) => {
     if (!sourceData || sourceData.length <= skip) return [];
-    const extracted = extractRawPatientsFromRows(sourceData.slice(skip));
+    const extracted = extractRawPatientsFromRows(sourceData);
     return extracted.filter(p => {
-      if (!p.room || !p.name || /^\d+$/.test(p.name)) return false;
+      if (!p.room || !p.name || /^\d+$/.test(p.name) || isClinicalProgressNote(p.name)) return false;
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
@@ -8373,11 +8555,21 @@ app.all('/api/vip-cases/formatted', async (req, res) => {
     return false;
   }
 
-  if (!hospitalData) {
-    return res.json({ text: "Please upload data first." });
+  if (!hospitalData || hospitalData.length === 0) {
+    await loadData();
+  }
+  let targetHospitalData = hospitalData;
+  if (!targetHospitalData || targetHospitalData.length === 0) {
+    const resolved = await resolveOccupancyDataset(req.body?.date || (req.query?.date as string));
+    if (resolved && resolved.hospitalData && resolved.hospitalData.length > 0) {
+      targetHospitalData = resolved.hospitalData;
+    }
+  }
+  if (!targetHospitalData || targetHospitalData.length === 0) {
+    return res.status(400).json({ error: "Please upload data first." });
   }
 
-  const dataRows = getOccupancyRows(hospitalData).slice(3);
+  const dataRows = getOccupancyRows(targetHospitalData).slice(3);
   const detectedVips: any[] = [];
 
   for (const row of dataRows) {
@@ -8436,7 +8628,7 @@ app.all('/api/vip-cases/formatted', async (req, res) => {
     outputLines.push("No active VIP cases found.");
   } else {
     detectedVips.forEach((vip, idx) => {
-      outputLines.push(`${idx + 1}- ${vip.name} | ${vip.room}`);
+      outputLines.push(`${idx + 1}- ${vip.name} | ${formatRoomForSheet(vip.room) || vip.room}`);
     });
   }
 
@@ -9037,7 +9229,7 @@ async function resolveOccupancyDataset(reqDate?: string | null) {
     const activeEntriesToday = rawActive.filter(p => 
       isToday(p.date, cairoTodayStr) || isToday(p.rawDate, cairoTodayStr)
     );
-    const allEntries = [...(cumulativeEntries || []), ...activeEntriesToday];
+    const allEntries = sanitizeEntryRecords([...(cumulativeEntries || []), ...activeEntriesToday]);
     const uniqueEntries: any[] = [];
     allEntries.forEach(p => {
       if (!uniqueEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
@@ -13320,6 +13512,7 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
     if (roomNum >= 101 && roomNum <= 108) group = "1st Floor (101-108)";
     else if (roomNum >= 301 && roomNum <= 319) group = "301-319";
     else if (roomNum >= 320 && roomNum <= 329) group = "320-329";
+    else if (roomNum >= 330 && roomNum <= 332) group = "330-332";
     else if (roomNum >= 401 && roomNum <= 422) group = "4th Floor (401-422)";
     else if (roomStr.includes("VIP")) group = "VIP";
 
@@ -13335,7 +13528,8 @@ function addCompanionStatusSheet(workbook: ExcelJS.Workbook, data: any[]) {
 
     const isClosedUnit = COMPANION_EXCLUDED_DEPTS.some(dept => roomStr.includes(dept)) || roomStr === "OR" || roomStr.includes(" OR ") || roomStr.startsWith("OR ") || roomStr.endsWith(" OR");
     const cleanedContractor = cleanContractorForDisplay(p.colM);
-    const rowValues = [serial++, formatDateForSheet(p.colA), formatRoomForSheet(p.colB), p.colD, p.colW, cleanedContractor, getResponsibleOfficer(p.colM), isClosedUnit ? "" : p.colI, isPatientVip(p.colD) ? "VIP" : ""];
+    const safeCompanionNotes = isClosedUnit || isClinicalProgressNote(String(p.colI || "")) ? "" : p.colI;
+    const rowValues = [serial++, formatDateForSheet(p.colA), formatRoomForSheet(p.colB), p.colD, p.colW, cleanedContractor, getResponsibleOfficer(p.colM), safeCompanionNotes, isPatientVip(p.colD) ? "VIP" : ""];
     const pRow = sheet.addRow(rowValues);
     pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = {
@@ -13502,7 +13696,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
       sheet.addRow(['', '', '', '', '', '', '', '', '']);
       sheet.mergeCells(sepRowIdx, 1, sepRowIdx, 9);
       const separatorCell = sheet.getCell(sepRowIdx, 1);
-      const displayGroupName = group === "VIP" ? "VIP ICU" : group;
+      const displayGroupName = group === "VIP" ? "VIP Floor" : group;
       separatorCell.value = `■  ${displayGroupName}  ■`;
       separatorCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColors.badge } };
       separatorCell.font = { bold: true, size: 12, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
@@ -13512,6 +13706,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
 
     const isClosedUnit = isClosedUnitByDept;
     const cleanedContractor = cleanContractorForDisplay(p.colM);
+    const safeCompanionNotes = isClosedUnit || isClinicalProgressNote(String(p.colI || "")) ? "" : p.colI;
     const rowValues = [
       serial++, 
       formatDateForSheet(p.colA), 
@@ -13520,7 +13715,7 @@ async function addRefinedCompanionStatusSheet(workbook: ExcelJS.Workbook, data: 
       p.colW, 
       cleanedContractor, 
       getResponsibleOfficer(p.colM),
-      isClosedUnit ? "" : p.colI,
+      safeCompanionNotes,
       isPatientVip(p.colD) ? "VIP" : ""
     ];
     
@@ -16983,7 +17178,8 @@ function addClosedUnitsSummarySheet(workbook: ExcelJS.Workbook, data: any[][]) {
 }
 
 app.get('/api/reports/closed_units_summary', async (req, res) => {
-  if (!hospitalData) return res.status(400).json({ error: 'Please upload data first.' });
+  if (!hospitalData || hospitalData.length === 0) await loadData();
+  if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
     const workbook = new ExcelJS.Workbook();
     addClosedUnitsSummarySheet(workbook, getOccupancyRows(hospitalData));
@@ -17666,17 +17862,19 @@ async function addSpecialtyOccupancySheet(
     }
 
     // 2. Extract active occupancy cases directly from raw dataset to preserve all clinical columns
+    const sampleOccRow = occData.slice(startIdx).find((r: any) => Array.isArray(r) && r.length > 5) || occData[0] || [];
+    const is30ColOcc = sampleOccRow.length < 35 && sampleOccRow.length >= 15;
     const { findCol } = buildColumnIndexResolver(occData);
     const colAdmIdx = findCol(["admission date", "admissiondate", "date", "تاريخ الدخول", "التاريخ", "تاريخ", "admission", "no filters applied"], 0, 'date');
     const colRoomIdx = findCol(["bed#", "bedname_en", "bed", "room", "bed no", "الغرفة", "غرفة", "السرير", "سرير"], 1, 'room');
-    const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], 2, 'id');
-    const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة"], 3, 'name');
-    const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], 12, 'text');
-    const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], 14, 'text');
-    const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], 22, 'name');
-    const colSpecIdx = findCol(["specialty", "speciality", "التخصص"], 23, 'text');
-    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], 16, 'number');
-    const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], 36, 'number');
+    const colMrnIdx = findCol(["mrn", "patientbarcode", "patient id", "patient mrn", "رقم المريض", "الملف", "رقم الملف", "كود المريض"], is30ColOcc ? -1 : 2, 'id');
+    const colNameIdx = findCol(["patient name", "patient", "englishfullname", "name", "المريض", "اسم المريض", "الاسم", "اسم الحالة"], is30ColOcc ? 2 : 3, 'name');
+    const colContractorIdx = findCol(["contractor name", "contractorname", "contractor", "contract", "التعاقد", "جهة التعاقد", "اسم الجهة", "الجهة والتعاقد", "الجهة", "الشركة", "جهة الدفع"], is30ColOcc ? 6 : 12, 'text');
+    const colDiagIdx = findCol(["icd-10", "icd-10 diagnosis", "drg diagnosis", "diagnosis", "التشخيص"], is30ColOcc ? 7 : 14, 'text');
+    const colPhysIdx = findCol(["treatingphysicianname", "consultantname_en", "physician", "doctor", "الطبيب", "الطبيب المعالج"], is30ColOcc ? 14 : 22, 'name');
+    const colSpecIdx = findCol(["specialty", "speciality", "التخصص"], is30ColOcc ? 15 : 23, 'text');
+    const colLosIdx = findCol(["los", "sum(los)", "current los", "مدة الاقامة", "مدة الإقامة"], is30ColOcc ? 10 : 16, 'number');
+    const colAlosIdx = findCol(["elite alos", "elitealos", "target alos", "alos", "المعيار المستهدف"], is30ColOcc ? 12 : 36, 'number');
 
     const rawPatients = occData.slice(startIdx).map(row => {
       const room = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";

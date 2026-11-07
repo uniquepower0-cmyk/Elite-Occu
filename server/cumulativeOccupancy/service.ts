@@ -501,10 +501,12 @@ export class CumulativeOccupancyService {
     let storedDays = await getDailyBedCensusForMonth(monthStr);
     const hasCorruptDays = storedDays.some(b => b.totalOccupied > 0 && b.inpatientOccupied === 0);
 
-    // If not yet backfilled in this process or has corrupted 0-inpatient days, run backfill
-    if (!backfilledMonths.has(monthStr) || hasCorruptDays) {
+    // Only run backfill if this month has zero stored days or has corrupted 0-inpatient days
+    if ((!backfilledMonths.has(monthStr) && storedDays.length === 0) || hasCorruptDays) {
       await this.backfillMonth(monthStr, hasCorruptDays);
       storedDays = await getDailyBedCensusForMonth(monthStr);
+    } else {
+      backfilledMonths.add(monthStr);
     }
 
     let provisional: DailyBedCensus | null = null;
@@ -576,11 +578,12 @@ export class CumulativeOccupancyService {
     liveOrList?: any[] | null,
     todayDateStr?: string
   ) {
-    if (!backfilledMonths.has(monthStr)) {
-      this.backfillMonth(monthStr).catch(() => {});
-    }
-
     const storedDays = await getDailyORCensusForMonth(monthStr);
+    if (!backfilledMonths.has(monthStr) && storedDays.length === 0) {
+      this.backfillMonth(monthStr).catch(() => {});
+    } else {
+      backfilledMonths.add(monthStr);
+    }
 
     let provisional: DailyORCensus | null = null;
     if (

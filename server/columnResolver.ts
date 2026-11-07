@@ -27,7 +27,11 @@ export function buildColumnIndexResolver(
     if (!Array.isArray(row)) continue;
     let matchCount = 0;
     row.forEach((cell) => {
-      const s = String(cell || "").toLowerCase().trim();
+      const rawCell = String(cell || "").trim();
+      // Header labels are short single-line titles, never long clinical notes or room values like "Bed 417"
+      if (!rawCell || rawCell.length > 35 || rawCell.includes("\n")) return;
+      const s = rawCell.toLowerCase();
+      if (/^(bed|room|غرفة|سرير)\s*\d+/i.test(s)) return;
       if (
         s.includes("bed") || s.includes("room") || s.includes("غرفة") || s.includes("سرير") ||
         s.includes("patient") || s.includes("مريض") || s.includes("اسم") || s.includes("mrn") || 
@@ -45,7 +49,7 @@ export function buildColumnIndexResolver(
       headerRowIdx = r;
       row.forEach((cell, idx) => {
         const s = String(cell || "").toLowerCase().trim();
-        if (s) {
+        if (s && s.length <= 40 && !s.includes("\n")) {
           colMap.set(s, idx);
         }
       });
@@ -85,11 +89,13 @@ export function buildColumnIndexResolver(
     }
 
     if (expectedType === 'name') {
-      // Patient / Physician Name: Should not be pure numbers or dates
+      // Patient / Physician Name: Should not be pure numbers, dates, or long clinical SBAR notes
       const pureNumberCount = samples.filter(s => /^-?\d+(\.\d+)?$/.test(s.replace(/,/g, ""))).length;
       if (pureNumberCount / samples.length > 0.6) return false;
       const dateCount = samples.filter(s => /\d{4}[-/]\d{1,2}[-/]\d{1,2}|T\d{2}:\d{2}/.test(s)).length;
       if (dateCount / samples.length > 0.6) return false;
+      const clinicalNoteCount = samples.filter(s => s.length > 80 || s.includes("\n") || /situation:|background:|assessment:|recommendation:|vitals:/i.test(s)).length;
+      if (clinicalNoteCount / samples.length > 0.2) return false;
       return true;
     }
 
@@ -112,6 +118,16 @@ export function buildColumnIndexResolver(
     if (expectedType === 'date') {
       const dateLikeCount = samples.filter(s => /\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|T\d{2}:\d{2}/.test(s)).length;
       if (dateLikeCount / samples.length < 0.4) return false;
+      return true;
+    }
+
+    if (expectedType === 'phone') {
+      // Phone/Mobile column: Must contain phone-like digit strings (>= 7 digits), NOT VisitType ("HospitalCase") or names
+      const phoneLikeCount = samples.filter(s => {
+        const digits = s.replace(/[^\d]/g, "");
+        return digits.length >= 7 && digits.length <= 16;
+      }).length;
+      if (phoneLikeCount / samples.length < 0.3) return false;
       return true;
     }
 
@@ -209,6 +225,16 @@ export function buildColumnIndexResolver(
               continue;
             }
           }
+          // If searching for general/companion remarks ("notes", "remarks", "ملاحظات") where "prograssnotes" is NOT in candidates,
+          // DO NOT substring-match clinical progress notes ("prograssnotes", "progress notes", "or notes")
+          if (
+            (norm === "notes" || norm === "remarks" || norm === "ملاحظات") &&
+            !candidates.some(cand => cand.toLowerCase().includes("prograss") || cand.toLowerCase().includes("progress") || cand.toLowerCase().includes("handover"))
+          ) {
+            if (key.includes("prograss") || key.includes("progress") || key.includes("or notes") || key.includes("handover")) {
+              continue;
+            }
+          }
 
           if (key.includes(norm)) {
             if (isContentValid(idx, expectedType)) {
@@ -235,13 +261,22 @@ export function buildColumnIndexResolver(
 
 /**
  * Builds a deterministic surrogate MRN when MRN column is omitted or empty.
+ * Hashes normalized patient name ONLY (excluding room) so that a patient
+ * without an MRN keeps the exact same surrogate ID when transferring between rooms.
  * Format: UNKNOWN-<HASH>
  */
 export function buildDeterministicUnknownMrn(name: string, fallbackRoom = ''): string {
-  const clean = String(name || fallbackRoom || 'patient')
-    .trim()
+  const normName = String(name || '')
     .toLowerCase()
-    .replace(/\s+/g, '_');
+    .trim()
+    .replace(/[\u064B-\u065F]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/[ىيِ]/g, 'ي')
+    .replace(/[^a-z0-9\u0600-\u06FF\s]/g, ' ')
+    .replace(/\s+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const clean = normName || String(fallbackRoom || 'patient').trim().toLowerCase().replace(/\s+/g, '_');
   let hash = 5381;
   for (let i = 0; i < clean.length; i++) {
     hash = ((hash << 5) + hash) ^ clean.charCodeAt(i);

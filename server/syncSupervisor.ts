@@ -53,10 +53,10 @@ export interface SyncControlState {
 }
 
 const MAX_SYNC_RUNNERS_DEFAULT = Number(process.env.MAX_SYNC_RUNNERS || 2);
-const HEARTBEAT_INTERVAL_MS = 12_000;
-const CONTROL_POLL_INTERVAL_MS = 4_000;
-const STALE_RUNNER_MS = 45_000;
-const MAX_LOG_LINES = 300;
+const HEARTBEAT_INTERVAL_MS = 60_000;
+const CONTROL_POLL_INTERVAL_MS = 20_000;
+const STALE_RUNNER_MS = 150_000;
+const MAX_LOG_LINES = 150;
 
 function detectPlatform(): { platform: 'mac' | 'windows' | 'linux'; osLabel: string } {
   const p = os.platform();
@@ -113,6 +113,10 @@ export class SyncSupervisor {
   private runnerInfo: RunnerInfo;
   private logs: SyncLogEntry[] = [];
   private logSeq = 1;
+  private lastPublishedLogSeq = 0;
+  private cachedOtherRunners: RunnerInfo[] = [];
+  private cachedOtherLogs: SyncLogEntry[] = [];
+  private lastRunnersFetchMs = 0;
   private child: ChildProcess | null = null;
   private forceOneOffChild: ChildProcess | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -477,27 +481,33 @@ export class SyncSupervisor {
     if (process.env.VERCEL || !this.supabaseAdmin) return;
     this.runnerInfo.lastHeartbeatAt = new Date().toISOString();
     try {
-      const { data } = await this.supabaseAdmin
-        .from('rtdb_nodes')
-        .select('data')
-        .eq('path', 'settings/sync_runners')
-        .maybeSingle();
-
       const now = Date.now();
-      const existingRunners: RunnerInfo[] = Array.isArray(data?.data?.runners) ? data.data.runners : [];
-      const existingLogs: SyncLogEntry[] = Array.isArray(data?.data?.logs) ? data.data.logs : [];
+      const hasNewLogs = this.logSeq !== this.lastPublishedLogSeq;
+      // Only fetch settings/sync_runners from Supabase when new logs occurred or every 5 minutes
+      if (hasNewLogs || now - this.lastRunnersFetchMs > 300_000) {
+        const { data } = await this.supabaseAdmin
+          .from('rtdb_nodes')
+          .select('data')
+          .eq('path', 'settings/sync_runners')
+          .maybeSingle();
+        this.lastRunnersFetchMs = now;
+        const existingRunners: RunnerInfo[] = Array.isArray(data?.data?.runners) ? data.data.runners : [];
+        const existingLogs: SyncLogEntry[] = Array.isArray(data?.data?.logs) ? data.data.logs : [];
+        this.cachedOtherRunners = existingRunners.filter((r) => {
+          if (!r || r.runnerId === this.runnerInfo.runnerId) return false;
+          const hb = new Date(r.lastHeartbeatAt || 0).getTime();
+          return !isNaN(hb) && now - hb < STALE_RUNNER_MS;
+        });
+        this.cachedOtherLogs = existingLogs.filter((l) => l && l.runnerId !== this.runnerInfo.runnerId);
+      } else {
+        this.cachedOtherRunners = this.cachedOtherRunners.filter((r) => {
+          const hb = new Date(r.lastHeartbeatAt || 0).getTime();
+          return !isNaN(hb) && now - hb < STALE_RUNNER_MS;
+        });
+      }
 
-      const freshOthers = existingRunners.filter((r) => {
-        if (!r || r.runnerId === this.runnerInfo.runnerId) return false;
-        const hb = new Date(r.lastHeartbeatAt || 0).getTime();
-        return !isNaN(hb) && now - hb < STALE_RUNNER_MS;
-      });
-
-      const mergedRunners = [this.runnerInfo, ...freshOthers].slice(0, 10);
-
-      // Merge recent logs across runners
-      const otherLogs = existingLogs.filter((l) => l && l.runnerId !== this.runnerInfo.runnerId);
-      const mergedLogs = [...otherLogs, ...this.logs]
+      const mergedRunners = [this.runnerInfo, ...this.cachedOtherRunners].slice(0, 10);
+      const mergedLogs = [...this.cachedOtherLogs, ...this.logs]
         .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
         .slice(-MAX_LOG_LINES);
 
@@ -510,6 +520,7 @@ export class SyncSupervisor {
         },
         updated_at: new Date().toISOString(),
       });
+      this.lastPublishedLogSeq = this.logSeq;
     } catch (_) {}
   }
 

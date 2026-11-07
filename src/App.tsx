@@ -603,10 +603,7 @@ export default function App() {
   useEffect(() => {
     if (isAuthenticated) {
       checkHeaderBgStatus();
-      if (currentView === 'audit-logs') {
-        fetchLoginLogs();
-      }
-      // Ensure the sync supervisor is running whenever any authenticated user opens the app
+      // Ensure the sync supervisor is running once when an authenticated user opens the app
       fetch('/api/sync/ensure', {
         method: 'POST',
         headers: {
@@ -616,7 +613,13 @@ export default function App() {
         body: JSON.stringify({ email: user?.email || '' }),
       }).catch(() => {});
     }
-  }, [isAuthenticated, currentView, user?.email]);
+  }, [isAuthenticated, user?.email]);
+
+  useEffect(() => {
+    if (isAuthenticated && currentView === 'audit-logs') {
+      fetchLoginLogs();
+    }
+  }, [isAuthenticated, currentView]);
 
   useEffect(() => {
     // 0. Check for OAuth error redirected back in URL
@@ -891,8 +894,8 @@ export default function App() {
       }
     };
 
-    // 60s interval when Realtime WebSocket is connected, 20s when disconnected
-    const pollIntervalMs = realtimeConnected ? 60000 : 20000;
+    // 180s interval when Realtime WebSocket is connected, 60s when disconnected
+    const pollIntervalMs = realtimeConnected ? 180000 : 60000;
     const interval = setInterval(checkDbSyncStatus, pollIntervalMs);
     return () => clearInterval(interval);
   }, [isAuthenticated, realtimeConnected]);
@@ -2075,10 +2078,10 @@ export default function App() {
         },
         body: JSON.stringify({ text: vipCases })
       });
-      if (!res.ok) {
-        throw new Error('Failed to fetch formatted list');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error || data.text === 'Please upload data first.') {
+        throw new Error(data.error || data.text || 'Failed to fetch formatted list');
       }
-      const data = await res.json();
       if (data.text) {
         const copied = await copyToClipboard(data.text);
         if (copied) {

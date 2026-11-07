@@ -1911,6 +1911,7 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
   } catch (e) {}
 
   // Also query Supabase index
+  let hasCloudIndex = false;
   try {
     const { data: node } = await historySupabase
       .from('rtdb_nodes')
@@ -1918,7 +1919,8 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
       .eq('path', `history/${type}_index`)
       .maybeSingle();
 
-    if (node && Array.isArray(node.data)) {
+    if (node && Array.isArray(node.data) && node.data.length > 0) {
+      hasCloudIndex = true;
       const cloudEntries = node.data as DateIndexEntry[];
       for (const ce of cloudEntries) {
         const cDate = normalizeToISODate(ce.date) || ce.date;
@@ -1929,29 +1931,31 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
     }
   } catch (e) {}
 
-  // Also scan all nodes in Supabase under history/{type}/% to discover any unindexed snapshots
-  try {
-    const { data: nodes } = await historySupabase
-      .from('rtdb_nodes')
-      .select('path, updated_at')
-      .like('path', `history/${type}/%`);
+  // Fallback scan of history/{type}/% ONLY when history/{type}_index is empty or missing
+  if (!hasCloudIndex) {
+    try {
+      const { data: nodes } = await historySupabase
+        .from('rtdb_nodes')
+        .select('path, updated_at')
+        .like('path', `history/${type}/%`);
 
-    if (nodes && Array.isArray(nodes)) {
-      for (const n of nodes) {
-        const rel = n.path.replace(`history/${type}/`, '');
-        const datePart = rel.split('/summary')[0].split('/cases')[0].split('/')[0];
-        const norm = normalizeToISODate(datePart);
-        if (norm && !diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === norm)) {
-          diskEntries.push({
-            date: norm,
-            timestamp: new Date(n.updated_at || Date.now()).getTime(),
-            cairoTime: `${norm} 00:00:00`,
-            summary: {}
-          });
+      if (nodes && Array.isArray(nodes)) {
+        for (const n of nodes) {
+          const rel = n.path.replace(`history/${type}/`, '');
+          const datePart = rel.split('/summary')[0].split('/cases')[0].split('/')[0];
+          const norm = normalizeToISODate(datePart);
+          if (norm && !diskEntries.some(e => (normalizeToISODate(e.date) || e.date) === norm)) {
+            diskEntries.push({
+              date: norm,
+              timestamp: new Date(n.updated_at || Date.now()).getTime(),
+              cairoTime: `${norm} 00:00:00`,
+              summary: {}
+            });
+          }
         }
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
 
   // Deduplicate by normalized date
   const map = new Map<string, DateIndexEntry>();
