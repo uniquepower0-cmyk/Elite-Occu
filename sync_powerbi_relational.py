@@ -713,6 +713,13 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
 
     dataset = state_map.get("state/dataset") or {}
 
+    existing_counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
+    existing_or_count = (
+        int(existing_counts.get("orList") or 0)
+        if (not is_new_day and not is_system_reset)
+        else 0
+    )
+
     return {
         "previous": occ.get("previous") or dataset.get("current"),
         "occupancy_current": occ_current,
@@ -720,6 +727,7 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
         "entries": existing_entries,
         "transfers": existing_trans,
         "orList": (state_map.get("state/or_list") or {}).get("items", []),
+        "orListCount": existing_or_count,
         "dialysis": existing_dial,
         "registry": raw_registry if isinstance(raw_registry, dict) else {},
         "manually_discharged_names": list(manual_names_set),
@@ -2286,7 +2294,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                             "transfers": len(cumulative_transfers),
                             "entries": len(cumulative_entries),
                             "discharged": len(discharged_list),
-                            "orList": len(existing.get("orList") or [])
+                            "orList": int(existing.get("orListCount") or len(existing.get("orList") or []))
                         }
                     },
                     "updated_at": now_iso

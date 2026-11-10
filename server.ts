@@ -2987,7 +2987,7 @@ async function executeLoadData(force = false) {
     lastServerFetchTimestamp = Date.now();
 
     const stateMap = inMemoryStateMap;
-    const hasGranularData = stateMap['state/occupancy'] || stateMap['state/metadata'] || stateMap['state/discharged'];
+    const hasGranularData = stateMap['state/occupancy'] || stateMap['state/metadata'] || stateMap['state/discharged'] || stateMap['state/or_list'];
 
     if (hasGranularData) {
       console.log(`Supabase granular state loaded across ${Object.keys(stateMap).length} individual rows.`);
@@ -5554,6 +5554,10 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: 'No file uploaded or file buffer is empty' });
     }
+    if (!hospitalData && Object.keys(inMemoryStateMap).length === 0) {
+      await loadData();
+    }
+    await checkEgyptianDailyReset();
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true, cellNF: true, cellText: true });
     
     if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -5655,10 +5659,12 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
     
-    // OR7 fix: search more rows (up to 10) for a date, normalize to ISO YYYY-MM-DD, and fallback to today's Cairo date
+    // OR7 fix: search header rows (up to startIdx + 1) for a sheet title date, normalize to ISO YYYY-MM-DD, and fallback to today's Cairo date
+    const cairoNow = getCairoDateTime();
     let dateStr = '';
     const datePattern = /(\d{1,4})[\/\-](\d{1,2})[\/\-](\d{1,4})/;
-    for (let r = 0; r < Math.min(targetRows.length, 10); r++) {
+    const maxHeaderSearchRow = Math.min(targetRows.length, Math.max(startIdx + 1, 3));
+    for (let r = 0; r < maxHeaderSearchRow; r++) {
       const rowVal = targetRows[r].map(c => String(c || '')).join(' ');
       const dateMatch = rowVal.match(datePattern);
       if (dateMatch) {
@@ -5671,7 +5677,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     }
     // Always ensure we have a non-empty canonical ISO date for snapshot filing
     if (!dateStr) {
-      dateStr = getCairoDateTime().dateStr;
+      dateStr = cairoNow.dateStr;
     }
     
     dataRows.forEach((row, i) => {
@@ -5710,15 +5716,49 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     // Push to relational database
     await syncORCasesToRelationalSchema(parsedData, dateStr).catch(e => console.error(e));
     uploadedAt = Date.now();
-    if (!lastActiveDate) lastActiveDate = dateStr;
+    lastActiveDate = cairoNow.dateStr;
     setSaveChangeType('upload');
     
     const nowIso = new Date().toISOString();
+    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+    const occBodyRows = occRows.length > 3 ? occRows.slice(3) : [];
+    const existingMeta = (inMemoryStateMap['state/metadata'] && typeof inMemoryStateMap['state/metadata'] === 'object')
+      ? inMemoryStateMap['state/metadata']
+      : {};
+    const existingCounts = (existingMeta.counts && typeof existingMeta.counts === 'object')
+      ? existingMeta.counts
+      : {};
+    const metadataPayload = {
+      ...existingMeta,
+      lastDatabaseUpdatedAt: nowIso,
+      lastActiveDate,
+      lastResetDate: lastEgyptianAutoResetDate,
+      lastTransfersDate,
+      manuallyDischargedNames: manuallyDischargedNames || [],
+      uploadedAt,
+      cairoTimeStatus: cairoNow.fullStr,
+      counts: {
+        ...existingCounts,
+        occupiedBeds: occBodyRows.length,
+        discharged: (cumulativeDischarged || []).length,
+        entries: (cumulativeEntries || []).length,
+        dialysis: (cumulativeDialysis || []).length,
+        debts: (cumulativeDebts || []).length,
+        insuredDebts: (cumulativeInsuredDebts || []).length,
+        medicalPlans: (cumulativeMedicalPlans || []).length,
+        companionStatus: (cumulativeCompanionStatus || []).length,
+        los: (cumulativeLOS || []).length,
+        transfers: (cumulativeTransfers || []).length,
+        orList: parsedData.length
+      }
+    };
+
     lastKnownDatabaseUpdatedAt = nowIso;
     lastServerFetchTimestamp = Date.now();
     inMemoryNodeTimestamps['state/or_list'] = nowIso;
     inMemoryNodeTimestamps['state/metadata'] = nowIso;
     inMemoryStateMap['state/or_list'] = { items: parsedData };
+    inMemoryStateMap['state/metadata'] = metadataPayload;
 
     // Update local disk cache for fast immediate reboot recovery
     try {
@@ -5740,16 +5780,31 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
       console.warn('Failed to update disk cache for OR list:', diskErr);
     }
 
-    // Update the specific OR list nodes in Supabase
-    await Promise.all([
-      takeORSnapshotHelper(dateStr),
-      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/or_list', data: { items: parsedData }, updated_at: nowIso }),
-      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/metadata', data: { lastDatabaseUpdatedAt: nowIso, lastActiveDate, uploadedAt, cairoTimeStatus: getCairoDateTime().fullStr }, updated_at: nowIso })
+    // Update the specific OR list nodes in Supabase and sync exact DB trigger timestamps
+    const [, orNodeRes, metaNodeRes] = await Promise.all([
+      (async () => {
+        await takeORSnapshotHelper(dateStr);
+        if (dateStr !== cairoNow.dateStr) {
+          await takeORSnapshotHelper(cairoNow.dateStr);
+        }
+      })(),
+      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/or_list', data: { items: parsedData }, updated_at: nowIso }).select('updated_at'),
+      supabaseAdmin.from('rtdb_nodes').upsert({ path: 'state/metadata', data: metadataPayload, updated_at: nowIso }).select('updated_at')
     ]);
+
+    const dbOrTs = orNodeRes?.data?.[0]?.updated_at;
+    const dbMetaTs = metaNodeRes?.data?.[0]?.updated_at;
+    if (dbOrTs) inMemoryNodeTimestamps['state/or_list'] = String(dbOrTs);
+    if (dbMetaTs) {
+      inMemoryNodeTimestamps['state/metadata'] = String(dbMetaTs);
+      lastKnownDatabaseUpdatedAt = String(dbMetaTs);
+    }
+    const enrichedOrList = getEnrichedOrListForStats(parsedData, occRows);
     
     return res.status(200).json({
       success: true,
       count: parsedData.length,
+      orList: enrichedOrList,
       uploadedAt: uploadedAt,
       lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       date: dateStr,

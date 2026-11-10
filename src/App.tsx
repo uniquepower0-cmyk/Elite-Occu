@@ -1105,13 +1105,15 @@ export default function App() {
 
       if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
       if (data?.lastDatabaseUpdatedAt) {
-        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
         setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
       setIsDataLoaded(true);
       toast.success('Unified sheet uploaded and parsed successfully!');
-      fetchData();
+      await fetchData({ force: true });
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+      }
     } catch (err: any) {
       console.error('Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
@@ -1155,12 +1157,14 @@ export default function App() {
 
       if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
       if (data?.lastDatabaseUpdatedAt) {
-        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
         setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
       toast.success(`Debts source uploaded successfully! Extracted ${data.count} debt records and ${data.medicalPlansCount} medical plans.`);
-      fetchData();
+      await fetchData({ force: true });
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+      }
     } catch (err: any) {
       console.error('Debts Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
@@ -1203,15 +1207,23 @@ export default function App() {
       }
 
       if (data?.uploadedAt) setUploadedAt(data.uploadedAt);
+      if (Array.isArray(data?.orList)) {
+        setOrList(data.orList);
+        setOrListCount(data.orList.length);
+      } else if (typeof data?.count === 'number') {
+        setOrListCount(data.count);
+      }
       if (data?.lastDatabaseUpdatedAt) {
-        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
         setCloudDatabaseUpdatedAt(String(data.lastDatabaseUpdatedAt));
       }
 
       const dateMsg = data.date ? ` for ${data.date}` : "";
       toast.success(`OR List uploaded successfully! Extracted ${data.count} operation schedule cases${dateMsg}.`);
       setOrHistoryRefreshKey(k => k + 1);
-      fetchData();
+      await fetchData({ force: true });
+      if (data?.lastDatabaseUpdatedAt) {
+        lastDbTimestampRef.current = String(data.lastDatabaseUpdatedAt);
+      }
     } catch (err: any) {
       console.error('OR List Upload error:', err);
       if (err.message.includes('non-JSON') || err.message.includes('Unexpected token')) {
