@@ -847,8 +847,8 @@ function extractDialysisRowsFromData(sourceData: any[][], skip: number = 0): any
     const specialty = colSpecIdx >= 0 ? String(row[colSpecIdx] ?? "").trim() : "";
     const notes = colNotesIdx >= 0 ? String(row[colNotesIdx] ?? "").trim() : "";
     let mrn = colMrnIdx >= 0 ? String(row[colMrnIdx] ?? "").trim() : "";
-    if (!mrn && patientName) {
-      mrn = buildDeterministicUnknownMrn(patientName, room);
+    if (patientName) {
+      mrn = resolveKnownPatientMrn(patientName, room, mrn);
     }
     const mobile = colMobileIdx >= 0 ? cleanPhoneStr(row[colMobileIdx]) : "";
     const admDate = colAdmIdx >= 0 ? cleanAdmissionDateStr(row[colAdmIdx]) : "";
@@ -985,13 +985,16 @@ function getOccupancyRows(data: any[][] | null): any[][] {
 
   const body = data.slice(startIdx).map(row => {
     if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
+      const r0 = String(row[0] || "").trim();
+      const r1 = String(row[1] || "").trim();
+      const r5 = String(row[5] || "").trim();
       return [
-        String(row[0] || "").trim(),
-        String(row[1] || "").trim(),
+        r0,
+        r1,
         String(row[2] || "").trim(),
         String(row[3] || "").trim(),
         String(row[4] || "").trim(),
-        String(row[5] || "").trim(),
+        r1 ? resolveKnownPatientMrn(r1, r0, r5) : r5,
       ];
     }
     const roomStr = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
@@ -1038,8 +1041,8 @@ function getOccupancyRows(data: any[][] | null): any[][] {
       }
     }
 
-    if (!mrnStr && nameStr) {
-      mrnStr = buildDeterministicUnknownMrn(nameStr, roomStr);
+    if (nameStr) {
+      mrnStr = resolveKnownPatientMrn(nameStr, roomStr, mrnStr);
     }
     return [
       roomStr,
@@ -1108,13 +1111,16 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
 
   const body = data.slice(startIdx).map(row => {
     if (Array.isArray(row) && row.length === 6 && row[22] === undefined) {
+      const r0 = String(row[0] || "").trim();
+      const r1 = String(row[1] || "").trim();
+      const r5 = String(row[5] || "").trim();
       return [
-        String(row[0] || "").trim(),
-        String(row[1] || "").trim(),
+        r0,
+        r1,
         String(row[2] || "").trim(),
         String(row[3] || "").trim(),
         String(row[4] || "").trim(),
-        String(row[5] || "").trim(),
+        r1 ? resolveKnownPatientMrn(r1, r0, r5) : r5,
       ];
     }
     const roomStr = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
@@ -1161,8 +1167,8 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
       }
     }
 
-    if (!mrnStr && nameStr) {
-      mrnStr = buildDeterministicUnknownMrn(nameStr, roomStr);
+    if (nameStr) {
+      mrnStr = resolveKnownPatientMrn(nameStr, roomStr, mrnStr);
     }
     return [
       roomStr,
@@ -1571,6 +1577,138 @@ function isClinicalProgressNote(val: string): boolean {
   );
 }
 
+const knownPatientMrnByName = new Map<string, string>();
+const knownPatientList: { normName: string; rawName: string; mrn: string }[] = [];
+let lastKnownPatientsFetchTs = 0;
+
+function isValidRealMrn(val: any): boolean {
+  if (val === null || val === undefined) return false;
+  const s = String(val).trim().replace(/^0+/, "");
+  if (!s || s.startsWith("UNKNOWN-") || s.startsWith("transfer-")) return false;
+  const low = s.toLowerCase();
+  if (low === "n/a" || low === "null" || low === "undefined" || low === "-" || low === "—") return false;
+  if (/[\u0600-\u06FF]/.test(s)) return false;
+  return /\d/.test(s) && s.length >= 3 && s.length <= 15;
+}
+
+function registerKnownPatientMrn(name: any, mrn: any): void {
+  const nameStr = String(name || "").trim();
+  const mrnStr = String(mrn || "").trim().replace(/^0+/, "");
+  if (!nameStr || !isValidRealMrn(mrnStr)) return;
+  if (/^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) return;
+  const norm = normalizeArabicName(nameStr);
+  if (!norm || norm.length < 3) return;
+  knownPatientMrnByName.set(norm, mrnStr);
+  if (!knownPatientList.some(item => item.normName === norm)) {
+    knownPatientList.push({ normName: norm, rawName: nameStr, mrn: mrnStr });
+  }
+}
+
+function harvestKnownMrnsFromMemory(): void {
+  try {
+    if (patientRoomRegistry && typeof patientRoomRegistry === "object") {
+      for (const k of Object.keys(patientRoomRegistry)) {
+        const item = patientRoomRegistry[k];
+        if (item && item.name && item.mrn) {
+          registerKnownPatientMrn(item.name, item.mrn);
+        }
+      }
+    }
+    const harvestRows = (rows: any[][] | null) => {
+      if (!Array.isArray(rows) || rows.length < 2) return;
+      for (const r of rows) {
+        if (!Array.isArray(r)) continue;
+        if (r.length >= 35) {
+          registerKnownPatientMrn(r[3], r[2]);
+        } else if (r.length === 6) {
+          registerKnownPatientMrn(r[1], r[5]);
+        }
+      }
+    };
+    harvestRows(hospitalData);
+    harvestRows(previousHospitalData);
+    const harvestList = (list: any[]) => {
+      if (!Array.isArray(list)) return;
+      for (const p of list) {
+        if (!p || typeof p !== "object") continue;
+        const pName = p.name || p.colD || p.patientName || "";
+        const pMrn = p.mrn || p.colC || p.id || "";
+        if (pName && pMrn) {
+          registerKnownPatientMrn(pName, pMrn);
+        }
+      }
+    };
+    harvestList(cumulativeEntries);
+    harvestList(cumulativeDischarged);
+    harvestList(cumulativeDialysis);
+    harvestList(cumulativeDebts);
+    harvestList(cumulativeInsuredDebts);
+    harvestList(cumulativeLOS);
+    harvestList(cumulativeMedicalPlans);
+    harvestList(cumulativeTransfers);
+  } catch (_) {}
+}
+
+async function ensureKnownPatientMrnsLoaded(force: boolean = false): Promise<void> {
+  harvestKnownMrnsFromMemory();
+  const now = Date.now();
+  if (!force && knownPatientMrnByName.size > 0 && now - lastKnownPatientsFetchTs < 5 * 60 * 1000) {
+    return;
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('patients')
+      .select('mrn, name')
+      .order('updated_at', { ascending: false })
+      .limit(5000);
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (row && row.name && row.mrn) {
+          registerKnownPatientMrn(row.name, row.mrn);
+        }
+      }
+      lastKnownPatientsFetchTs = now;
+    }
+  } catch (err) {
+    console.warn('[MRN Phonebook] Notice: Could not query public.patients for MRN enrichment:', err);
+  }
+}
+
+function resolveKnownPatientMrn(name: any, room: any = "", rawMrn: any = ""): string {
+  const cleanedRaw = String(rawMrn || "").trim().replace(/^0+/, "");
+  const nameStr = String(name || "").trim();
+  if (isValidRealMrn(cleanedRaw)) {
+    if (nameStr) registerKnownPatientMrn(nameStr, cleanedRaw);
+    return cleanedRaw;
+  }
+  if (!nameStr) {
+    return cleanedRaw || "";
+  }
+  harvestKnownMrnsFromMemory();
+  const norm = normalizeArabicName(nameStr);
+  if (norm && knownPatientMrnByName.has(norm)) {
+    return knownPatientMrnByName.get(norm)!;
+  }
+  if (patientRoomRegistry && typeof patientRoomRegistry === "object") {
+    for (const k of Object.keys(patientRoomRegistry)) {
+      const item = patientRoomRegistry[k];
+      if (!item) continue;
+      const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
+      if (isValidRealMrn(itemMrn) && isNameMatch(item.name || k, nameStr)) {
+        registerKnownPatientMrn(nameStr, itemMrn);
+        return itemMrn;
+      }
+    }
+  }
+  for (const entry of knownPatientList) {
+    if (isNameMatch(entry.rawName, nameStr)) {
+      if (norm) knownPatientMrnByName.set(norm, entry.mrn);
+      return entry.mrn;
+    }
+  }
+  return buildDeterministicUnknownMrn(nameStr, String(room || ""));
+}
+
 function sanitizeEntryRecords(entries: any[]): any[] {
   if (!Array.isArray(entries)) return [];
   const cleaned: any[] = [];
@@ -1585,15 +1723,13 @@ function sanitizeEntryRecords(entries: any[]): any[] {
       if (candidateName && !/^\d+$/.test(candidateName) && !isClinicalProgressNote(candidateName)) {
         nameStr = candidateName;
         p.name = candidateName;
-        if (!p.mrn || String(p.mrn).startsWith("UNKNOWN-")) {
-          p.mrn = buildDeterministicUnknownMrn(candidateName, p.room || "");
-        }
       }
     }
     if (!nameStr || /^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) {
       continue;
     }
     p.name = nameStr;
+    p.mrn = resolveKnownPatientMrn(nameStr, p.room || "", p.mrn);
     if (!cleaned.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
       cleaned.push(p);
     }
@@ -1733,9 +1869,9 @@ function extractRawPatientsFromRows(data: any): { name: string; mrn: string; roo
       }
     }
 
-    // Ensure deterministic surrogate MRN if missing
-    if (!rawMrn && rawName) {
-      rawMrn = buildDeterministicUnknownMrn(rawName, rawRoom);
+    // Resolve real MRN from phonebook or deterministic surrogate MRN if missing
+    if (rawName) {
+      rawMrn = resolveKnownPatientMrn(rawName, rawRoom, rawMrn);
     }
 
     const cleanDate = cleanAdmissionDateStr(rawDateStr);
@@ -2261,8 +2397,8 @@ function extractDebtsOnlyFromRows(rows: any[][]) {
       }
     }
 
-    if (!mrnVal && nameVal) {
-      mrnVal = buildDeterministicUnknownMrn(nameVal, roomVal);
+    if (nameVal) {
+      mrnVal = resolveKnownPatientMrn(nameVal, roomVal, mrnVal);
     }
 
     return {
@@ -2420,8 +2556,8 @@ function extractSubsheetsFromHospitalData(rows: any) {
       }
     }
 
-    if (!mrn && name) {
-      mrn = buildDeterministicUnknownMrn(name, room);
+    if (name) {
+      mrn = resolveKnownPatientMrn(name, room, mrn);
     }
     return { room, name, physician, contractor, date, mrn, rawRow: [...row] };
   }).filter(p => {
@@ -2480,8 +2616,8 @@ function extractSubsheetsFromHospitalData(rows: any) {
     const room = colRoomIdx >= 0 ? cleanRoomStr(String(row[colRoomIdx] || "").trim()) : "";
     const name = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
     let mrn = colMrnIdx >= 0 ? String(row[colMrnIdx] || "").trim() : "";
-    if (!mrn && name) {
-      mrn = buildDeterministicUnknownMrn(name, room);
+    if (name) {
+      mrn = resolveKnownPatientMrn(name, room, mrn);
     }
     const contractor = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const physician = colPhysIdx >= 0 ? String(row[colPhysIdx] || "").trim() : "";
@@ -2586,8 +2722,8 @@ function extractSubsheetsFromHospitalData(rows: any) {
     }
     const name = colNameIdx >= 0 ? String(row[colNameIdx] || "").trim() : "";
     let mrn = colMrnIdx >= 0 ? String(row[colMrnIdx] || "").trim().replace(/^0+/, "") : "";
-    if (!mrn && name) {
-      mrn = buildDeterministicUnknownMrn(name, room);
+    if (name) {
+      mrn = resolveKnownPatientMrn(name, room, mrn);
     }
     const contractor = colContractorIdx >= 0 ? String(row[colContractorIdx] || "").trim() : "";
     const diagnosis = colDiagIdx >= 0 ? String(row[colDiagIdx] || "").trim() : "";
@@ -3288,6 +3424,9 @@ async function executeLoadData(force = false) {
     if (p && p.colB) p.colB = cleanRoomStr(p.colB);
     return p;
   });
+
+  // Ensure central MRN phonebook is hydrated from memory and Supabase patients table
+  await ensureKnownPatientMrnsLoaded(false);
 
   // Self-heal/Extract sub-datasets in memory if hospitalData is present
   if (hospitalData && hospitalData.length > 1) {
@@ -4474,6 +4613,9 @@ async function handleUnifiedUpload(req: any, res: any) {
 
     const isDedicatedDebtsUpload = isDebtsRoute || isDebtsFileName || isDebtsSheetName;
 
+    // Ensure central MRN phonebook is loaded before parsing any uploaded rows
+    await ensureKnownPatientMrnsLoaded(true);
+
     if (isDedicatedDebtsUpload) {
       console.log(`[Upload] Dedicated debts upload detected (Route: ${isDebtsRoute}, File: "${req.file?.originalname}", Sheet: "${bestSheetName}"). Preserving base occupancy census and auto-discharge baseline.`);
 
@@ -4532,7 +4674,25 @@ async function handleUnifiedUpload(req: any, res: any) {
       }
 
       return true;
+    }).map(row => {
+      if (isUpload30Col && uploadMrnIdx < 0 && Array.isArray(row) && row.length <= 31) {
+        const patientName = uploadNameIdx >= 0 ? String(row[uploadNameIdx] || "").trim() : "";
+        const roomStr = cleanRoomStr(String(row[1] || "").trim());
+        const resolvedMrn = patientName ? resolveKnownPatientMrn(patientName, roomStr, row[30] || "") : "";
+        const nextRow = [...row];
+        while (nextRow.length < 30) nextRow.push("");
+        nextRow[30] = isValidRealMrn(resolvedMrn) ? resolvedMrn : "";
+        return nextRow;
+      }
+      return row;
     });
+    if (isUpload30Col && uploadMrnIdx < 0 && headerRow.length > 0) {
+      const lastHeader = headerRow[headerRow.length - 1];
+      if (Array.isArray(lastHeader) && lastHeader.length <= 31) {
+        while (lastHeader.length < 30) lastHeader.push("");
+        lastHeader[30] = "MRN";
+      }
+    }
     rows = [...headerRow, ...dataRowsFiltered];
 
     const extractRowsFromData = (sourceData: any[][], skip: number) => {
@@ -5006,8 +5166,8 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
 
       const rawMrn = colMrnIdx >= 0 ? String(row[colMrnIdx] || "").trim() : "";
       let mrn = rawMrn.replace(/^0+/, "");
-      if (!mrn && name) {
-        mrn = buildDeterministicUnknownMrn(name, room);
+      if (name) {
+        mrn = resolveKnownPatientMrn(name, room, mrn);
       }
       const rawAdmVal = (colAdmIdx >= 0 && row[colAdmIdx] !== undefined && row[colAdmIdx] !== null && String(row[colAdmIdx]).trim() !== "") ? row[colAdmIdx] : (row[0] !== undefined ? row[0] : "");
       const admDate = parseAdmissionDateToISO(rawAdmVal) || cleanAdmissionDateStr(rawAdmVal);
@@ -5050,7 +5210,7 @@ async function syncOccupancyToRelationalSchema(rows: any[][]) {
       const alos = colAlosIdx >= 0 ? String(row[colAlosIdx] || "").trim() : "";
 
       rpcPayload.push({
-        MRN: mrn || rawMrn || buildDeterministicUnknownMrn(name, room),
+        MRN: mrn || rawMrn || resolveKnownPatientMrn(name, room),
         Patient: name,
         "Bed#": room,
         "Floor Name": getAccommodationCategory(room) || "",
@@ -6448,7 +6608,7 @@ async function addRefinedInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: an
     const rowValues = [
       formattedDate, 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.colD || p.name, p.room, p.mrn)),
       p.colD || '', 
       p.physician || '',
       contractVal, 
@@ -6846,7 +7006,7 @@ async function addRefinedDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const rowValues = [
       formattedDate, 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.colD || p.name, p.room, p.mrn)),
       p.colD || '', 
       p.physician || '',
       contractVal, 
@@ -7768,7 +7928,7 @@ function addInsuredDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const rowValues = [
       formattedDate, 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn), 
+      formatMrnForSheet(resolveKnownPatientMrn(p.colD || p.name, p.room, p.mrn)), 
       p.colD || '', 
       p.physician || '', 
       contractVal, 
@@ -7860,7 +8020,7 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
     const rowValues = [
       formattedDate, 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn), 
+      formatMrnForSheet(resolveKnownPatientMrn(p.colD || p.name, p.room, p.mrn)), 
       p.colD || '', 
       p.physician || '', 
       contractVal, 
@@ -7930,6 +8090,7 @@ function getActiveVipCount(): number {
 }
 
 async function updateHospitalState(rows: any[][]) {
+  await ensureKnownPatientMrnsLoaded(false);
   // Clean up Room 307 intermediate care to Room 307 and format raw timestamps in Row[0] (Admission Date)
   rows = rows.map((row, index) => {
     if (row) {
@@ -13969,7 +14130,7 @@ async function addRefinedExceedingALOSSheet(workbook: ExcelJS.Workbook, data: an
       serial++, 
       formatDateForSheet(p.date), 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.name || p.colD, p.room, p.mrn)),
       p.name, 
       p.physician || "-",
       p.specialty || "-",
@@ -15058,7 +15219,7 @@ async function addRefinedOROverListSheet(workbook: ExcelJS.Workbook, overListPat
       p.patientRoom && p.patientRoom !== 'N/A' ? formatRoomForSheet(p.patientRoom) : (p.patientRoom || 'N/A'),
       formatRoomForSheet(p.room),
       p.patientName,
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.patientName || p.name, p.patientRoom || p.room, p.mrn)),
       p.physician || '',
       cleanedContractor || '',
       getResponsibleOfficer(p.contractor),
@@ -15190,7 +15351,7 @@ async function addRefinedORReconciliationSheet(
       displayPatientRoom && displayPatientRoom !== 'N/A' ? formatRoomForSheet(displayPatientRoom) : (displayPatientRoom || 'N/A'),
       formatRoomForSheet(p.orRoom || p.room) || 'OTHER',
       p.patientName,
-      formatMrnForSheet(displayMRN),
+      formatMrnForSheet(resolveKnownPatientMrn(p.patientName || p.name, displayPatientRoom, displayMRN)),
       p.surgeonName || p.physician || '',
       cleanedContractor,
       getResponsibleOfficer(displayContractor),
@@ -15235,7 +15396,7 @@ async function addRefinedORReconciliationSheet(
       p.patientRoom && p.patientRoom !== 'N/A' ? formatRoomForSheet(p.patientRoom) : (p.patientRoom || 'N/A'),
       formatRoomForSheet(p.room),
       p.patientName,
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.patientName || p.name, p.patientRoom || p.room, p.mrn)),
       p.physician || '',
       cleanedOverContractor || '',
       getResponsibleOfficer(p.contractor),
@@ -16330,7 +16491,7 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
         serial++,
         formatRoomForSheet(p.orRoom),
         p.patientName,
-        formatMrnForSheet(p.mrn),
+        formatMrnForSheet(resolveKnownPatientMrn(p.patientName || p.name, p.orRoom, p.mrn)),
         p.flClassName || "N/A",
         p.roomDisplay,
         getORCaseType(p),
@@ -16728,7 +16889,7 @@ async function addLOSSheet(workbook: ExcelJS.Workbook, data: any[]) {
       serial++, 
       formatDateForSheet(p.date), 
       formatRoomForSheet(p.room), 
-      formatMrnForSheet(p.mrn),
+      formatMrnForSheet(resolveKnownPatientMrn(p.name || p.colD, p.room, p.mrn)),
       p.name, 
       p.physician || "-",
       p.specialty || "-",

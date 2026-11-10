@@ -1097,6 +1097,9 @@ def build_fallback_visual_payload(model_id: str, exploration_data: Optional[dict
             return None
         clean_selects = []
         export_cols = []
+        has_mrn_col = False
+        source_alias = best_from[0].get("Name", "b") if best_from else "b"
+        entity_name = best_from[0].get("Entity", "BedOccupancyMedicalDirector_soussi") if best_from else "BedOccupancyMedicalDirector_soussi"
         for s_item in best_selects:
             q_name = s_item.get("Name", "")
             disp_name = s_item.get("NativeReferenceName") or (
@@ -1104,9 +1107,21 @@ def build_fallback_visual_payload(model_id: str, exploration_data: Optional[dict
                 or s_item.get("Aggregation", {}).get("Expression", {}).get("Column", {}).get("Property")
                 or q_name.split(".")[-1]
             )
+            if str(disp_name).strip().lower() == "mrn":
+                has_mrn_col = True
             s_copy = {k: v for k, v in s_item.items() if k != "NativeReferenceName"}
             clean_selects.append(s_copy)
             export_cols.append({"QueryName": q_name, "Name": disp_name})
+        if not has_mrn_col:
+            mrn_qname = f"{entity_name}.MRN"
+            clean_selects.append({
+                "Column": {
+                    "Expression": {"SourceRef": {"Source": source_alias}},
+                    "Property": "MRN"
+                },
+                "Name": mrn_qname
+            })
+            export_cols.append({"QueryName": mrn_qname, "Name": "MRN"})
         return {
             "exportDataType": 0,
             "executeSemanticQueryRequest": {
@@ -1308,6 +1323,25 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
             if manual_names or manual_mrns:
                 log(f"[Sync Guard] Active manual discharges recognized: {len(manual_names)} names, {len(manual_mrns)} MRNs.")
 
+            # Build phonebook lookup from existing registry & occupancy so fallback visual queries retain known MRNs
+            known_mrns_by_name: dict[str, str] = {}
+            for rk, rv in (existing.get("registry") or {}).items():
+                if isinstance(rv, dict):
+                    r_name = str(rv.get("name") or rk or "").strip()
+                    r_mrn = clean_mrn_str(rv.get("mrn"))
+                    if r_name and r_mrn and not r_mrn.startswith("UNKNOWN-") and any(c.isdigit() for c in r_mrn):
+                        norm_rn = normalize_arabic_name(r_name)
+                        if norm_rn:
+                            known_mrns_by_name[norm_rn] = r_mrn
+            for occ_r in (existing.get("occupancy_current") or []):
+                if isinstance(occ_r, (list, tuple)) and len(occ_r) >= 4:
+                    c2 = clean_mrn_str(occ_r[2])
+                    c3 = str(occ_r[3] or "").strip()
+                    if c2 and c3 and not c2.startswith("UNKNOWN-") and any(c.isdigit() for c in c2) and not any("\u0600" <= ch <= "\u06FF" for ch in c2):
+                        norm_rn = normalize_arabic_name(c3)
+                        if norm_rn:
+                            known_mrns_by_name[norm_rn] = c2
+
             # 2. Unified Single-Pass Parsing & Domain Classification
             records: list[NormalizedPatientRecord] = []
             for row in raw_records:
@@ -1328,6 +1362,11 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
 
                 if not p_name or p_name.isdigit() or is_clinical_progress_note_str(p_name) or p_name.lower() in ("patient", "المريض", "name", "unknown", "englishfullname", "patient name"):
                     continue
+
+                if not clean_m:
+                    norm_pn = normalize_arabic_name(p_name)
+                    if norm_pn and norm_pn in known_mrns_by_name:
+                        clean_m = known_mrns_by_name[norm_pn]
 
                 ad_val = clean_date(get_val(row, [
                     "Admission Date", "AdmissionDate", "Date", "تاريخ الدخول", "التاريخ",

@@ -191,14 +191,34 @@ export function filterPatientData(rawData: any): PatientRow[] {
       let rawId: any = "";
 
       if (Array.isArray(row)) {
-        // Detect layout: Raw unified/PowerBI layout (>= 10 cols) vs Formatted occupancy (5-6 cols)
-        const isMultiCol = row.length >= 10;
-        rawRoom = isMultiCol ? row[1] : row[0];
-        rawName = isMultiCol ? row[3] : row[1];
-        rawDoctor = isMultiCol ? row[22] : row[2];
-        rawPayment = isMultiCol ? row[12] : row[3];
-        rawDate = isMultiCol ? row[0] : row[4];
-        rawId = isMultiCol ? row[2] : row[5];
+        // Detect layout:
+        // - 40-col Power BI layout (row.length >= 35)
+        // - 30-col Medical Director layout (row.length >= 15 && row.length < 35)
+        // - 6-col Formatted Occupancy layout (row.length < 15)
+        const is40Col = row.length >= 35;
+        const is30Col = row.length >= 15 && row.length < 35;
+        if (is40Col) {
+          rawRoom = row[1];
+          rawName = row[3];
+          rawDoctor = row[22];
+          rawPayment = row[12];
+          rawDate = row[0];
+          rawId = row[2];
+        } else if (is30Col) {
+          rawRoom = row[1];
+          rawName = row[2];
+          rawDoctor = row[14];
+          rawPayment = row[6];
+          rawDate = row[0];
+          rawId = row[30] || "";
+        } else {
+          rawRoom = row[0];
+          rawName = row[1];
+          rawDoctor = row[2];
+          rawPayment = row[3];
+          rawDate = row[4];
+          rawId = row[5];
+        }
       } else if (row && typeof row === 'object') {
         const rObj = row as Record<string, any>;
         rawRoom = rObj.room || rObj.bed || rObj.Bed || rObj.Room || rObj['Unnamed: 1'] || '';
@@ -211,8 +231,12 @@ export function filterPatientData(rawData: any): PatientRow[] {
         return null;
       }
 
-      // Heuristic check: if rawId has Arabic characters and rawName is numeric, swap them
-      if (/[\u0600-\u06FF]/.test(String(rawId || '')) && (/^\d+$/.test(String(rawName || '').replace(/^0+/, '')) || !rawName)) {
+      // Heuristic check: only swap if rawId has Arabic characters and rawName is a >=3-digit MRN (never swap a 1-2 digit Age into id)
+      const cleanedCandidateMrn = String(rawName || '').trim().replace(/^0+/, '');
+      if (
+        /[\u0600-\u06FF]/.test(String(rawId || '')) &&
+        ((/^\d+$/.test(cleanedCandidateMrn) && cleanedCandidateMrn.length >= 3) || !rawName)
+      ) {
         const tmp = rawId;
         rawId = rawName;
         rawName = tmp;
