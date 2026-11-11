@@ -114,6 +114,10 @@ POWERBI_EXPORT_URL: Final[str] = os.getenv(
     "POWERBI_EXPORT_URL",
     "http://10.12.0.11/powerbi/api/explore/reports/9a59efe5-2722-460f-a720-a720d8d1c298/export/xlsx"
 )
+POWERBI_OR_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_OR_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/c1b018c2-bc1c-4209-9b7d-9d56e0949110/export/xlsx"
+)
 POWERBI_USER: Final[str] = os.getenv("POWERBI_USER", "")
 POWERBI_PASS: Final[str] = os.getenv("POWERBI_PASS", "")
 POWERBI_TIMEOUT: Final[int] = int(os.getenv("POWERBI_TIMEOUT", "90"))
@@ -126,6 +130,7 @@ if not SUPABASE_SSL_VERIFY:
 
 SUPABASE_REST_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rtdb_nodes"
 SUPABASE_RPC_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rpc/sync_powerbi_admissions"
+SUPABASE_OR_RPC_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rpc/sync_or_cases"
 
 SUPABASE_HEADERS: Final[dict[str, str]] = {
     "apikey": SUPABASE_KEY,
@@ -402,13 +407,78 @@ def is_name_match(name1: Any, name2: Any) -> bool:
 
 
 def clean_mrn_str(mrn: Any) -> str:
-    """Normalizes medical record numbers, stripping decimal artifacts and leading zeroes."""
+    """Normalizes medical record numbers, stripping decimal artifacts, leading zeroes, and dummy OR placeholder 65765."""
     if mrn is None:
         return ""
     s = str(mrn).strip()
     if s.endswith(".0"):
         s = s[:-2]
-    return s.lstrip("0")
+    s = s.lstrip("0")
+    if s in ("65765", "null", "nan", "none", "-"):
+        return ""
+    return s
+
+
+def parse_to_pg_time(raw: Any) -> Optional[str]:
+    """Parses arbitrary time strings, datetime.time objects, or Excel fractional times to 24-hour HH:MM:SS for Postgres."""
+    if raw is None or pd.isna(raw):
+        return None
+    if isinstance(raw, datetime.time):
+        return f"{raw.hour:02d}:{raw.minute:02d}:{raw.second:02d}"
+    if isinstance(raw, (datetime.datetime, pd.Timestamp)):
+        return f"{raw.hour:02d}:{raw.minute:02d}:{raw.second:02d}"
+    s = str(raw).strip()
+    if not s or s == "-" or s.lower() in ("nan", "null", "none"):
+        return None
+    try:
+        num = float(s)
+        if 0.0 <= num < 1.0 and "." in s:
+            total_sec = int(round(num * 86400))
+            hh = (total_sec // 3600) % 24
+            mm = (total_sec % 3600) // 60
+            ss = total_sec % 60
+            return f"{hh:02d}:{mm:02d}:{ss:02d}"
+    except ValueError:
+        pass
+
+    is_pm = bool(re.search(r"م|مساء|pm", s, re.IGNORECASE))
+    is_am = bool(re.search(r"ص|صباح|am", s, re.IGNORECASE))
+    m = re.search(r"(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?", s)
+    if not m:
+        return None
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    ss = int(m.group(3)) if m.group(3) else 0
+    if mm < 0 or mm > 59:
+        return None
+    if is_pm and hh < 12:
+        hh += 12
+    elif is_am and hh == 12:
+        hh = 0
+    if hh < 0 or hh > 23:
+        return None
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def format_time_12h(val: Any) -> str:
+    """Formats any time value into 12-hour format (e.g. '05:05 AM', '01:20 PM', '11:30 PM')."""
+    if val is None or pd.isna(val):
+        return ""
+    raw = str(val).strip()
+    if not raw or raw.lower() in ("nan", "null", "none"):
+        return ""
+    pg_time = parse_to_pg_time(val)
+    if not pg_time:
+        return raw
+    parts = pg_time.split(":")
+    try:
+        h24 = int(parts[0])
+        mins = parts[1] if len(parts) > 1 else "00"
+        period = "PM" if h24 >= 12 else "AM"
+        h12 = 12 if (h24 % 12 == 0) else (h24 % 12)
+        return f"{h12:02d}:{mins} {period}"
+    except Exception:
+        return raw
 
 
 def clean_phone(val: Any) -> str:
@@ -1177,11 +1247,16 @@ POWERBI_PAYLOAD_DICT: Final[dict[str, Any]] = build_powerbi_payload("1874049876"
 _last_synced_df_hash: str = ""
 _last_synced_cairo_date: str = ""
 _last_synced_meta_updated_at: str = ""
+_last_known_mrns_by_name: dict[str, str] = {}
+_in_memory_or_count: int = 0
+_last_synced_or_hash: str = ""
+_last_synced_or_cairo_date: str = ""
+_last_or_sync_ts: float = 0.0
 
 
 def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
     """Executes single-pass live synchronization between Power BI, Relational Postgres, and RTDB."""
-    global _last_synced_df_hash, _last_synced_cairo_date, _last_synced_meta_updated_at
+    global _last_synced_df_hash, _last_synced_cairo_date, _last_synced_meta_updated_at, _last_known_mrns_by_name
     attempt = 0
     while attempt < max_attempts:
         try:
@@ -1445,6 +1520,12 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     raw_row=row
                 )
                 records.append(rec)
+                if rec.clean_mrn and rec.name:
+                    norm_rn = normalize_arabic_name(rec.name)
+                    if norm_rn:
+                        known_mrns_by_name[norm_rn] = rec.clean_mrn
+
+            _last_known_mrns_by_name = dict(known_mrns_by_name)
 
             # 2b. Add HMIS Nurse Portal "Pending Discharge" cases to the cumulative discharged list
             if HMIS_PENDING_ENABLED:
@@ -2294,7 +2375,10 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                             "transfers": len(cumulative_transfers),
                             "entries": len(cumulative_entries),
                             "discharged": len(discharged_list),
-                            "orList": int(existing.get("orListCount") or len(existing.get("orList") or []))
+                            "orList": max(
+                                int(existing.get("orListCount") or len(existing.get("orList") or [])),
+                                _in_memory_or_count if _last_synced_or_cairo_date == cairo_date_str else 0
+                            )
                         }
                     },
                     "updated_at": now_iso
@@ -2347,6 +2431,528 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
         backoff_sec = min(120, 15 * (2 ** (attempt - 1)))
         failure_countdown(backoff_sec, f"Data Fetch & Sync (Attempt {attempt}/{max_attempts})")
     return False
+
+
+# --- OPERATING ROOM (OR) SHEET POWER BI AUTO-SYNC (EVERY 2 HOURS) ---
+
+def get_or_powerbi_model_id(auth: Optional[Any] = None) -> str:
+    """Dynamically retrieves the active OR report modelId from modelsAndExploration, falling back to 1135690937."""
+    fallback_id = "1135690937"
+    try:
+        report_base = POWERBI_OR_EXPORT_URL.rsplit("/export/", 1)[0]
+        meta_url = f"{report_base}/modelsAndExploration"
+        resp = requests.get(meta_url, auth=auth, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = data.get("models", [])
+            if models and "id" in models[0]:
+                return str(models[0]["id"])
+    except Exception as e:
+        log(f"Notice: OR dynamic modelId discovery fallback to {fallback_id}: {e}", level="warning")
+    return fallback_id
+
+
+def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dict[str, Any]:
+    """Constructs the executeSemanticQueryRequest payload for the Power BI OR schedule report (same-day filter)."""
+    date_label = f"{cairo_now.month}/{cairo_now.day}/{cairo_now.year}"
+    return {
+        "exportDataType": 0,
+        "executeSemanticQueryRequest": {
+            "version": "1.0.0",
+            "queries": [
+                {
+                    "Query": {
+                        "Commands": [
+                            {
+                                "SemanticQueryDataShapeCommand": {
+                                    "Query": {
+                                        "Version": 2,
+                                        "From": [{"Name": "o", "Entity": "oPERAT", "Type": 0}],
+                                        "Select": [
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Surgeon Name"}, "Name": "OperationReservation_soussi.EnglishFullName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLClassName"}, "Name": "OperationReservation_soussi.FLClassName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}, "Name": "OperationReservation_soussi.FLOperationName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PreparationInstructions"}, "Name": "OperationReservation_soussi.PreparationInstructions"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OR Room"}, "Name": "OperationReservation_soussi.Room Name"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ContractorName"}, "Name": "OperationReservation_soussi.ContractorName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PaidBy"}, "Name": "OperationReservation_soussi.PaidBy"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "SLOperationName"}, "Name": "OperationReservation_soussi.SLOperationName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "VT"}, "Name": "OperationReservation_soussi.Visit Type"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}, "Name": "OperationReservation_soussi.Start Time"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "End Time"}, "Name": "OperationReservation_soussi.End Time"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Post C"}, "Name": "OperationReservation_soussi.PostRoomCategoryGUID"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OperativeComment"}, "Name": "OperationReservation_soussi.OperativeComment"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "i/o"}, "Name": "OperationReservation_soussi.InOutReservationType"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "MRN"}, "Name": "OperationReservation_soussi.MRN"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Patient Name"}, "Name": "OperationReservation_soussi.Patient Name"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OverWeight"}, "Name": "oPERAT.OverWeight", "NativeReferenceName": "OverWeight"}
+                                        ],
+                                        "Where": [
+                                            {
+                                                "Condition": {
+                                                    "In": {
+                                                        "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Status"}}],
+                                                        "Values": [[{"Literal": {"Value": "'Completed'"}}], [{"Literal": {"Value": "'Scheduled'"}}], [{"Literal": {"Value": "'InOR'"}}]]
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "Condition": {
+                                                    "Not": {
+                                                        "Expression": {
+                                                            "In": {
+                                                                "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ORStatus"}}],
+                                                                "Values": [[{"Literal": {"Value": "'Cancel'"}}]]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "Condition": {
+                                                    "Not": {
+                                                        "Expression": {
+                                                            "In": {
+                                                                "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}}],
+                                                                "Values": [[{"Literal": {"Value": "null"}}]]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "Condition": {
+                                                    "Comparison": {
+                                                        "ComparisonKind": 0,
+                                                        "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                                                        "Right": {"DateSpan": {"Expression": {"Now": {}}, "TimeUnit": 0}}
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "Condition": {
+                                                    "Not": {
+                                                        "Expression": {
+                                                            "In": {
+                                                                "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OR Room"}}],
+                                                                "Values": [
+                                                                    [{"Literal": {"Value": "'Cath Lab Theatre'"}}],
+                                                                    [{"Literal": {"Value": "'CathLab Operation Theatre 2'"}}],
+                                                                    [{"Literal": {"Value": "'Endoscopy Operation Theatre'"}}]
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        ],
+                                        "OrderBy": [
+                                            {"Direction": 1, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}}}
+                                        ]
+                                    },
+                                    "Binding": {
+                                        "Primary": {"Groupings": [{"Projections": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], "Subtotal": 0}]},
+                                        "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
+                                        "Version": 1
+                                    }
+                                }
+                            },
+                            {
+                                "ExportDataCommand": {
+                                    "Columns": [
+                                        {"QueryName": "OperationReservation_soussi.EnglishFullName", "Name": "Surgeon Name"},
+                                        {"QueryName": "OperationReservation_soussi.FLClassName", "Name": "FLClassName"},
+                                        {"QueryName": "OperationReservation_soussi.FLOperationName", "Name": "FLOperationName"},
+                                        {"QueryName": "OperationReservation_soussi.PreparationInstructions", "Name": "PreparationInstructions"},
+                                        {"QueryName": "OperationReservation_soussi.Room Name", "Name": "OR Room"},
+                                        {"QueryName": "OperationReservation_soussi.ContractorName", "Name": "ContractorName"},
+                                        {"QueryName": "OperationReservation_soussi.PaidBy", "Name": "PaidBy"},
+                                        {"QueryName": "OperationReservation_soussi.SLOperationName", "Name": "SLOperationName"},
+                                        {"QueryName": "OperationReservation_soussi.Visit Type", "Name": "VT"},
+                                        {"QueryName": "OperationReservation_soussi.Start Time", "Name": "Start Time"},
+                                        {"QueryName": "OperationReservation_soussi.End Time", "Name": "End Time"},
+                                        {"QueryName": "OperationReservation_soussi.PostRoomCategoryGUID", "Name": "Post C"},
+                                        {"QueryName": "OperationReservation_soussi.OperativeComment", "Name": "OperativeComment"},
+                                        {"QueryName": "OperationReservation_soussi.InOutReservationType", "Name": "i/o"},
+                                        {"QueryName": "OperationReservation_soussi.MRN", "Name": "MRN"},
+                                        {"QueryName": "OperationReservation_soussi.Patient Name", "Name": "Patient Name"},
+                                        {"QueryName": "oPERAT.OverWeight", "Name": "OverWeight"}
+                                    ],
+                                    "Ordering": [9, 10, 15, 14, 2, 7, 0, 3, 4, 5, 6, 8, 11, 12, 13, 1, 16],
+                                    "FiltersDescription": (
+                                        "Applied filters:\nStatus is Completed, Scheduled, or InOR\n"
+                                        "ORStatus is not Cancel\nFLOperationName is not (Blank)\n"
+                                        f"StartDateTime {date_label} - {date_label}\n"
+                                        "OR Room is not Cath Lab Theatre, CathLab Operation Theatre 2, or Endoscopy Operation Theatre"
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                }
+            ],
+            "cancelQueries": [],
+            "modelId": model_id,
+            "userPreferredLocale": "en-US"
+        }
+    }
+
+
+def parse_powerbi_or_excel(
+    excel_bytes: bytes,
+    cairo_date_str: str,
+    known_mrns_by_name: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Parses Power BI OR Schedule Excel bytes into the exact 19-field OR case schema with 12-hour Start/End times
+    and merges multi-procedure rows for the same patient/session into a single OR case row."""
+    df = pd.read_excel(io.BytesIO(excel_bytes), header=None)
+    if df.empty:
+        return []
+
+    header_row_idx = -1
+    for r_idx in range(min(10, len(df))):
+        row_strs = [
+            str(x).lower().strip()
+            for x in df.iloc[r_idx].values
+            if pd.notna(x) and "\n" not in str(x) and "applied filters" not in str(x).lower()
+        ]
+        if len(row_strs) >= 3 and any("start time" in s or "patient name" in s or "floperationname" in s for s in row_strs):
+            header_row_idx = r_idx
+            break
+
+    if header_row_idx < 0:
+        return []
+
+    headers = [str(x).strip().lower() if pd.notna(x) else "" for x in df.iloc[header_row_idx].values]
+
+    def find_col_idx(possible_names: list[str], fallback: int = -1) -> int:
+        # Pass 1: exact header match
+        for name in possible_names:
+            nl = name.lower()
+            for idx, h in enumerate(headers):
+                if h == nl:
+                    return idx
+        # Pass 2: substring match (only for keywords > 3 chars)
+        for name in possible_names:
+            nl = name.lower()
+            if len(nl) <= 3:
+                continue
+            for idx, h in enumerate(headers):
+                if nl in h:
+                    return idx
+        return fallback
+
+    idx_serial = find_col_idx(["serial", "column 1", "م", "#"], -1)
+    idx_start = find_col_idx(["start time", "starttime", "وقت البدء"], 0)
+    idx_end = find_col_idx(["end time", "endtime", "وقت الانتهاء"], 1)
+    idx_patient = find_col_idx(["patient name", "patient", "اسم المريض"], 2)
+    idx_mrn = find_col_idx(["mrn", "رقم الملف", "ملف"], 3)
+    idx_eng_op = find_col_idx(["floperationname", "eng. operation name", "operation name", "العملية"], 4)
+    idx_ar_op = find_col_idx(["sloperationname", "ar. operation name", "اسم العملية عربي"], 5)
+    idx_surgeon = find_col_idx(["surgeon name", "surgeon", "الجراح"], 6)
+    idx_col2 = find_col_idx(["preparationinstructions", "preparation instructions", "column2"], 7)
+    idx_or_room = find_col_idx(["or room", "room name", "غرفة العمليات"], 8)
+    idx_contractor = find_col_idx(["contractorname", "contractor name", "contractor", "الجهة"], 9)
+    idx_paid_by = find_col_idx(["paidby", "paid by", "الدفع"], 10)
+    idx_vt = find_col_idx(["vt", "visit type", "نوع الزيارة"], 11)
+    idx_post_c = find_col_idx(["post c", "postroomcategoryguid", "post"], 12)
+    idx_comment = find_col_idx(["operativecomment", "operative comment", "ملاحظات"], 13)
+    idx_col3 = find_col_idx(["i/o", "inoutreservationtype", "column3"], 14)
+    idx_class = find_col_idx(["flclassname", "class"], 15)
+    idx_fin = find_col_idx(["overweight", "financial status", "الحالة المالية"], 16)
+
+    def cell_str(row_vals: Any, idx: int) -> str:
+        if idx < 0 or idx >= len(row_vals):
+            return ""
+        v = row_vals[idx]
+        if v is None or pd.isna(v):
+            return ""
+        s = re.sub(r"\s+", " ", str(v).replace("\xa0", " ")).strip()
+        if s.lower() in ("nan", "null", "none"):
+            return ""
+        return s
+
+    grouped_cases: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+
+    for r_idx in range(header_row_idx + 1, len(df)):
+        row_vals = df.iloc[r_idx].values
+        patient_name = cell_str(row_vals, idx_patient)
+        or_room = cell_str(row_vals, idx_or_room)
+        raw_mrn = cell_str(row_vals, idx_mrn)
+        surgeon = cell_str(row_vals, idx_surgeon)
+
+        if not patient_name and not or_room and not surgeon:
+            continue
+        if patient_name.lower() in ("patient name", "total", "applied filters:"):
+            continue
+
+        clean_m = clean_mrn_str(raw_mrn)
+        if not clean_m and patient_name:
+            norm_pn = normalize_arabic_name(patient_name)
+            if norm_pn and norm_pn in known_mrns_by_name:
+                clean_m = known_mrns_by_name[norm_pn]
+            else:
+                for k_norm, k_mrn in known_mrns_by_name.items():
+                    if is_name_match(k_norm, norm_pn):
+                        clean_m = k_mrn
+                        break
+
+        raw_start = row_vals[idx_start] if (0 <= idx_start < len(row_vals)) else ""
+        raw_end = row_vals[idx_end] if (0 <= idx_end < len(row_vals)) else ""
+        start_12h = format_time_12h(raw_start)
+        end_12h = format_time_12h(raw_end)
+
+        eng_op = cell_str(row_vals, idx_eng_op)
+        ar_op = cell_str(row_vals, idx_ar_op)
+        col2_val = cell_str(row_vals, idx_col2)
+        col3_val = cell_str(row_vals, idx_col3)
+        contractor_val = cell_str(row_vals, idx_contractor)
+        paid_by_val = cell_str(row_vals, idx_paid_by)
+        post_c_val = cell_str(row_vals, idx_post_c)
+        vt_val = cell_str(row_vals, idx_vt)
+        comment_val = cell_str(row_vals, idx_comment)
+        class_val = cell_str(row_vals, idx_class)
+        fin_val = cell_str(row_vals, idx_fin)
+
+        # Group multi-procedure rows belonging to the same patient surgical session
+        norm_key_name = normalize_arabic_name(patient_name) or patient_name.lower()
+        group_key = f"{clean_m or norm_key_name}|{start_12h}|{or_room.lower()}"
+
+        if group_key not in grouped_cases:
+            ordered_keys.append(group_key)
+            grouped_cases[group_key] = {
+                "serial": str(len(ordered_keys)),
+                "startTime": start_12h,
+                "endTime": end_12h,
+                "patientName": patient_name,
+                "mrn": clean_m,
+                "engOperationName": eng_op,
+                "arOperationName": ar_op,
+                "surgeonName": surgeon,
+                "column2": col2_val,
+                "orRoom": or_room,
+                "column3": col3_val,
+                "contractorName": contractor_val,
+                "paidBy": paid_by_val,
+                "postC": post_c_val,
+                "vt": vt_val,
+                "operativeComment": comment_val,
+                "flClassName": class_val,
+                "financialStatus": fin_val,
+                "orListDate": cairo_date_str
+            }
+        else:
+            existing_case = grouped_cases[group_key]
+            for field_name, new_val in (
+                ("engOperationName", eng_op),
+                ("arOperationName", ar_op),
+                ("surgeonName", surgeon),
+                ("column2", col2_val),
+                ("operativeComment", comment_val),
+            ):
+                if new_val:
+                    curr_parts = [p.strip() for p in existing_case[field_name].split(" / ") if p.strip()]
+                    if new_val not in curr_parts:
+                        curr_parts.append(new_val)
+                        existing_case[field_name] = " / ".join(curr_parts)
+            if not existing_case["mrn"] and clean_m:
+                existing_case["mrn"] = clean_m
+            if not existing_case["contractorName"] and contractor_val:
+                existing_case["contractorName"] = contractor_val
+            if not existing_case["paidBy"] and paid_by_val:
+                existing_case["paidBy"] = paid_by_val
+            if not existing_case["postC"] and post_c_val:
+                existing_case["postC"] = post_c_val
+            if not existing_case["vt"] and vt_val:
+                existing_case["vt"] = vt_val
+            if not existing_case["flClassName"] and class_val:
+                existing_case["flClassName"] = class_val
+
+    return [grouped_cases[k] for k in ordered_keys]
+
+
+def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
+    """Fetches same-day OR schedule from Power BI, formats times in 12-hour format, and syncs to Supabase."""
+    global _last_synced_or_hash, _last_synced_or_cairo_date, _last_or_sync_ts, _in_memory_or_count, _last_known_mrns_by_name
+    try:
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now_iso = now_dt.isoformat()
+        cairo_now = get_cairo_now()
+        cairo_date_str = cairo_now.strftime("%Y-%m-%d")
+
+        log("[OR Sync] Fetching live same-day OR schedule from Power BI...")
+        auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+        or_model_id = get_or_powerbi_model_id(auth=auth)
+        or_payload = build_or_powerbi_payload(or_model_id, cairo_now)
+
+        resp = requests.post(
+            POWERBI_OR_EXPORT_URL,
+            json=or_payload,
+            auth=auth,
+            timeout=(10, min(35, POWERBI_TIMEOUT))
+        )
+        resp.raise_for_status()
+
+        session = get_supabase_session()
+        if not _last_known_mrns_by_name and SUPABASE_KEY:
+            try:
+                reg_res = session.get(
+                    f"{SUPABASE_REST_URL}?path=eq.state/registry&select=data",
+                    timeout=10,
+                    verify=SUPABASE_SSL_VERIFY
+                )
+                if reg_res.status_code == 200 and reg_res.json():
+                    reg_data = (reg_res.json()[0].get("data") or {}).get("patientRoomRegistry") or {}
+                    for rk, rv in reg_data.items():
+                        if isinstance(rv, dict):
+                            r_name = str(rv.get("name") or rk or "").strip()
+                            r_mrn = clean_mrn_str(rv.get("mrn"))
+                            if r_name and r_mrn and not r_mrn.startswith("UNKNOWN-") and any(c.isdigit() for c in r_mrn):
+                                norm_rn = normalize_arabic_name(r_name)
+                                if norm_rn:
+                                    _last_known_mrns_by_name[norm_rn] = r_mrn
+            except Exception:
+                pass
+
+        or_cases = parse_powerbi_or_excel(resp.content, cairo_date_str, _last_known_mrns_by_name)
+        _last_or_sync_ts = time.time()
+        _in_memory_or_count = len(or_cases)
+
+        current_or_hash = hashlib.sha256(
+            json.dumps(or_cases, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        if (
+            not force
+            and current_or_hash == _last_synced_or_hash
+            and cairo_date_str == _last_synced_or_cairo_date
+        ):
+            log(f"[OR Sync Dedup] OR schedule ({len(or_cases)} cases) unchanged since last sync; skipping redundant upsert.")
+            return True
+
+        if not SUPABASE_KEY:
+            log(f"[OR Sync] Parsed {len(or_cases)} OR cases (12-hour format). SUPABASE_KEY not set; skipping DB write.", level="warning")
+            return True
+
+        # 1. Fetch lightweight state/metadata and history/or_index for atomic update
+        existing_meta: dict[str, Any] = {}
+        existing_or_index: list[dict[str, Any]] = []
+        try:
+            meta_res = session.get(
+                f"{SUPABASE_REST_URL}?path=in.(state/metadata,history/or_index)&select=path,data",
+                timeout=12,
+                verify=SUPABASE_SSL_VERIFY
+            )
+            if meta_res.status_code == 200:
+                for row in meta_res.json():
+                    p = row.get("path")
+                    d = row.get("data")
+                    if p == "state/metadata" and isinstance(d, dict):
+                        existing_meta = d
+                    elif p == "history/or_index" and isinstance(d, list):
+                        existing_or_index = d
+        except Exception as e:
+            log(f"[OR Sync] Notice reading metadata/or_index: {e}", level="warning")
+
+        existing_counts = dict(existing_meta.get("counts") or {}) if isinstance(existing_meta.get("counts"), dict) else {}
+        existing_counts["orList"] = len(or_cases)
+
+        updated_meta = {
+            **existing_meta,
+            "uploadedAt": now_iso,
+            "lastDatabaseUpdatedAt": now_iso,
+            "lastActiveDate": cairo_date_str,
+            "counts": existing_counts
+        }
+
+        matched_inpatients = sum(1 for c in or_cases if c.get("mrn"))
+        outpatients_cnt = max(0, len(or_cases) - matched_inpatients)
+        or_summary = {
+            "totalCases": len(or_cases),
+            "matched": matched_inpatients,
+            "outpatients": outpatients_cnt,
+            "timestamp": int(time.time() * 1000),
+            "cairoTime": cairo_now.strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        other_or_index = [
+            e for e in existing_or_index
+            if isinstance(e, dict) and str(e.get("date", "")).strip() != cairo_date_str
+        ]
+        today_or_index_entry = {
+            "date": cairo_date_str,
+            "timestamp": or_summary["timestamp"],
+            "cairoTime": or_summary["cairoTime"],
+            "summary": {
+                "totalCases": len(or_cases),
+                "matched": matched_inpatients,
+                "outpatients": outpatients_cnt
+            }
+        }
+        updated_or_index = [today_or_index_entry] + other_or_index
+        try:
+            updated_or_index.sort(key=lambda x: str(x.get("date", "")), reverse=True)
+        except Exception:
+            pass
+
+        or_nodes = [
+            {"path": "state/or_list", "data": {"items": or_cases}, "updated_at": now_iso},
+            {"path": "state/metadata", "data": updated_meta, "updated_at": now_iso},
+            {"path": f"history/or/{cairo_date_str}/summary", "data": or_summary, "updated_at": now_iso},
+            {"path": f"history/or/{cairo_date_str}/cases", "data": or_cases, "updated_at": now_iso},
+            {"path": "history/or_index", "data": updated_or_index, "updated_at": now_iso}
+        ]
+
+        sb_resp = session.post(SUPABASE_REST_URL, json=or_nodes, timeout=20, verify=SUPABASE_SSL_VERIFY)
+        if sb_resp.status_code not in (200, 201, 204):
+            log(f"[OR Sync] Supabase RTDB upsert returned {sb_resp.status_code}: {sb_resp.text}", level="warning")
+            return False
+
+        # 2. Relational sync via sync_or_cases RPC (converts 12h display time to 24h PG TIME)
+        if or_cases:
+            try:
+                rpc_cases = []
+                for c in or_cases:
+                    s_pg = parse_to_pg_time(c.get("startTime"))
+                    e_pg = parse_to_pg_time(c.get("endTime"))
+                    if s_pg and e_pg and e_pg < s_pg:
+                        e_pg = None
+                    rpc_cases.append({
+                        **c,
+                        "startTime": s_pg,
+                        "endTime": e_pg,
+                        "orListDate": cairo_date_str
+                    })
+                session.post(
+                    SUPABASE_OR_RPC_URL,
+                    json={"payload": rpc_cases},
+                    timeout=20,
+                    verify=SUPABASE_SSL_VERIFY
+                )
+            except Exception as rpc_err:
+                log(f"[OR Sync] Relational RPC notice (non-fatal): {rpc_err}", level="warning")
+
+        _last_synced_or_hash = current_or_hash
+        _last_synced_or_cairo_date = cairo_date_str
+        log(
+            f"[OR Sync] Successfully committed {len(or_cases)} OR cases for {cairo_date_str} "
+            f"({matched_inpatients} with inpatient MRN, {outpatients_cnt} day-case/unregistered, 12-hour times)."
+        )
+        return True
+    except Exception as e:
+        log(f"[OR Sync] Error fetching/syncing OR schedule: {e}", level="error")
+        return False
+
+
+def run_or_sync_job(force: bool = False) -> None:
+    """Executes the scheduled 2-hour OR schedule sync job."""
+    if _is_paused and not force:
+        log("[OR Sync Paused] Skipping scheduled OR sync cycle while paused.")
+        return
+    fortinet_reconnect()
+    fetch_powerbi_or_and_sync(force=force)
+    publish_standalone_heartbeat()
 
 
 # --- SCHEDULING & TIMEZONE ROLLOVER ORCHESTRATION ---
@@ -2650,6 +3256,8 @@ def run_sync_job(force: bool = False) -> None:
     publish_standalone_heartbeat()
     fortinet_reconnect()
     fetch_powerbi_and_sync()
+    if force or _last_or_sync_ts == 0.0 or (time.time() - _last_or_sync_ts) >= 7200.0:
+        fetch_powerbi_or_and_sync(force=force)
     publish_standalone_heartbeat()
 
 
@@ -2676,6 +3284,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     schedule.every(30).minutes.do(run_sync_job)
+    schedule.every(2).hours.do(run_or_sync_job)
 
     _last_hb_ts = time.time()
     _last_ctrl_ts = time.time()

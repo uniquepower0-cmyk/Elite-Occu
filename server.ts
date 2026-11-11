@@ -1584,7 +1584,7 @@ let lastKnownPatientsFetchTs = 0;
 function isValidRealMrn(val: any): boolean {
   if (val === null || val === undefined) return false;
   const s = String(val).trim().replace(/^0+/, "");
-  if (!s || s.startsWith("UNKNOWN-") || s.startsWith("transfer-")) return false;
+  if (!s || s === "65765" || s.startsWith("UNKNOWN-") || s.startsWith("transfer-")) return false;
   const low = s.toLowerCase();
   if (low === "n/a" || low === "null" || low === "undefined" || low === "-" || low === "—") return false;
   if (/[\u0600-\u06FF]/.test(s)) return false;
@@ -4973,6 +4973,21 @@ function parseToPostgresTime(raw: any): string | null {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatTimeTo12Hour(val: any): string {
+  if (val === null || val === undefined) return "";
+  const raw = String(val).trim();
+  if (!raw) return "";
+  const pgTime = parseToPostgresTime(raw);
+  if (!pgTime) return raw;
+  const parts = pgTime.split(":");
+  const h24 = parseInt(parts[0], 10);
+  const mins = parts[1] || "00";
+  if (isNaN(h24)) return raw;
+  const period = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${String(h12).padStart(2, '0')}:${mins} ${period}`;
+}
+
 async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string) {
   try {
     if (!parsedData || parsedData.length === 0) return;
@@ -5010,7 +5025,9 @@ async function syncORCasesToRelationalSchema(parsedData: any[], dateStr: string)
     for (const row of parsedData) {
       let rawMrn = row.mrn ? String(row.mrn).trim() : "";
       let mrn = rawMrn.replace(/^0+/, "");
-      if (!mrn) mrn = buildDeterministicUnknownMrn(row.patientName || '', row.orRoom || '');
+      if (!isValidRealMrn(mrn)) {
+        mrn = buildDeterministicUnknownMrn(row.patientName || '', row.orRoom || '');
+      }
       patientMap.set(mrn, { mrn: mrn, name: row.patientName || 'Unknown Patient' });
       row._computedMrn = mrn;
     }
@@ -5576,15 +5593,20 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
       if (!rows || rows.length < 2) continue;
 
       for (let i = 0; i < Math.min(rows.length, 15); i++) {
-        const rowStr = rows[i].map(c => String(c || "").trim().toLowerCase()).join(" ");
+        const nonEmptyCells = rows[i].map(c => String(c || "").trim()).filter(Boolean);
+        const rowStr = nonEmptyCells.join(" ").toLowerCase();
         if (
-          rowStr.includes("start time") || 
-          rowStr.includes("patient name") || 
-          rowStr.includes("eng operation") || 
-          rowStr.includes("ar operation") || 
-          rowStr.includes("surgeon name") ||
-          rowStr.includes("اسم المريض") ||
-          rowStr.includes("or room")
+          nonEmptyCells.length >= 3 &&
+          !rowStr.includes("applied filters") &&
+          (
+            rowStr.includes("start time") || 
+            rowStr.includes("patient name") || 
+            rowStr.includes("eng operation") || 
+            rowStr.includes("ar operation") || 
+            rowStr.includes("surgeon name") ||
+            rowStr.includes("اسم المريض") ||
+            rowStr.includes("or room")
+          )
         ) {
           targetSheetName = sheetName;
           targetRows = rows;
@@ -5617,17 +5639,17 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
       return idx !== -1 ? idx : defaultIdx;
     };
     
-    const idxSerial = getIndex(["column 1", "sr", "#", "no", "مسلسل"], 0);
+    const idxSerial = getIndex(["column 1", "sr", "#", "no", "مسلسل"], -1);
     const idxStartTime = getIndex(["start time", "start", "بداية"], 1);
     const idxEndTime = getIndex(["end time", "end", "نهاية"], 2);
     const idxPatientName = getIndex(["patient name", "patient", "اسم المريض", "المريض"], 3);
     const idxMRN = getIndex(["mrn", "id", "رقم الملف", "ملف"], 4);
-    const idxEngOp = getIndex(["eng col", "eng operation", "english operation", "العملية (انجليزي)", "operation"], 5);
-    const idxArOp = getIndex(["ar col", "ar operation", "arabic operation", "العملية (عربي)"], 6);
+    const idxEngOp = getIndex(["floperationname", "eng col", "eng operation", "english operation", "العملية (انجليزي)", "operation"], 5);
+    const idxArOp = getIndex(["sloperationname", "ar col", "ar operation", "arabic operation", "العملية (عربي)"], 6);
     const idxSurgeon = getIndex(["surgeon name", "surgeon", "اسم الطبيب", "الجراح", "طبيب"], 7);
-    const idxColumn2 = getIndex(["column2", "equipment", "الأجهزة", "تاور", "tower"], 8);
+    const idxColumn2 = getIndex(["preparationinstructions", "column2", "equipment", "الأجهزة", "تاور", "tower"], 8);
     const idxORRoom = getIndex(["or room", "room", "الغرفة", "غرفة العمليات", "غرفة"], 9);
-    const idxColumn3 = getIndex(["column3", "status", "الحالة", "الحاله"], 10);
+    const idxColumn3 = getIndex(["i/o", "inoutreservationtype", "column3", "status", "الحالة", "الحاله"], 10);
     const idxContractor = getIndex(["contractorname", "contractor name", "contractor_name", "contractor", "التعاقد", "جهة التعاقد", "الجهة", "الشركه", "الشركة"], 11);
     const idxPaidBy = getIndex(["paidby", "paid by", "paid_by", "paid", "الدافع", "طريقة الدفع", "طريقه الدفع", "الدفع", "الجهة الدافعة", "سداد", "مسدد"], 12);
     const idxPostC = getIndex(["post c", "postop", "عناية", "عنايه"], 13);
@@ -5654,7 +5676,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     ], 14);
     const idxComment = getIndex(["operativecomment", "comment", "ملاحظات"], 15);
     const idxClass = getIndex(["flclassname", "class", "الدرجة", "الدرجه"], 16);
-    const idxFinancial = getIndex(["financial status", "financial", "المالي", "الحالة المالية", "الحاله الماليه", "الموقف المالي"], 17);
+    const idxFinancial = getIndex(["financial status", "financial", "overweight", "المالي", "الحالة المالية", "الحاله الماليه", "الموقف المالي"], 17);
     
     const dataRows = targetRows.slice(startIdx + 1);
     const parsedData: any[] = [];
@@ -5679,38 +5701,93 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
     if (!dateStr) {
       dateStr = cairoNow.dateStr;
     }
+
+    await ensureKnownPatientMrnsLoaded(false);
     
+    const groupedCaseMap = new Map<string, any>();
+
     dataRows.forEach((row, i) => {
-      const patientName = String(row[idxPatientName] || "").trim();
-      const orRoom = String(row[idxORRoom] || (idxORRoom >= 0 && row[idxORRoom + 1]) || "").trim();
-      const mrn = String(row[idxMRN] || "").trim();
-      const surgeon = String(row[idxSurgeon] || "").trim();
+      const patientName = String(row[idxPatientName] || "").replace(/\xa0/g, " ").replace(/\s+/g, " ").trim();
+      const orRoom = String(row[idxORRoom] || (idxORRoom >= 0 && row[idxORRoom + 1]) || "").replace(/\s+/g, " ").trim();
+      const rawMrn = String(row[idxMRN] || "").trim().replace(/^0+/, "");
+      let mrn = isValidRealMrn(rawMrn) ? rawMrn : "";
+      if (patientName) {
+        if (mrn) {
+          registerKnownPatientMrn(patientName, mrn);
+        } else {
+          const candidateMrn = resolveKnownPatientMrn(patientName, orRoom, "");
+          if (isValidRealMrn(candidateMrn)) mrn = candidateMrn;
+        }
+      }
+      const surgeon = String(row[idxSurgeon] || "").replace(/\s+/g, " ").trim();
       
       // Keep row if it has either patient name, mrn, or room
       if (!patientName && !orRoom && !mrn && !surgeon) return;
-      
-      parsedData.push({
-        serial: String(row[idxSerial] || i + 1).trim(),
-        startTime: String(row[idxStartTime] || "").trim(),
-        endTime: String(row[idxEndTime] || "").trim(),
-        patientName: patientName,
-        mrn: mrn,
-        engOperationName: String(row[idxEngOp] || "").trim(),
-        arOperationName: String(row[idxArOp] || "").trim(),
-        surgeonName: surgeon,
-        column2: String(row[idxColumn2] || "").trim(),
-        orRoom: orRoom,
-        column3: String(row[idxColumn3] || "").trim(),
-        contractorName: String(row[idxContractor] || "").trim(),
-        paidBy: String(row[idxPaidBy] || "").trim(),
-        postC: String(row[idxPostC] || "").trim(),
-        vt: String(row[idxVT] || "").trim(),
-        operativeComment: String(row[idxComment] || "").trim(),
-        flClassName: String(row[idxClass] || "").trim(),
-        financialStatus: String(row[idxFinancial] || "").trim(),
-        orListDate: dateStr
-      });
+
+      const startTime = formatTimeTo12Hour(row[idxStartTime]);
+      const endTime = formatTimeTo12Hour(row[idxEndTime]);
+      const engOp = String(row[idxEngOp] || "").replace(/\s+/g, " ").trim();
+      const arOp = String(row[idxArOp] || "").replace(/\s+/g, " ").trim();
+      const col2 = String(row[idxColumn2] || "").replace(/\s+/g, " ").trim();
+      const col3 = String(row[idxColumn3] || "").replace(/\s+/g, " ").trim();
+      const contractor = String(row[idxContractor] || "").replace(/\s+/g, " ").trim();
+      const paidBy = String(row[idxPaidBy] || "").replace(/\s+/g, " ").trim();
+      const postC = String(row[idxPostC] || "").replace(/\s+/g, " ").trim();
+      const vt = String(row[idxVT] || "").replace(/\s+/g, " ").trim();
+      const comment = String(row[idxComment] || "").replace(/\s+/g, " ").trim();
+      const flClass = String(row[idxClass] || "").replace(/\s+/g, " ").trim();
+      const finStatus = String(row[idxFinancial] || "").replace(/\s+/g, " ").trim();
+
+      const normNameKey = normalizeArabicName(patientName) || patientName.toLowerCase();
+      const groupKey = `${mrn || normNameKey}|${startTime}|${orRoom.toLowerCase()}`;
+
+      if (!groupedCaseMap.has(groupKey)) {
+        groupedCaseMap.set(groupKey, {
+          serial: idxSerial >= 0 && row[idxSerial] ? String(row[idxSerial]).trim() : String(groupedCaseMap.size + 1),
+          startTime,
+          endTime,
+          patientName,
+          mrn,
+          engOperationName: engOp,
+          arOperationName: arOp,
+          surgeonName: surgeon,
+          column2: col2,
+          orRoom,
+          column3: col3,
+          contractorName: contractor,
+          paidBy,
+          postC,
+          vt,
+          operativeComment: comment,
+          flClassName: flClass,
+          financialStatus: finStatus,
+          orListDate: dateStr
+        });
+      } else {
+        const existing = groupedCaseMap.get(groupKey)!;
+        const mergeField = (field: string, val: string) => {
+          if (!val) return;
+          const parts = String(existing[field] || "").split(" / ").map((s: string) => s.trim()).filter(Boolean);
+          if (!parts.includes(val)) {
+            parts.push(val);
+            existing[field] = parts.join(" / ");
+          }
+        };
+        mergeField("engOperationName", engOp);
+        mergeField("arOperationName", arOp);
+        mergeField("surgeonName", surgeon);
+        mergeField("column2", col2);
+        mergeField("operativeComment", comment);
+        if (!existing.mrn && mrn) existing.mrn = mrn;
+        if (!existing.contractorName && contractor) existing.contractorName = contractor;
+        if (!existing.paidBy && paidBy) existing.paidBy = paidBy;
+        if (!existing.postC && postC) existing.postC = postC;
+        if (!existing.vt && vt) existing.vt = vt;
+        if (!existing.flClassName && flClass) existing.flClassName = flClass;
+      }
     });
+
+    parsedData.push(...Array.from(groupedCaseMap.values()));
     
     cumulativeORList = parsedData;
     // Push to relational database
@@ -15711,7 +15788,8 @@ function isMRNMatch(mrn1: string, mrn2: string): boolean {
   if (!mrn1 || !mrn2) return false;
   const clean1 = mrn1.trim().replace(/^0+/, "").replace(/[^0-9a-zA-Z]/g, "");
   const clean2 = mrn2.trim().replace(/^0+/, "").replace(/[^0-9a-zA-Z]/g, "");
-  if (!clean1 || !clean2) return false;
+  if (!clean1 || !clean2 || clean1 === "65765" || clean2 === "65765") return false;
+  if (clean1.startsWith("UNKNOWN") || clean2.startsWith("UNKNOWN")) return false;
   return clean1 === clean2;
 }
 
