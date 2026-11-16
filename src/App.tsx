@@ -3277,7 +3277,7 @@ export default function App() {
                   active={currentView === 'maintenance'} 
                   onClick={() => handleNav('maintenance')}
                   icon={<Activity />}
-                  label="Maintenance"
+                  label="Automated Sync Script Status"
                   badge="SYNC"
                   highlighted={true}
                 />
