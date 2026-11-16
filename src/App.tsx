@@ -3462,7 +3462,7 @@ export default function App() {
                         src="/elite_logo.png"
                       />
                     </div>
-                    <span className="font-bold text-sm text-slate-900 dark:text-slate-50 tracking-tight">Elite Occupancy</span>
+                    <span className="font-bold text-sm text-slate-900 dark:text-slate-50 tracking-tight leading-snug">Elite Hospital Occupancy Manager</span>
                   </div>
                   <button
                     type="button"
