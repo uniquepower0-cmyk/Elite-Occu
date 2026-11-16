@@ -3166,17 +3166,6 @@ export default function App() {
           </label>
 
           <div className="mt-10 pt-8 border-t border-slate-200/50 flex flex-col items-center gap-6">
-            <div className="flex items-center justify-center gap-8 opacity-80">
-               <div className="flex flex-col items-center gap-1">
-                 <FileText className="w-5 h-5 text-brand-primary" />
-                 <span className="text-[10px] font-bold uppercase tracking-wider font-mono text-slate-600">Secure parsing</span>
-               </div>
-               <div className="flex flex-col items-center gap-1">
-                 <RefreshCw className="w-5 h-5 text-brand-primary" />
-                 <span className="text-[10px] font-bold uppercase tracking-wider font-mono text-slate-600">Live logic</span>
-               </div>
-            </div>
-
             <button 
               onClick={handleLogout}
               className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-red-600 transition-colors uppercase tracking-widest font-mono"
