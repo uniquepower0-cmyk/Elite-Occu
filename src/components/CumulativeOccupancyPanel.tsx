@@ -86,38 +86,38 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
   }
 
   return (
-    <div className="bg-white/80 backdrop-blur-md rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden transition-all">
+    <div className="bg-white dark:bg-[#0f201c] rounded-2xl border border-slate-200/80 dark:border-emerald-500/20 shadow-xs overflow-hidden transition-all">
       {/* Header bar / Toggle */}
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className="px-5 py-3.5 flex items-center justify-between cursor-pointer hover:bg-slate-50/80 transition select-none"
+        className="px-5 py-3.5 flex items-center justify-between cursor-pointer hover:bg-slate-50/80 dark:hover:bg-[#142924] transition select-none"
       >
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700 shadow-xs">
+          <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950/70 flex items-center justify-center text-emerald-700 dark:text-emerald-300 shadow-xs">
             <TrendingUp className="w-4 h-4" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
                 Month-to-Date Cumulative Occupancy Analytics
               </span>
               {data?.includesProvisional && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                   Live Provisional Today Included
                 </span>
               )}
               {data?.isFinalized && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
                   <CheckCircle2 className="w-3 h-3" />
                   Finalized Month
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
               {data ? (
                 <>
-                  Inpatient: <strong className="text-emerald-700">{data.inpatient.rate.toFixed(1)}%</strong> ({data.inpatient.patientDays.toLocaleString()} patient-days) | Total Hospital: <strong className="text-slate-700">{data.total.rate.toFixed(1)}%</strong> | {data.daysRecorded} of {data.daysInMonth} days recorded
+                  Inpatient: <strong className="text-emerald-700 dark:text-emerald-400">{data.inpatient.rate.toFixed(1)}%</strong> ({data.inpatient.patientDays.toLocaleString()} patient-days) | Total Hospital: <strong className="text-slate-700 dark:text-slate-200">{data.total.rate.toFixed(1)}%</strong> | {data.daysRecorded} of {data.daysInMonth} days recorded
                 </>
               ) : (
                 'Loading cumulative daily metrics...'
@@ -140,16 +140,16 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
 
       {/* Expandable Content */}
       {isOpen && (
-        <div className="border-t border-slate-200/80 p-5 bg-gradient-to-b from-slate-50/50 to-white">
+        <div className="border-t border-slate-200/80 dark:border-emerald-500/20 p-5 bg-slate-50/60 dark:bg-[#0b1815]">
           {/* Sub Navigation */}
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-[#142924] p-1 rounded-xl border border-slate-200/60 dark:border-emerald-500/15">
               <button
                 onClick={() => setActiveTab('trend')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                   activeTab === 'trend'
-                    ? 'bg-white text-slate-800 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-700'
+                    ? 'bg-white dark:bg-[#0f201c] text-slate-800 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                 }`}
               >
                 Current Month Daily Trend
@@ -158,8 +158,8 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
                 onClick={() => setActiveTab('history')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
                   activeTab === 'history'
-                    ? 'bg-white text-slate-800 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-700'
+                    ? 'bg-white dark:bg-[#0f201c] text-slate-800 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                 }`}
               >
                 <History className="w-3.5 h-3.5" />
@@ -195,17 +195,17 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
                 <div className="w-full h-72 pb-3">
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.25)" />
                       <XAxis
                         dataKey="dayLabel"
-                        tick={{ fontSize: 11, fill: '#64748b' }}
-                        stroke="#cbd5e1"
+                        tick={{ fontSize: 11, fill: '#94a3b8' }}
+                        stroke="rgba(148, 163, 184, 0.35)"
                       />
                       <YAxis
                         unit="%"
                         domain={[0, 100]}
-                        tick={{ fontSize: 11, fill: '#64748b' }}
-                        stroke="#cbd5e1"
+                        tick={{ fontSize: 11, fill: '#94a3b8' }}
+                        stroke="rgba(148, 163, 184, 0.35)"
                       />
                       <Tooltip
                         content={({ active, payload }) => {
@@ -240,7 +240,7 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
                       <Legend
                         verticalAlign="top"
                         height={36}
-                        formatter={(val) => <span className="text-xs font-semibold text-slate-700">{val}</span>}
+                        formatter={(val) => <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{val}</span>}
                       />
                       <Bar
                         name="Daily Inpatient Rate (%)"
@@ -267,7 +267,7 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
-                  <div className="flex items-center justify-center gap-6 mt-2 text-[11px] text-slate-500">
+                  <div className="flex flex-wrap items-center justify-center gap-6 mt-2 text-[11px] text-slate-500 dark:text-slate-300">
                     <span className="flex items-center gap-1.5">
                       <span className="w-3 h-3 rounded-xs bg-[#059669]" /> Official Closed Day
                     </span>

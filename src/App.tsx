@@ -3351,12 +3351,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-auto pt-4">
-            <div className="bg-teal-50/80 dark:bg-emerald-950/40 border border-teal-200/80 dark:border-emerald-500/20 text-brand-primary dark:text-emerald-300 p-3.5 rounded-xl">
-              <p className="text-[10px] font-bold opacity-75 uppercase tracking-wider mb-0.5">Upcoming Trigger</p>
-              <p className="text-sm font-bold tabular-nums">14:00 (Daily Exit)</p>
-            </div>
-          </div>
         </div>
       );
     };
@@ -3901,20 +3895,32 @@ export default function App() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                   <div className="lg:col-span-2 space-y-8">
-                    <div className="bg-white/60 backdrop-blur-md p-8 rounded-2xl border border-white/40 shadow-sm">
-                      <div className="flex justify-between items-center mb-8">
-                        <h3 className="font-extrabold text-brand-primary tracking-tight">Occupancy Distribution</h3>
-                        <div className="text-[10px] font-bold text-teal-700 uppercase tracking-widest bg-teal-500/10 px-2.5 py-1 rounded-md">Live Metrics</div>
+                    <div className="bg-white dark:bg-[#0f201c] p-6 sm:p-7 rounded-2xl border border-slate-200/90 dark:border-emerald-500/20 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+                      <div className="flex justify-between items-center mb-6">
+                        <h3 className="font-bold text-slate-900 dark:text-slate-50 tracking-tight">Occupancy Distribution</h3>
+                        <div className="text-[10px] font-bold text-teal-700 dark:text-emerald-300 uppercase tracking-widest bg-teal-50 dark:bg-emerald-950/70 border border-teal-200/70 dark:border-emerald-500/25 px-2.5 py-1 rounded-md">Live Metrics</div>
                       </div>
                       <div className="h-80 w-full min-w-0" style={{ minHeight: 320 }}>
                         <ResponsiveContainer width="100%" height={320} minWidth={0}>
                           <BarChart data={stats}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                            <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} tick={{ fill: '#475569', fontWeight: 600 }} />
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148, 163, 184, 0.22)" />
+                            <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} tick={{ fill: isDark ? '#94a3b8' : '#475569', fontWeight: 600 }} />
                             <YAxis hide />
-                            <Tooltip 
-                              cursor={{ fill: 'rgba(255, 255, 255, 0.2)' }}
-                              contentStyle={{ borderRadius: '16px', border: '1px solid rgba(255,255,255,0.4)', background: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(12px)', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.05)' }}
+                            <Tooltip
+                              cursor={{ fill: isDark ? 'rgba(16, 185, 129, 0.12)' : 'rgba(15, 23, 42, 0.05)' }}
+                              content={({ active, payload }) => {
+                                if (!active || !payload || !payload.length) return null;
+                                const entry = payload[0].payload as ZoneStats;
+                                const pct = entry.total > 0 ? ((entry.occupied / entry.total) * 100).toFixed(1) : '0.0';
+                                return (
+                                  <div className="bg-slate-900 dark:bg-[#081210] text-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-700 dark:border-emerald-500/35 shadow-xl text-xs space-y-1">
+                                    <div className="font-bold text-emerald-400">{entry.name}</div>
+                                    <div className="font-mono tabular-nums text-slate-200">
+                                      Occupied: <strong className="text-white">{entry.occupied} / {entry.total}</strong> ({pct}%)
+                                    </div>
+                                  </div>
+                                );
+                              }}
                             />
                             <Bar dataKey="occupied" radius={[6, 6, 0, 0]} barSize={28}>
                                {stats.map((entry, index) => (
