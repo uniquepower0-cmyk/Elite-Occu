@@ -147,7 +147,7 @@ export const CumulativeORPanel: React.FC<CumulativeORPanelProps> = ({
 
       {/* Expandable Content */}
       {isOpen && (
-        <div className="border-t border-slate-200/80 dark:border-emerald-500/20 p-5 bg-slate-50/60 dark:bg-[#0b1815]">
+        <div className="border-t border-slate-200/80 dark:border-emerald-500/20 p-5 bg-[#f8fafc] dark:bg-[#0b1815]">
           {/* Sub Navigation */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-[#142924] p-1 rounded-xl border border-slate-200/60 dark:border-emerald-500/15">
@@ -270,6 +270,7 @@ export const CumulativeORPanel: React.FC<CumulativeORPanelProps> = ({
                         yAxisId="left"
                         name="Daily Booked Theatres (Hours)"
                         dataKey="bookedHours"
+                        fill="#6366f1"
                         radius={[6, 6, 0, 0]}
                         barSize={18}
                       >
