@@ -521,8 +521,8 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
 
                 <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-xl p-4 shadow-sm">
                   <div className="text-[11px] font-extrabold uppercase text-slate-500">Debts</div>
-                  <div className="text-2xl font-black text-purple-700 mt-1">{detailData.debtsCount || 0}</div>
-                  <div className="text-[10px] text-purple-600 font-semibold mt-0.5">Cash Overdues</div>
+                  <div className="text-2xl font-black text-slate-800 mt-1 tabular-nums">{detailData.debtsCount || 0}</div>
+                  <div className="text-[10px] text-slate-500 font-semibold mt-0.5">Cash Overdues</div>
                 </div>
 
                 <div className="bg-white/80 backdrop-blur-md border border-teal-500/20 rounded-xl p-4 shadow-sm">

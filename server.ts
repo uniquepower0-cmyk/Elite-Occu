@@ -3456,8 +3456,9 @@ async function executeLoadData(force = false) {
       const prevOpDate = getDatasetOperationalDateStr(oldActivePatients);
       const currOpDate = getDatasetOperationalDateStr(currActivePatients);
 
-      if (prevOpDate && currOpDate && prevOpDate !== currOpDate) {
-        // Different days: update previousHospitalData without fabricating discharges
+      if ((prevOpDate && currOpDate && prevOpDate !== currOpDate) || (currOpDate && currOpDate < cairoLoadTodayStr)) {
+        // Different days or stale previous-day dataset after midnight rollover:
+        // sync previousHospitalData without fabricating today's discharges
         previousHospitalData = hospitalData;
       } else {
         const newlyDischarged = oldActivePatients.filter(oldP => {
@@ -3472,7 +3473,7 @@ async function executeLoadData(force = false) {
         newlyDischarged.forEach(p => {
           if (!cumulativeDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
             const isManual = isManuallyDischarged(p.name);
-            (p as any).dischargeDate = getTodayRiyadhDateStr();
+            (p as any).dischargeDate = currOpDate || getTodayRiyadhDateStr();
             (p as any).dischargeType = isManual ? 'manual' : 'auto';
             cumulativeDischarged.push(p);
           }

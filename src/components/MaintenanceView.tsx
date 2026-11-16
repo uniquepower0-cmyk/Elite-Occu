@@ -177,9 +177,9 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
 
   return (
     <section className="space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-l-4 border-teal-600 pl-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-emerald-500/20">
         <div>
-          <h3 className="text-xl font-extrabold text-brand-primary tracking-tight uppercase font-sans">
+          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">
             System Maintenance & Auto-Sync Supervisor
           </h3>
           <p className="text-xs text-slate-500 mt-1">

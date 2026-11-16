@@ -39,7 +39,9 @@ import {
   Timer,
   Sparkles,
   AlertTriangle,
-  TrendingUp
+  TrendingUp,
+  Command,
+  SlidersHorizontal
 } from 'lucide-react';
 import { 
   supabase, 
@@ -101,6 +103,8 @@ import { CumulativeOccupancyPanel } from './components/CumulativeOccupancyPanel'
 import { CumulativeORPanel } from './components/CumulativeORPanel';
 import { useTheme } from './context/ThemeContext';
 import { SolarThemeToggle } from './components/ui/SolarThemeToggle';
+import { CommandPalette, CommandPaletteAction } from './components/CommandPalette';
+import { PatientDetailDrawer } from './components/PatientDetailDrawer';
 
 interface AutoFetchCountdownBadgeProps {
   rate: string;
@@ -308,15 +312,84 @@ const normalizeArabicName = (name: string): string => {
   return clean
     .replace(REGEX_APP_ALEF, 'ا')
     .replace(REGEX_APP_TAA, 'ه')
-    .replace(REGEX_APP_YAA, 'y')
+    .replace(REGEX_APP_YAA, 'ي')
     .replace(REGEX_APP_WAW, 'و')
-    .replace(REGEX_APP_HAMZA, 'y')
+    .replace(REGEX_APP_HAMZA, 'ي')
     .replace(REGEX_APP_SPACES, ' ')
+    .replace(/(?:^|\s)عبد\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' عبد' + p1 : 'عبد' + p1)
+    .replace(/(?:^|\s)ابو\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ابو' + p1 : 'ابو' + p1)
+    .replace(/(?:^|\s)ام\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ام' + p1 : 'ام' + p1)
+    .replace(/(?:^|\s)ابن\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ابن' + p1 : 'ابن' + p1)
+    .replace(/(?:^|\s)بن\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' بن' + p1 : 'بن' + p1)
+    .replace(/(?:^|\s)(\S+)\s+الدين(?=\s|$)/g, (match, p1) => match.startsWith(' ') ? ' ' + p1 + 'الدين' : p1 + 'الدين')
     .trim();
 };
 
 const getNormalizedWords = (name: string): string[] => {
-  return normalizeArabicName(name).split(' ').filter(w => w.length > 2);
+  const normalized = normalizeArabicName(name);
+  const titles = ["الافندي", "افندي", "الدكتور", "دكتور", "الدكتوره", "دكتوره", "الاستاذ", "استاذ", "المهندس", "مهندس", "الشيخ", "شيخ", "الحاج", "حاج", "السيد", "سيد"];
+  const words = normalized.split(' ').filter(w => w.length >= 2);
+  while (words.length > 1 && titles.includes(words[0])) {
+    words.shift();
+  }
+  return words.map(w => (w.startsWith('ال') && w.length > 3 ? w.substring(2) : w));
+};
+
+const extractVipNamesClient = (text: string): string[] => {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const names: string[] = [];
+  for (let line of lines) {
+    line = line.replace(/^\s*\*+.*?\*+\s*$/, '').trim();
+    if (!line) continue;
+    line = line.replace(/^.*?\]\s*[^:]*:\s*/, '');
+    line = line.replace(/^[a-zA-Z\s\d.-]+:\s*/, '');
+    line = line.replace(/^(وصول|دخول)?\s*(حاله|حالة)\s*(\/|-)?\s*/, '');
+    line = line.replace(/^New Patient Admission\s*(-\s*)?/i, '');
+    line = line.replace(/^\d+[\s\-.)]*/, '').trim();
+    if (line.includes('..')) {
+      const parts = line.split(/\.{2,}/);
+      if (parts[0] && parts[0].trim()) line = parts[0].trim();
+    }
+    if (line.includes('|')) {
+      const parts = line.split('|');
+      if (parts[0] && parts[0].trim()) line = parts[0].trim();
+    }
+    line = line.replace(/["'»«()]/g, '').trim();
+    if (line.length > 2) names.push(line);
+  }
+  return names;
+};
+
+const getLcsLengthClient = (words1: string[], words2: string[]): number => {
+  const m = words1.length;
+  const n = words2.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (words1[i - 1] === words2[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+};
+
+const isPatientVipClient = (patientName: string, vipText: string): boolean => {
+  if (!patientName || !vipText) return false;
+  const pWords = getNormalizedWords(patientName);
+  if (pWords.length < 2) return false;
+  const vipNamesList = extractVipNamesClient(vipText);
+  for (const name of vipNamesList) {
+    const nWords = getNormalizedWords(name);
+    if (nWords.length < 2) continue;
+    if (pWords[0] !== nWords[0]) continue;
+    const shorterLen = Math.min(pWords.length, nWords.length);
+    const lcsLen = getLcsLengthClient(pWords, nWords);
+    if (lcsLen === shorterLen && lcsLen >= 2) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const parseTimeToMinutes = (tStr: any): number | null => {
@@ -454,6 +527,22 @@ export default function App() {
   const deferredEntrySearchQuery = useDeferredValue(entrySearchQuery);
   const [dialysisCount, setDialysisCount] = useState<number>(0);
   const [dialysisRows, setDialysisRows] = useState<any[]>([]);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [selectedPatient, setSelectedPatient] = useState<PatientRow | null>(null);
+  const [zoneFilter, setZoneFilter] = useState<string>('all');
+  const [emptyRoomCategoryFilter, setEmptyRoomCategoryFilter] = useState<string>('all');
+  const [reportsSearchQuery, setReportsSearchQuery] = useState('');
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
 
   const fetchLoginLogs = async (force: boolean = false) => {
     setLoadingLogs(true);
@@ -2792,17 +2881,97 @@ export default function App() {
     return stats.filter(s => s.total > 0 && s.occupied / s.total > 0.8).length;
   }, [stats]);
 
+  const availableZones = useMemo(() => {
+    const zSet = new Set<string>();
+    patients.forEach((p) => {
+      const g = getGroup(p.room);
+      if (g) zSet.add(g);
+    });
+    return Array.from(zSet);
+  }, [patients]);
+
   const filteredViewPatients = useMemo(() => {
     const q = deferredSearchQuery.toLowerCase().trim();
     return patients.filter(p => {
-      const matchSearch = !q || p.name.toLowerCase().includes(q) || p.room.toLowerCase().includes(q);
+      const matchSearch =
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        p.room.toLowerCase().includes(q) ||
+        (p.id && p.id.toLowerCase().includes(q)) ||
+        (p.doctor && p.doctor.toLowerCase().includes(q));
       if (!matchSearch) return false;
+
+      if (zoneFilter !== 'all' && getGroup(p.room) !== zoneFilter) return false;
 
       if (paymentFilter === 'cash') return isCashPayment(p.payment);
       if (paymentFilter === 'insured') return !isCashPayment(p.payment);
       return true;
     });
-  }, [patients, deferredSearchQuery, paymentFilter]);
+  }, [patients, deferredSearchQuery, paymentFilter, zoneFilter]);
+
+  const handleCopyPatientSummary = useCallback(async (p: PatientRow) => {
+    const text = [
+      `Patient: ${p.name || 'N/A'}`,
+      `Room: ${p.room} (${getGroup(p.room)})`,
+      p.id ? `MRN: ${p.id}` : '',
+      p.doctor ? `Physician: Dr. ${p.doctor}` : '',
+      p.payment ? `Payment: ${p.payment}` : '',
+      p.date ? `Admitted: ${p.date}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const ok = await copyToClipboard(text);
+    if (ok) toast.success(`Copied summary for ${p.name}`);
+    else toast.error('Could not copy patient summary.');
+  }, []);
+
+  const handleQuickAddVip = useCallback(
+    async (p: PatientRow) => {
+      if (!p.name) return;
+      const entry = `${p.name} ... ${p.room}`;
+      const next = vipCases.trim() ? `${vipCases.trim()}\n${entry}` : entry;
+      handleVipChange(next);
+      toast.success(`Added ${p.name} to VIP Cases list.`);
+    },
+    [vipCases]
+  );
+
+  const handleQuickPendingDischarge = useCallback(
+    (p: PatientRow) => {
+      if (!p.name) return;
+      const next = pendingDischargePatients.trim()
+        ? `${pendingDischargePatients.trim()}\n${p.name}`
+        : p.name;
+      setPendingDischargePatients(next);
+      setSelectedPatient(null);
+      setCurrentView('mohanad-sheets');
+      setMohanadSubTab('inputs');
+      toast.info(`Queued "${p.name}" in Pending Discharge Patients.`);
+    },
+    [pendingDischargePatients]
+  );
+
+  const commandActions: CommandPaletteAction[] = useMemo(
+    () => [
+      { id: 'nav-dashboard', label: 'Go to Hospital Dashboard', category: 'Navigation', keywords: 'home occupancy kpi', onSelect: () => { setCurrentView('dashboard'); setDashboardTab('hospital'); } },
+      { id: 'nav-or', label: 'Go to OR Dashboard', category: 'Navigation', keywords: 'operating room surgery gantt', onSelect: () => { setCurrentView('dashboard'); setDashboardTab('or-list'); } },
+      { id: 'nav-patients', label: 'Go to Patient Registry', category: 'Navigation', keywords: 'beds rooms search', onSelect: () => setCurrentView('patients') },
+      { id: 'nav-md', label: 'Go to Medical Director & Inpatient Manager', category: 'Navigation', onSelect: () => setCurrentView('medical-director') },
+      { id: 'nav-dm', label: 'Go to Duty Manager', category: 'Navigation', onSelect: () => setCurrentView('duty-manager') },
+      { id: 'nav-mohanad', label: "Go to Mohanad's Sheets", category: 'Navigation', keywords: 'vip transfers downloads', onSelect: () => { setCurrentView('mohanad-sheets'); setMohanadSubTab('downloads'); } },
+      { id: 'nav-occ-hist', label: 'Go to Occupancy History (11:59 PM)', category: 'Navigation', onSelect: () => setCurrentView('occupancy-history') },
+      { id: 'nav-or-hist', label: 'Go to OR Dashboard History', category: 'Navigation', onSelect: () => setCurrentView('or-history') },
+      { id: 'act-sync', label: 'Sync Now with Database', category: 'Action', keywords: 'refresh reload', icon: <RefreshCw className="w-4 h-4" />, onSelect: () => { fetchData({ force: true }); setOccupancyHistoryRefreshKey(k => k + 1); } },
+      { id: 'act-copy-vip', label: 'Copy Formatted VIP Cases', category: 'Action', icon: <Crown className="w-4 h-4" />, onSelect: handleCopyFormattedVips },
+      { id: 'act-copy-alos', label: 'Copy Exceeding ALOS Patients', category: 'Action', icon: <Copy className="w-4 h-4" />, onSelect: copyExceedingALOSPatients },
+      { id: 'rep-combined-ref', label: 'Download Refined Combined Sheet', category: 'Report', icon: <FileSpreadsheet className="w-4 h-4" />, onSelect: downloadRefinedCombinedReport },
+      { id: 'rep-occ-ref', label: 'Download Refined Occupancy Sheet', category: 'Report', icon: <FileSpreadsheet className="w-4 h-4" />, onSelect: downloadGridOccupancyReport },
+      { id: 'rep-alos', label: 'Download Exceeding ALOS Sheet', category: 'Report', icon: <FileSpreadsheet className="w-4 h-4" />, onSelect: downloadExceedingALOSReport },
+      { id: 'rep-transfers', label: 'Download Patient Transfers Sheet', category: 'Report', icon: <FileSpreadsheet className="w-4 h-4" />, onSelect: downloadTransfersReport },
+      { id: 'rep-whatsapp-img', label: 'Send Refined Combined Images to WhatsApp', category: 'Report', icon: <Send className="w-4 h-4" />, onSelect: handleSendRefinedCombinedToWhatsApp },
+    ],
+    [handleCopyFormattedVips, copyExceedingALOSPatients]
+  );
 
   if (!isAuthenticated) {
     return (
@@ -2883,7 +3052,7 @@ export default function App() {
           <button 
             onClick={handleLogin}
             disabled={loading}
-            className="w-full py-4 bg-brand-primary hover:bg-brand-hover text-white rounded-xl font-extrabold flex items-center justify-center gap-3 transition-all hover:shadow-lg hover:shadow-teal-900/10 active:scale-95 disabled:opacity-50 shadow-md text-sm"
+            className="w-full py-4 bg-brand-primary hover:bg-brand-hover text-white rounded-xl font-extrabold flex items-center justify-center gap-3 transition-all hover:shadow-lg hover:shadow-teal-900/10 active:scale-95 disabled:opacity-50 shadow-md text-sm cursor-pointer"
           >
             {loading ? (
               <RefreshCw className="w-5 h-5 animate-spin text-emerald-400" />
@@ -2892,6 +3061,26 @@ export default function App() {
             )}
             Sign in with Gmail
           </button>
+
+          {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
+            <button
+              type="button"
+              onClick={() => {
+                const adminUser = {
+                  email: 'mohanad.md07@gmail.com',
+                  name: 'Dr. Mohanad (Local Preview)'
+                };
+                setUser(adminUser);
+                setIsAuthenticated(true);
+                sessionStorage.setItem('elite_auth_user', JSON.stringify(adminUser));
+                sessionStorage.setItem('elite_auth_session_logged', 'admin-mohanad');
+                checkDataStatus();
+              }}
+              className="w-full mt-3 py-2.5 px-4 bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            >
+              Local Preview Sign-In (localhost only)
+            </button>
+          )}
 
           <div className="mt-8 pt-8 border-t border-slate-200/50 text-[10px] text-brand-primary/70 font-bold uppercase tracking-widest font-mono">
             Elite Hospital Management Systems
@@ -3096,23 +3285,24 @@ export default function App() {
             </div>
           )}
 
-          <div className="pt-2 border-t border-white/10">
-             <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Data Sync</h3>
+          <div className="pt-3 border-t border-slate-200/80 dark:border-emerald-500/15">
+             <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2.5 px-3">Data Sync</h3>
              <div className="space-y-2">
                 <button 
+                  type="button"
                   onClick={() => {
                     handleRefresh();
                     if (onItemSelect) onItemSelect();
                   }}
                   disabled={loading}
-                  className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-white/40 border border-white/20 rounded-xl text-xs font-bold text-slate-700 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/60 hover:border-white/35 shadow-sm active:scale-95'}`}
+                  className={`w-full min-h-[40px] flex items-center gap-2.5 px-3 py-2 bg-slate-50 dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-100 dark:hover:bg-emerald-950/60 active:scale-[0.98]'}`}
                 >
-                  <RefreshCw className={`w-4 h-4 text-teal-600 ${loading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-4 h-4 text-teal-600 dark:text-emerald-400 ${loading ? 'animate-spin' : ''}`} />
                   Sync with Server
                 </button>
-                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-brand-primary hover:bg-brand-hover border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-teal-600 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Database className="w-4 h-4 text-emerald-400" />}
-                  Upload Recent Unified Sheet
+                <label className={`w-full min-h-[38px] flex items-center gap-2.5 px-3 py-2 bg-white dark:bg-[#0f201c] hover:bg-slate-50 dark:hover:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-[0.98]'}`}>
+                  {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-600" /> : <Database className="w-3.5 h-3.5 text-teal-600 dark:text-emerald-400" />}
+                  <span className="truncate">Unified Sheet</span>
                   <input 
                     type="file" 
                     className="hidden" 
@@ -3125,9 +3315,10 @@ export default function App() {
                     disabled={loading}
                   />
                 </label>
-                <label className={`w-full min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 border border-transparent rounded-xl text-xs font-bold text-white transition-all focus-within:ring-2 focus-within:ring-indigo-500 ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer shadow-sm active:scale-95'}`}>
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Upload className="w-4 h-4 text-indigo-300" />}
-                  OR List Upload {hasORList && <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded-md font-mono">{orListCount}</span>}
+                <label className={`w-full min-h-[38px] flex items-center gap-2.5 px-3 py-2 bg-white dark:bg-[#0f201c] hover:bg-slate-50 dark:hover:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-[0.98]'}`}>
+                  {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" /> : <Upload className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                  <span className="truncate">OR List Upload</span>
+                  {hasORList && <span className="ml-auto text-[10px] bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded font-mono font-bold">{orListCount}</span>}
                   <input 
                     type="file" 
                     className="hidden" 
@@ -3144,26 +3335,26 @@ export default function App() {
           </div>
 
           <div>
-            <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">Configuration</h3>
+            <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2.5 px-3">Configuration</h3>
             <div className="space-y-2">
-              <div className="p-3 bg-white/40 border border-white/15 rounded-xl">
-                <p className="text-[9px] font-extrabold text-brand-primary mb-1 uppercase">EXCLUSION KEYWORDS</p>
-                <p className="text-[11px] font-mono leading-tight text-slate-600">homecare, dialysis, wellbaby...</p>
+              <div className="p-3 bg-slate-50 dark:bg-[#142924] border border-slate-200/80 dark:border-emerald-500/15 rounded-xl">
+                <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 mb-1 uppercase tracking-wider">EXCLUSION KEYWORDS</p>
+                <p className="text-[11px] font-mono leading-tight text-slate-600 dark:text-slate-300">homecare, dialysis, wellbaby...</p>
               </div>
-              <div className="p-3 bg-white/40 border border-white/15 rounded-xl">
-                <p className="text-[9px] font-extrabold text-brand-primary mb-1 uppercase">SYNC STATUS</p>
+              <div className="p-3 bg-slate-50 dark:bg-[#142924] border border-slate-200/80 dark:border-emerald-500/15 rounded-xl">
+                <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 mb-1 uppercase tracking-wider">SYNC STATUS</p>
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                  <span className="text-[11px] font-mono text-slate-600">Live Connection</span>
+                  <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                  <span className="text-[11px] font-mono text-slate-700 dark:text-emerald-300 font-semibold">Live Connection</span>
                 </div>
               </div>
             </div>
           </div>
 
           <div className="mt-auto pt-4">
-            <div className="bg-brand-primary/15 border border-teal-400/40 text-brand-primary p-4 rounded-xl shadow-[0_4px_20px_rgba(20,184,166,0.1)]">
-              <p className="text-[10px] font-bold opacity-75 uppercase tracking-wider mb-1">Upcoming Trigger</p>
-              <p className="text-base font-extrabold">14:00 (Daily Exit)</p>
+            <div className="bg-teal-50/80 dark:bg-emerald-950/40 border border-teal-200/80 dark:border-emerald-500/20 text-brand-primary dark:text-emerald-300 p-3.5 rounded-xl">
+              <p className="text-[10px] font-bold opacity-75 uppercase tracking-wider mb-0.5">Upcoming Trigger</p>
+              <p className="text-sm font-bold tabular-nums">14:00 (Daily Exit)</p>
             </div>
           </div>
         </div>
@@ -3172,62 +3363,85 @@ export default function App() {
 
     return (
       <div 
-        className={`w-full min-h-screen flex flex-col font-sans transition-colors duration-300 overflow-hidden relative ${
-          isDark ? 'bg-[#081210] text-slate-100' : 'bg-slate-100 text-slate-900'
+        className={`w-full max-w-full min-h-dvh flex flex-col font-sans transition-colors duration-200 overflow-x-hidden relative ${
+          isDark ? 'bg-[#07110f] text-slate-100' : 'bg-[#f4f6f8] text-slate-900'
         }`}
-        style={{
-          backgroundImage: isDark
-            ? `linear-gradient(135deg, rgba(6,17,15,0.94) 0%, rgba(10,24,21,0.96) 60%, rgba(4,31,26,0.94) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`
-            : `linear-gradient(135deg, rgba(228,242,240,0.85) 0%, rgba(241,245,249,0.85) 60%, rgba(204,251,241,0.85) 100%), url('${hasHeaderBg ? `/api/header-background?t=${bgTimestamp}` : '/header_bg.webp'}')`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat',
-        }}
       >
         {/* Top Navigation Bar */}
-        <header className="h-20 bg-white/40 dark:bg-[#0a1815]/80 backdrop-blur-md border-b border-white/20 dark:border-emerald-950/40 flex items-center justify-between px-4 sm:px-6 shrink-0 z-20 shadow-sm relative transition-colors duration-300">
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+        <header className="h-16 bg-white dark:bg-[#0b1815] border-b border-slate-200/90 dark:border-emerald-500/20 flex items-center justify-between gap-2 px-3 sm:px-6 shrink-0 z-20 relative w-full max-w-full">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
             <button 
+              type="button"
               onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-brand-primary dark:text-emerald-400 hover:bg-white/40 dark:hover:bg-slate-800/40 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
+              className="lg:hidden p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-brand-primary dark:text-emerald-400 hover:bg-slate-100 dark:hover:bg-emerald-950/50 rounded-xl transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
               aria-label="Open navigation menu"
             >
-              <Menu className="w-6 h-6" />
+              <Menu className="w-5 h-5" />
             </button>
-            <div className="w-[72px] h-[72px] bg-white dark:bg-slate-900 border border-white/40 dark:border-emerald-500/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06),0_0_20px_rgba(20,184,166,0.15)] p-2 flex items-center justify-center overflow-hidden shrink-0">
+            <div className="w-10 h-10 bg-white dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/25 rounded-xl p-1.5 flex items-center justify-center overflow-hidden shrink-0">
               <img 
                 alt="Elite Logo" 
-                className="w-full h-full object-contain transition-transform hover:scale-105 duration-300" 
+                className="w-full h-full object-contain" 
                 referrerPolicy="no-referrer" 
                 src="/elite_logo.png" 
               />
             </div>
-            <h1 className="text-sm sm:text-base lg:text-xl font-extrabold tracking-tight uppercase text-brand-primary dark:text-emerald-400 font-sans truncate">
-              Mohanad's Elite Unified Dashboard
-            </h1>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm sm:text-base font-bold tracking-tight text-slate-900 dark:text-slate-50 truncate max-w-[135px] sm:max-w-none">
+                Elite Occupancy Command Center
+              </h1>
+              <p className="hidden sm:block text-[11px] text-slate-500 dark:text-slate-400 font-medium leading-none mt-0.5 truncate">
+                Mohanad's Unified Hospital Operations
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#142924] hover:bg-slate-200/70 dark:hover:bg-emerald-950/70 border border-slate-200/80 dark:border-emerald-500/20 text-xs font-medium text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
+              title="Quick Search & Command Palette (Cmd+K)"
+            >
+              <Search className="w-3.5 h-3.5 text-slate-400" />
+              <span>Quick search...</span>
+              <kbd className="ml-2 px-1.5 py-0.5 text-[10px] font-mono font-bold bg-white dark:bg-[#0b1815] text-slate-500 dark:text-slate-300 rounded border border-slate-200 dark:border-emerald-500/20 flex items-center gap-0.5">
+                <Command className="w-2.5 h-2.5" />K
+              </kbd>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="md:hidden p-2 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl bg-slate-100 dark:bg-[#142924] text-slate-600 dark:text-slate-300 cursor-pointer"
+              aria-label="Open quick search"
+            >
+              <Search className="w-4 h-4" />
+            </button>
+
             <SolarThemeToggle />
-            <div className="hidden sm:flex flex-col items-end text-right">
-              <span className="text-xs font-bold text-brand-primary dark:text-emerald-400 uppercase tracking-wider">MOHANAD M.D.</span>
-              <span className="text-[10px] font-mono font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
+
+            <div className="hidden xl:flex flex-col items-end text-right pl-1">
+              <span className="text-xs font-bold text-slate-800 dark:text-emerald-400 uppercase tracking-wider">MOHANAD M.D.</span>
+              <span className="text-[10px] font-mono font-semibold text-slate-500 dark:text-slate-400 tabular-nums">
                 {(() => {
                   const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" }));
                   return `${now.getDate()}-${now.getMonth() + 1}-${now.getFullYear()}`;
                 })()} | {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Africa/Cairo' })}
               </span>
             </div>
-            <div className="flex items-center gap-1.5 sm:gap-2 sm:pl-3 sm:border-l sm:border-slate-200/40 dark:sm:border-slate-800">
+
+            <div className="flex items-center gap-1.5 sm:pl-2.5 sm:border-l sm:border-slate-200 dark:sm:border-emerald-500/20">
               <button 
+                 type="button"
                  onClick={handleLogout}
-                 className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors hover:bg-white/30 dark:hover:bg-slate-800/40 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
+                 className="p-2 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors hover:bg-slate-100 dark:hover:bg-emerald-950/50 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
                  title="Logout"
                  aria-label="Sign out"
               >
-                 <LogOut className="w-5 h-5" />
+                 <LogOut className="w-4 h-4" />
               </button>
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-200/60 dark:bg-emerald-950/80 border-2 border-white dark:border-emerald-500/40 text-slate-700 dark:text-emerald-300 overflow-hidden flex items-center justify-center font-extrabold text-xs sm:text-sm shadow-inner shrink-0">
+              <div className="w-8 h-8 rounded-full bg-brand-primary text-white flex items-center justify-center font-bold text-xs shrink-0">
                  M
               </div>
             </div>
@@ -3251,21 +3465,27 @@ export default function App() {
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-slate-50/95 backdrop-blur-xl border-r border-slate-200/80 p-6 flex flex-col gap-6 z-50 overflow-y-auto shadow-2xl lg:hidden"
+                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-white dark:bg-[#0b1815] border-r border-slate-200 dark:border-emerald-500/20 p-6 flex flex-col gap-6 z-50 overflow-y-auto shadow-2xl lg:hidden"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Navigation Menu"
               >
-                <div className="flex items-center justify-between pb-3 border-b border-slate-200/60">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-200/80 dark:border-emerald-500/20">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 bg-brand-primary rounded-lg flex items-center justify-center text-white shadow-sm">
-                      <Building2 className="w-5 h-5 text-teal-100" />
+                    <div className="w-9 h-9 bg-white dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/25 rounded-xl p-1 flex items-center justify-center overflow-hidden shrink-0">
+                      <img
+                        alt="Elite Logo"
+                        className="w-full h-full object-contain"
+                        referrerPolicy="no-referrer"
+                        src="/elite_logo.png"
+                      />
                     </div>
-                    <span className="font-extrabold text-sm text-brand-primary uppercase tracking-wide">Elite Occupancy</span>
+                    <span className="font-bold text-sm text-slate-900 dark:text-slate-50 tracking-tight">Elite Occupancy</span>
                   </div>
                   <button
+                    type="button"
                     onClick={() => setIsMobileMenuOpen(false)}
-                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-200/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-emerald-950/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-pointer"
                     aria-label="Close navigation menu"
                   >
                     <X className="w-5 h-5" />
@@ -3277,38 +3497,48 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex min-w-0 overflow-hidden">
           {/* Desktop Sidebar */}
-          <aside className="hidden lg:flex w-64 bg-white/10 backdrop-blur-md border-r border-white/20 p-6 flex-col gap-6 shrink-0 overflow-y-auto z-10 shadow-sm">
+          <aside className="hidden lg:flex w-64 bg-white dark:bg-[#0b1815] border-r border-slate-200/90 dark:border-emerald-500/20 p-5 flex-col gap-5 shrink-0 overflow-y-auto z-10 custom-scrollbar">
             {renderSidebarNavContent()}
           </aside>
 
           {/* Main Dashboard Content */}
-          <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto bg-white/5 backdrop-blur-sm flex flex-col relative z-0">
-            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 sm:mb-8 shrink-0">
+          <main className="flex-1 min-w-0 w-full p-4 sm:p-6 lg:p-8 overflow-y-auto overflow-x-hidden flex flex-col relative z-0 custom-scrollbar">
+            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 shrink-0">
               <div>
-                <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-brand-primary tracking-tight capitalize font-sans">{currentView}</h2>
-                <p className="text-xs font-bold text-slate-600 mt-1 uppercase tracking-wide">Live operational overview of your infrastructure</p>
+                <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-slate-50 tracking-tight capitalize">
+                  {currentView.replace(/-/g, ' ')}
+                </h2>
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
+                  Live operational overview of your hospital infrastructure
+                </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
                 <button 
+                  type="button"
                   onClick={() => handleOpenResetModal('occupancy')}
                   disabled={loading}
-                  className="flex items-center gap-2 px-4 py-2.5 min-h-[44px] border rounded-xl text-xs font-bold transition-all shadow-sm group disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 bg-white/70 backdrop-blur border-slate-200/50 hover:border-red-300 text-slate-700 hover:text-red-700 hover:bg-red-50/50"
+                  className="flex items-center gap-2 px-3.5 py-2 min-h-[40px] border rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 bg-white dark:bg-[#0f201c] border-slate-200 dark:border-emerald-500/20 hover:border-red-300 text-slate-700 dark:text-slate-200 hover:text-red-700 hover:bg-red-50/60 cursor-pointer"
                   title="Purge today's live occupancy census"
                 >
-                  <Trash2 className={`w-3.5 h-3.5 text-slate-500 group-hover:text-red-600 ${loading ? 'animate-spin' : 'group-hover:scale-110 transition-transform'}`} />
+                  <Trash2 className={`w-3.5 h-3.5 text-slate-500 ${loading ? 'animate-spin' : ''}`} />
                   {loading ? 'Processing...' : 'Reset Data'}
                 </button>
                 <div className="relative flex-1 sm:flex-none">
-                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-primary" />
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input 
                     type="text" 
-                    placeholder="Patient / Room search..."
+                    placeholder="Filter patients / rooms..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      if (currentView !== 'patients' && e.target.value.trim().length > 0) {
+                        setCurrentView('patients');
+                      }
+                    }}
                     aria-label="Patient and room search"
-                    className="w-full sm:w-72 pl-11 pr-5 py-2.5 min-h-[44px] bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm shadow-sm font-medium transition-all text-brand-primary placeholder-slate-400"
+                    className="w-full sm:w-64 pl-10 pr-4 py-2 min-h-[40px] bg-white dark:bg-[#0f201c] border border-slate-200 dark:border-emerald-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary text-xs font-medium transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
                   />
                 </div>
               </div>
@@ -3331,7 +3561,7 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="space-y-8"
+                className="space-y-8 min-w-0 w-full max-w-full"
               >
                 {/* Dashboard Tabs Selector */}
                 <div className="flex border-b border-teal-600/10 pb-px gap-6 px-1 shrink-0">
@@ -3384,7 +3614,7 @@ export default function App() {
                       className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md text-xs font-semibold gap-3 w-full max-w-4xl"
                     >
                       <div className="flex items-center gap-2">
-                        <Zap className="h-4 w-4 animate-bounce text-amber-300" />
+                        <Zap className="h-4 w-4 text-amber-300" />
                         <span>{dbUpdateMessage}</span>
                       </div>
                       <span className="bg-emerald-700/80 px-2 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider">
@@ -3445,7 +3675,7 @@ export default function App() {
                       title={cloudDbFormatted ? `Cloud database last updated on ${cloudDbFormatted.full} (Africa/Cairo)` : 'In sync with Supabase Cloud DB'}
                     >
                       <div className={`p-1.5 rounded-lg shrink-0 transition-colors ${isDbUpdatePulsing ? "bg-amber-200 text-amber-800" : "bg-emerald-100/90 text-emerald-700"}`}>
-                        <Database className={`h-4 w-4 ${isDbUpdatePulsing ? "animate-bounce" : ""}`} />
+                        <Database className="h-4 w-4" />
                       </div>
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-1.5">
@@ -3483,18 +3713,20 @@ export default function App() {
                         Schedule:
                       </span>
                       <button
+                        type="button"
                         onClick={() => handleUpdateScheduleRate('off')}
                         className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === 'off' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
                         title="Instant Realtime on DB change only (Default)"
                       >
-                        ⚡ Instant Only (Default)
+                        Instant Only
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleUpdateScheduleRate('30m')}
                         className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer ${autoFetchScheduleRate === '30m' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-600/20' : 'text-slate-600 hover:text-slate-900'}`}
                         title="Auto-fetch every 30 minutes"
                       >
-                        ⏱️ Every 30 Minutes
+                        Every 30m
                       </button>
                     </div>
 
@@ -3521,61 +3753,143 @@ export default function App() {
                 {dashboardTab === 'hospital' && (
                   <>
 
-                {/* Metrics Bar */}
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 shrink-0">
-                  <StatCard label="Total Occupied" value={`${totalOccupied} / ${totalSlots}`} subValue="Active patient beds" icon={<Users className="text-indigo-600" />} />
-                  <StatCard label="Cash Cases" value={`${cashCount}`} subValue="Self-pay mode" icon={<CreditCard className="text-teal-600" />} color="teal" />
-                  <StatCard label="Insured Cases" value={`${insuredCount}`} subValue="Insurance covered" icon={<ShieldCheck className="text-[#0284c7]" />} color="sky" />
-                  <StatCard 
-                    label="Available" 
-                    value={`${generalAvailableRoomsCount}`} 
-                    subValue="General ward rooms" 
-                    icon={<Building2 className="text-emerald-600" />} 
-                    color="emerald" 
-                  />
-                  <StatCard label="Today's Entries" value={`${todaysEntries}`} subValue="Admitted today" icon={<Calendar className="text-blue-600" />} color="blue" />
-                  <StatCard label="Discharged" value={`${dischargedPatients.length}`} subValue="Sync difference" icon={<LogOut className="text-pink-600" />} color="pink" />
-                  <StatCard 
-                    label="Dialysis Cases" 
-                    value={`${dialysisCount}`} 
-                    subValue="Daily dialysis sessions" 
-                    icon={<Activity className="text-cyan-600" />} 
-                    color="sky" 
-                  />
-                  <StatCard 
-                    label="Inpatient Occupancy Rate" 
-                    value={`${inpatientOccupancyRate}%`} 
-                    subValue={`${inpatientOccupied} / ${inpatientTotalSlots} Inpatient Beds`} 
-                    icon={<Percent className="text-teal-600" />} 
-                    color="teal" 
-                    highlighted={true}
-                  />
-                  <StatCard 
-                    label="Cumulative Occupancy" 
-                    value={cumulativeBedData ? `${cumulativeBedData.inpatient.rate.toFixed(1)}%` : '—'} 
-                    subValue={cumulativeBedData ? `MTD · ${cumulativeBedData.inpatient.patientDays.toLocaleString()} pt-days · Tot ${cumulativeBedData.total.rate.toFixed(1)}%` : 'Month-to-Date Rate'} 
-                    icon={<TrendingUp className="text-emerald-700" />} 
-                    color="emerald" 
-                    highlighted={true}
-                  />
-                  <StatCard label="Critical Zones" value={`${criticalZonesCount}`} subValue="> 80% capacity" icon={<AlertCircle className="text-amber-600" />} color="amber" />
-                  <StatCard 
-                    label="VIP Cases" 
-                    value={`${vipCount}`} 
-                    subValue="Active VIP cases" 
-                    icon={<Crown className="text-yellow-600" />} 
-                    color="yellow" 
-                    onCopy={handleCopyFormattedVips}
-                    copyLabel="Copy Formatted VIP Cases"
-                  />
-                  <StatCard 
-                    label="Patients Exceeding ALOS" 
-                    value={`${exceedingALOSPatients.length}`} 
-                    subValue="Exceeds threshold limits" 
-                    icon={<AlertCircle className="text-amber-600" />} 
-                    color="amber" 
-                    onCopy={copyExceedingALOSPatients}
-                  />
+                {/* Metrics Matrix: 4 Clinical Domains */}
+                <div className="space-y-5 shrink-0">
+                  {/* Domain 1: Capacity & Census */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2.5 px-0.5">
+                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Capacity &amp; Census
+                      </h3>
+                      <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                        Total Rate: {totalOccupancyRate}%
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <StatCard
+                        label="Inpatient Occupancy Rate"
+                        value={`${inpatientOccupancyRate}%`}
+                        subValue={`${inpatientOccupied} / ${inpatientTotalSlots} Inpatient Beds`}
+                        icon={<Percent />}
+                        color="teal"
+                        highlighted={true}
+                        progress={parseFloat(inpatientOccupancyRate)}
+                        onClick={() => {
+                          setZoneFilter('all');
+                          setPaymentFilter('all');
+                          setCurrentView('patients');
+                        }}
+                      />
+                      <StatCard
+                        label="Total Occupied"
+                        value={`${totalOccupied} / ${totalSlots}`}
+                        subValue="Active patient beds"
+                        icon={<Users />}
+                        color="indigo"
+                        progress={totalSlots > 0 ? (totalOccupied / totalSlots) * 100 : 0}
+                        onClick={() => {
+                          setZoneFilter('all');
+                          setPaymentFilter('all');
+                          setCurrentView('patients');
+                        }}
+                      />
+                      <StatCard
+                        label="Available"
+                        value={`${generalAvailableRoomsCount}`}
+                        subValue="General ward rooms"
+                        icon={<Building2 />}
+                        color="emerald"
+                      />
+                      <StatCard
+                        label="Cumulative Occupancy"
+                        value={cumulativeBedData ? `${cumulativeBedData.inpatient.rate.toFixed(1)}%` : '—'}
+                        subValue={cumulativeBedData ? `MTD · ${cumulativeBedData.inpatient.patientDays.toLocaleString()} pt-days · Tot ${cumulativeBedData.total.rate.toFixed(1)}%` : 'Month-to-Date Rate'}
+                        icon={<TrendingUp />}
+                        color="emerald"
+                        highlighted={true}
+                        progress={cumulativeBedData ? cumulativeBedData.inpatient.rate : undefined}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Domain 2 & 3: Daily Flow + Financial Payer Mix */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                    <div className="lg:col-span-7 space-y-2.5 min-w-0">
+                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-0.5">
+                        Daily Flow &amp; Throughput
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <StatCard label="Today's Entries" value={`${todaysEntries}`} subValue="Admitted today" icon={<Calendar />} color="blue" />
+                        <StatCard label="Discharged" value={`${dischargedPatients.length}`} subValue="Sync difference" icon={<LogOut />} color="pink" />
+                        <StatCard label="Dialysis Cases" value={`${dialysisCount}`} subValue="Daily sessions" icon={<Activity />} color="sky" />
+                      </div>
+                    </div>
+
+                    <div className="lg:col-span-5 space-y-2.5 min-w-0">
+                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-0.5">
+                        Financial Payer Mix
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <StatCard
+                          label="Cash Cases"
+                          value={`${cashCount}`}
+                          subValue="Self-pay mode"
+                          icon={<CreditCard />}
+                          color="teal"
+                          progress={totalOccupied > 0 ? (cashCount / totalOccupied) * 100 : 0}
+                          onClick={() => {
+                            setPaymentFilter('cash');
+                            setCurrentView('patients');
+                          }}
+                        />
+                        <StatCard
+                          label="Insured Cases"
+                          value={`${insuredCount}`}
+                          subValue="Insurance covered"
+                          icon={<ShieldCheck />}
+                          color="sky"
+                          progress={totalOccupied > 0 ? (insuredCount / totalOccupied) * 100 : 0}
+                          onClick={() => {
+                            setPaymentFilter('insured');
+                            setCurrentView('patients');
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Domain 4: Clinical Watchlist & Escalations */}
+                  <div className="space-y-2.5 min-w-0">
+                    <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-0.5">
+                      Clinical Watchlist &amp; Escalations
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <StatCard
+                        label="Critical Zones"
+                        value={`${criticalZonesCount}`}
+                        subValue="> 80% capacity"
+                        icon={<AlertCircle />}
+                        color="amber"
+                      />
+                      <StatCard
+                        label="VIP Cases"
+                        value={`${vipCount}`}
+                        subValue="Active VIP cases"
+                        icon={<Crown />}
+                        color="yellow"
+                        onCopy={handleCopyFormattedVips}
+                        copyLabel="Copy Formatted VIP Cases"
+                      />
+                      <StatCard
+                        label="Patients Exceeding ALOS"
+                        value={`${exceedingALOSPatients.length}`}
+                        subValue="Exceeds threshold limits"
+                        icon={<AlertCircle />}
+                        color="amber"
+                        onCopy={copyExceedingALOSPatients}
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Cumulative Occupancy Analytics Drawer */}
@@ -3613,12 +3927,15 @@ export default function App() {
                     </div>
 
                     {/* Empty Rooms Panel */}
-                    <div className="bg-white/60 backdrop-blur-md p-8 rounded-2xl border border-white/40 shadow-sm">
-                      <div className="flex justify-between items-center mb-6 border-b border-teal-600/10 pb-3">
-                        <h3 className="font-extrabold text-brand-primary tracking-tight flex items-center gap-2">
-                          <CheckCircle2 className="w-5 h-5 text-teal-600" />
+                    <div className="bg-white dark:bg-[#0f201c] p-6 sm:p-7 rounded-2xl border border-slate-200/90 dark:border-emerald-500/20 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-slate-200/80 dark:border-emerald-500/15 pb-3.5">
+                        <h3 className="font-bold text-slate-900 dark:text-slate-50 tracking-tight flex items-center gap-2">
+                          <CheckCircle2 className="w-5 h-5 text-teal-600 dark:text-emerald-400" />
                           Empty Rooms Dashboard ({emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length})
                         </h3>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                          Click any room pill to copy room number
+                        </span>
                       </div>
                       {emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r)).length === 0 ? (
                         <EmptyState
@@ -3627,7 +3944,7 @@ export default function App() {
                           description="All standard inpatient rooms are currently occupied (100% capacity in general units)."
                         />
                       ) : (
-                        <div className="space-y-4 max-h-96 overflow-y-auto pr-2 pb-2">
+                        <div className="space-y-4">
                           {(() => {
                             const inpatientRooms = emptyRoomsList.filter(r => !/(ICU|CCU|VIP|PICU|NICU|SICU)/i.test(r));
                             const grouped: { [key: string]: string[] } = {
@@ -3652,47 +3969,89 @@ export default function App() {
                             });
 
                             const categoryColorClasses: { [key: string]: { header: string, pill: string } } = {
-                              "مميز شمالي": { header: "text-teal-800 bg-teal-100/50 border-teal-200", pill: "bg-teal-50/60 text-teal-900 border-teal-300/30 hover:bg-teal-100/40" },
-                              "مميز جنوبي": { header: "text-blue-800 bg-blue-100/50 border-blue-200", pill: "bg-blue-50/60 text-blue-900 border-blue-300/30 hover:bg-blue-100/40" },
-                              "أولي عاديه": { header: "text-amber-800 bg-amber-100/50 border-amber-200", pill: "bg-amber-50/60 text-amber-900 border-amber-300/30 hover:bg-amber-100/40" },
-                              "جونيور سويت": { header: "text-purple-800 bg-purple-100/50 border-purple-200", pill: "bg-purple-50/60 text-purple-900 border-purple-300/30 hover:bg-purple-100/40" },
-                              "امبريال سويت": { header: "text-indigo-800 bg-indigo-100/50 border-indigo-200", pill: "bg-indigo-50/60 text-indigo-900 border-indigo-300/30 hover:bg-indigo-100/40" },
-                              "رويال سويت": { header: "text-rose-800 bg-rose-100/50 border-rose-200", pill: "bg-rose-50/60 text-rose-900 border-rose-300/30 hover:bg-rose-100/40" },
-                              "بانوراما": { header: "text-emerald-800 bg-emerald-100/50 border-emerald-200", pill: "bg-emerald-50/60 text-emerald-900 border-emerald-300/30 hover:bg-emerald-100/40" },
-                              "Day Case": { header: "text-slate-600 bg-slate-100 border-slate-200", pill: "bg-slate-50 text-slate-800 border-slate-200/50 hover:bg-slate-100" }
+                              "مميز شمالي": { header: "text-teal-800 bg-teal-100/70 border-teal-200", pill: "bg-teal-50 text-teal-900 border-teal-200 hover:bg-teal-100" },
+                              "مميز جنوبي": { header: "text-blue-800 bg-blue-100/70 border-blue-200", pill: "bg-blue-50 text-blue-900 border-blue-200 hover:bg-blue-100" },
+                              "أولي عاديه": { header: "text-amber-800 bg-amber-100/70 border-amber-200", pill: "bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100" },
+                              "جونيور سويت": { header: "text-slate-800 bg-slate-100 border-slate-300", pill: "bg-slate-50 text-slate-900 border-slate-200 hover:bg-slate-100" },
+                              "امبريال سويت": { header: "text-indigo-800 bg-indigo-100/70 border-indigo-200", pill: "bg-indigo-50 text-indigo-900 border-indigo-200 hover:bg-indigo-100" },
+                              "رويال سويت": { header: "text-rose-800 bg-rose-100/70 border-rose-200", pill: "bg-rose-50 text-rose-900 border-rose-200 hover:bg-rose-100" },
+                              "بانوراما": { header: "text-emerald-800 bg-emerald-100/70 border-emerald-200", pill: "bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100" },
+                              "Day Case": { header: "text-slate-600 bg-slate-100 border-slate-200", pill: "bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100" }
                             };
 
-                            return Object.entries(grouped)
-                              .filter(([_, rooms]) => rooms.length > 0)
-                              .map(([cat, rooms]) => {
-                                const styles = categoryColorClasses[cat] || categoryColorClasses["Day Case"];
-                                return (
-                                  <div key={cat} className="p-3.5 rounded-xl border border-slate-100 bg-white/40 shadow-2xs">
-                                    <div className="flex justify-between items-center mb-2.5">
-                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${styles.header}`}>
-                                        {cat === "Day Case" ? "Day Case / اليوم الواحد" : cat}
-                                      </span>
-                                      <span className="text-[10px] text-slate-400 font-mono font-bold">
-                                        {rooms.length} vacant room{rooms.length > 1 ? 's' : ''}
-                                      </span>
-                                    </div>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {rooms.map((room) => (
-                                        <div 
-                                          key={room} 
-                                          className={`px-2.5 py-1 border rounded-lg text-xs font-semibold tracking-wide shadow-3xs cursor-default transition-all duration-150 transform hover:scale-[1.03] ${styles.pill}`}
-                                        >
-                                          {room}
+                            const nonEmptyCategories = Object.entries(grouped).filter(([_, rooms]) => rooms.length > 0);
+                            const visibleCategories = emptyRoomCategoryFilter === 'all'
+                              ? nonEmptyCategories
+                              : nonEmptyCategories.filter(([cat]) => cat === emptyRoomCategoryFilter);
+
+                            return (
+                              <>
+                                <div className="flex flex-wrap gap-1.5 pb-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEmptyRoomCategoryFilter('all')}
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                                      emptyRoomCategoryFilter === 'all'
+                                        ? 'bg-brand-primary text-white'
+                                        : 'bg-slate-100 dark:bg-[#142924] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70'
+                                    }`}
+                                  >
+                                    All ({inpatientRooms.length})
+                                  </button>
+                                  {nonEmptyCategories.map(([cat, rooms]) => (
+                                    <button
+                                      key={cat}
+                                      type="button"
+                                      onClick={() => setEmptyRoomCategoryFilter(cat)}
+                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                                        emptyRoomCategoryFilter === cat
+                                          ? 'bg-brand-primary text-white'
+                                          : 'bg-slate-100 dark:bg-[#142924] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70'
+                                      }`}
+                                    >
+                                      {cat === "Day Case" ? "Day Case" : cat} ({rooms.length})
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="space-y-3 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                                  {visibleCategories.map(([cat, rooms]) => {
+                                    const styles = categoryColorClasses[cat] || categoryColorClasses["Day Case"];
+                                    return (
+                                      <div key={cat} className="p-3.5 rounded-xl border border-slate-200/80 dark:border-emerald-500/15 bg-slate-50/60 dark:bg-[#142924]/70">
+                                        <div className="flex justify-between items-center mb-2.5">
+                                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${styles.header}`}>
+                                            {cat === "Day Case" ? "Day Case / اليوم الواحد" : cat}
+                                          </span>
+                                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono font-bold tabular-nums">
+                                            {rooms.length} vacant room{rooms.length > 1 ? 's' : ''}
+                                          </span>
                                         </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                );
-                              });
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {rooms.map((room) => (
+                                            <button
+                                              type="button"
+                                              key={room}
+                                              onClick={async () => {
+                                                const ok = await copyToClipboard(room);
+                                                if (ok) toast.success(`Copied room ${room}`);
+                                              }}
+                                              className={`px-2.5 py-1 border rounded-lg text-xs font-mono font-semibold tracking-wide cursor-pointer transition-colors active:scale-[0.97] ${styles.pill}`}
+                                              title={`Copy room ${room}`}
+                                            >
+                                              {room}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            );
                           })()}
                         </div>
                       )}
-                      <p className="text-[9px] text-slate-400 font-bold uppercase mt-4 text-right">
+                      <p className="text-[10px] text-slate-400 font-semibold uppercase mt-4 text-right">
                         * Intensive Care Rooms are hidden from visual grid
                       </p>
                     </div>
@@ -3776,7 +4135,23 @@ export default function App() {
                               const isOnORList = isPatientOnORList(entry, orList);
 
                               return (
-                                <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-teal-500/5 transition-colors">
+                                <button
+                                  type="button"
+                                  key={idx}
+                                  onClick={() => {
+                                    const matched = patients.find(p => p.room === entry.room || p.name === entry.name) || {
+                                      room: entry.room,
+                                      name: entry.name,
+                                      doctor: entry.physician,
+                                      payment: entry.contractor,
+                                      date: entry.date,
+                                      id: entry.mrn || '',
+                                      type: '',
+                                    };
+                                    setSelectedPatient(matched);
+                                  }}
+                                  className="w-full text-left p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-teal-50/70 dark:hover:bg-emerald-950/50 transition-colors cursor-pointer"
+                                >
                                   <div className="space-y-1.5 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <span className="text-xs font-black text-brand-primary">{entry.name}</span>
@@ -3802,7 +4177,7 @@ export default function App() {
                                   <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block">Admitted On</span>
                                   <span className="text-[11px] font-mono font-bold text-teal-800 bg-teal-500/10 px-2 py-0.5 rounded-md">{entry.date || 'Today'}</span>
                                 </div>
-                              </div>
+                              </button>
                             );
                             })}
                           </div>
@@ -3869,22 +4244,31 @@ export default function App() {
                       })()}
 
                       {stats.map(s => (
-                        <div key={s.name} className="space-y-2">
+                        <button
+                          type="button"
+                          key={s.name}
+                          onClick={() => {
+                            setZoneFilter(s.name);
+                            setPaymentFilter('all');
+                            setCurrentView('patients');
+                          }}
+                          className="w-full text-left space-y-2 p-2 -mx-2 rounded-lg hover:bg-slate-100/80 dark:hover:bg-emerald-950/50 transition-colors cursor-pointer"
+                          title={`Filter Patient Registry to ${s.name}`}
+                        >
                           <div className="flex justify-between text-[11px] font-bold uppercase tracking-wide">
                             <span className="text-brand-primary">{s.name}</span>
-                            <div className="flex gap-2">
-                              <span className="text-teal-700 font-mono italic">{((s.occupied / s.total) * 100).toFixed(1)}%</span>
+                            <div className="flex gap-2 tabular-nums">
+                              <span className="text-teal-700 font-mono">{((s.occupied / s.total) * 100).toFixed(1)}%</span>
                               <span className="text-slate-400 font-normal">({s.occupied} / {s.total})</span>
                             </div>
                           </div>
-                          <div className="h-1.5 bg-slate-200/50 rounded-full overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${(s.occupied / s.total) * 100}%` }}
-                              className={`h-full rounded-full transition-colors duration-500 ${s.occupied / s.total > 0.8 ? 'bg-red-500' : 'bg-teal-600'}`}
+                          <div className="h-1.5 bg-slate-200/70 rounded-full overflow-hidden">
+                            <div
+                              style={{ width: `${(s.occupied / s.total) * 100}%` }}
+                              className={`h-full rounded-full transition-all duration-300 ${s.occupied / s.total > 0.8 ? 'bg-red-500' : 'bg-teal-600'}`}
                             />
                           </div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -3921,11 +4305,11 @@ export default function App() {
                     ) : (
                       <>
                         {orList.length === 0 && (
-                          <div className="bg-amber-550/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3">
-                            <AlertCircle className="w-5 h-5 text-amber-600 animate-pulse shrink-0" />
+                          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-500/30 p-4 rounded-2xl flex items-center gap-3">
+                            <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
                             <div>
-                              <h4 className="text-xs font-extrabold text-amber-800">Showing Live Occupancy-Based OR Patients / عرض مرضى غرف العمليات من الإشغال المباشر</h4>
-                              <p className="text-[10px] text-amber-700 font-medium mt-1">
+                              <h4 className="text-xs font-extrabold text-amber-900 dark:text-amber-200">Showing Live Occupancy-Based OR Patients / عرض مرضى غرف العمليات من الإشغال المباشر</h4>
+                              <p className="text-[10px] text-amber-800 dark:text-amber-300 font-medium mt-1">
                                 Since the scheduled OR list is not uploaded or has been reset, the dashboard statistics and active lists are generated dynamically from patients currently inside rooms starting with "OR-" in the live Occupancy/Bed state.
                               </p>
                             </div>
@@ -4049,12 +4433,12 @@ export default function App() {
                         />
 
                         {/* Downloadable Sheet Buttons Container just under Stats squares */}
-                        <div className="bg-white/60 backdrop-blur-md p-4 rounded-2xl border border-white/40 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                          <div className="flex items-center gap-2">
-                            <Download className="w-5 h-5 text-indigo-600 animate-bounce" />
+                        <div className="bg-white dark:bg-[#0f201c] p-4 rounded-2xl border border-slate-200/90 dark:border-emerald-500/20 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+                          <div className="flex items-center gap-2.5">
+                            <Download className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                             <div>
-                              <h4 className="text-xs font-extrabold text-slate-800 tracking-tight">OR List Downloads / تحميلات قائمة العمليات</h4>
-                              <p className="text-[10px] text-slate-500">Generate and export formatted reports directly based on OR operations scheduling list</p>
+                              <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 tracking-tight">OR List Downloads / تحميلات قائمة العمليات</h4>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400">Generate and export formatted reports directly based on OR operations scheduling list</p>
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-2.5">
@@ -4440,8 +4824,8 @@ export default function App() {
                                       </div>
                                     </div>
                                   ) : (
-                                    <div className="bg-slate-50 border border-slate-150 py-3 px-4 rounded-xl text-center text-[11px] text-slate-400 font-medium">
-                                      💡 Pro-Tip: Hover or tap individual surgery timeline capsules to view full surgical parameters, MRNs, and admission plans instantly.
+                                    <div className="bg-slate-50 dark:bg-[#142924] border border-slate-200/80 dark:border-emerald-500/15 py-3 px-4 rounded-xl text-center text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                                      Hover or tap any surgery timeline capsule above to inspect surgical parameters, MRNs, and admission plans.
                                     </div>
                                   )}
                                 </div>
@@ -4511,10 +4895,18 @@ export default function App() {
 
                                   if (filteredOrList.length === 0) {
                                     return (
-                                      <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-150 text-slate-400 bg-slate-50/50">
-                                        <Search className="w-8 h-8 mx-auto mb-2 text-slate-350" />
-                                        <p className="text-xs font-bold font-mono text-slate-650">No cases matched "{orSearchQuery}"</p>
-                                        <p className="text-[10px] text-slate-400 mt-1">Try searching with a different name, surgeon, room, or operation.</p>
+                                      <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-200 dark:border-emerald-500/20 text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-[#142924]/40">
+                                        <Search className="w-8 h-8 mx-auto mb-2 text-slate-400" />
+                                        <p className="text-xs font-bold font-mono text-slate-700 dark:text-slate-200">
+                                          {orSearchQuery.trim()
+                                            ? `No cases matched "${orSearchQuery}"`
+                                            : 'No scheduled OR cases for today'}
+                                        </p>
+                                        <p className="text-[10px] text-slate-400 mt-1">
+                                          {orSearchQuery.trim()
+                                            ? 'Try searching with a different name, surgeon, room, or operation.'
+                                            : 'Upload an OR schedule spreadsheet or view live occupancy-based OR patients below.'}
+                                        </p>
                                       </div>
                                     );
                                   }
@@ -4721,9 +5113,9 @@ export default function App() {
                             {overList.length > 0 && (
                               <button
                                 onClick={downloadOverListReport}
-                                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-sm active:scale-95 shrink-0"
+                                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs active:scale-[0.98] shrink-0"
                               >
-                                <Download className="w-4 h-4 animate-bounce" />
+                                <Download className="w-4 h-4" />
                                 Download Over List Cases (.xlsx)
                               </button>
                             )}
@@ -4765,9 +5157,9 @@ export default function App() {
                               </table>
                             </div>
                           ) : (
-                            <div className="text-center py-10 px-4 rounded-xl border border-dashed border-emerald-200 bg-emerald-50/10">
-                              <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2 animate-bounce" />
-                              <p className="text-xs font-bold text-emerald-800 font-sans">No Over List Cases Detected / لا يوجد حالات خارج اللستة</p>
+                            <div className="text-center py-10 px-4 rounded-xl border border-dashed border-emerald-200 dark:border-emerald-500/25 bg-emerald-50/20 dark:bg-emerald-950/20">
+                              <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+                              <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 font-sans">No Over List Cases Detected / لا يوجد حالات خارج اللستة</p>
                               <p className="text-[10px] text-emerald-600 mt-1 font-medium">
                                 All patients currently admitted inside "OR-x" rooms are matching and accounted for on the official scheduled OR list.
                               </p>
@@ -4788,50 +5180,92 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="bg-white/60 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm flex flex-col overflow-hidden"
+                className="min-w-0 max-w-full w-full bg-white dark:bg-[#0f201c] rounded-2xl border border-slate-200/90 dark:border-emerald-500/20 shadow-xs flex flex-col overflow-hidden"
               >
-                <div className="p-4 bg-white/30 backdrop-blur-md border-b border-white/20 flex justify-between items-center shrink-0">
-                  <h3 className="font-extrabold text-brand-primary text-xs uppercase tracking-wider">Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Africa/Cairo' })}</h3>
-                  <div className="flex gap-2">
-                    <span 
-                      onClick={() => setPaymentFilter('all')}
-                      className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase cursor-pointer transition-all shadow-sm ${
-                        paymentFilter === 'all' 
-                          ? 'bg-brand-primary text-white border-brand-primary shadow-teal-900/10' 
-                          : 'bg-white/50 border-white/30 text-brand-primary hover:bg-white/80'
-                      }`}>
-                      ALL ({totalOccupied})
-                    </span>
-                    <span 
-                      onClick={() => setPaymentFilter('cash')}
-                      className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase cursor-pointer transition-all shadow-sm ${
-                        paymentFilter === 'cash' 
-                          ? 'bg-[#0e4e43] text-white border-[#0e4e43] shadow-emerald-900/10' 
-                          : 'bg-white/50 border-white/30 text-[#0e4e43] hover:bg-white/80'
-                      }`}>
-                      CASH ({cashCount})
-                    </span>
-                    <span 
-                      onClick={() => setPaymentFilter('insured')}
-                      className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase cursor-pointer transition-all shadow-sm ${
-                        paymentFilter === 'insured' 
-                          ? 'bg-[#155e75] text-white border-[#155e75] shadow-sky-900/10' 
-                          : 'bg-white/50 border-white/30 text-[#155e75] hover:bg-white/80'
-                      }`}>
-                      INSURED ({insuredCount})
-                    </span>
+                <div className="p-4 bg-slate-50/70 dark:bg-[#0b1815] border-b border-slate-200/80 dark:border-emerald-500/15 flex flex-col gap-3 shrink-0">
+                  <div className="flex flex-wrap justify-between items-center gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="font-bold text-slate-900 dark:text-slate-50 text-xs uppercase tracking-wider">
+                        Patient Occupancy Registry: {new Date().toLocaleDateString('sv', { timeZone: 'Africa/Cairo' })}
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-md bg-teal-50 dark:bg-emerald-950 text-teal-800 dark:text-emerald-300 font-mono text-[11px] font-bold tabular-nums">
+                        {filteredViewPatients.length} shown
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentFilter('all')}
+                        className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold uppercase cursor-pointer transition-colors ${
+                          paymentFilter === 'all' 
+                            ? 'bg-brand-primary text-white border-brand-primary' 
+                            : 'bg-white dark:bg-[#142924] border-slate-200 dark:border-emerald-500/20 text-slate-700 dark:text-slate-200 hover:bg-slate-100'
+                        }`}>
+                        ALL ({totalOccupied})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentFilter('cash')}
+                        className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold uppercase cursor-pointer transition-colors ${
+                          paymentFilter === 'cash' 
+                            ? 'bg-[#0e4e43] text-white border-[#0e4e43]' 
+                            : 'bg-white dark:bg-[#142924] border-slate-200 dark:border-emerald-500/20 text-[#0e4e43] dark:text-emerald-300 hover:bg-slate-100'
+                        }`}>
+                        CASH ({cashCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentFilter('insured')}
+                        className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold uppercase cursor-pointer transition-colors ${
+                          paymentFilter === 'insured' 
+                            ? 'bg-[#155e75] text-white border-[#155e75]' 
+                            : 'bg-white dark:bg-[#142924] border-slate-200 dark:border-emerald-500/20 text-[#155e75] dark:text-sky-300 hover:bg-slate-100'
+                        }`}>
+                        INSURED ({insuredCount})
+                      </button>
+                    </div>
                   </div>
+                  {availableZones.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto custom-scrollbar pb-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1 shrink-0">Zone:</span>
+                      <button
+                        type="button"
+                        onClick={() => setZoneFilter('all')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition cursor-pointer shrink-0 whitespace-nowrap ${
+                          zoneFilter === 'all'
+                            ? 'bg-slate-900 dark:bg-emerald-600 text-white'
+                            : 'bg-white dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 text-slate-600 dark:text-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        All Zones
+                      </button>
+                      {availableZones.map((z) => (
+                        <button
+                          key={z}
+                          type="button"
+                          onClick={() => setZoneFilter(z)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition cursor-pointer shrink-0 whitespace-nowrap ${
+                            zoneFilter === z
+                              ? 'bg-slate-900 dark:bg-emerald-600 text-white'
+                              : 'bg-white dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 text-slate-600 dark:text-slate-300 hover:bg-slate-100'
+                          }`}
+                        >
+                          {z}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex-1 overflow-x-auto custom-scrollbar">
                   <table className="w-full text-left text-sm border-collapse min-w-[720px]">
                     <thead className="sticky top-0 bg-white/70 backdrop-blur-xl z-10 shadow-sm">
                       <tr className="text-teal-950 uppercase text-[10px] font-black tracking-widest border-b border-teal-500/10">
-                        <th className="px-6 py-4">#</th>
-                        <th className="px-6 py-4">Room No</th>
-                        <th className="px-6 py-4">Patient Name & ID</th>
-                        <th className="px-6 py-4">Payment</th>
-                        <th className="px-6 py-4 text-right">Admission Date</th>
+                        <th className="px-4 sm:px-6 py-3.5 whitespace-nowrap">#</th>
+                        <th className="px-4 sm:px-6 py-3.5 whitespace-nowrap">Room No</th>
+                        <th className="px-4 sm:px-6 py-3.5 whitespace-nowrap">Patient Name &amp; ID</th>
+                        <th className="px-4 sm:px-6 py-3.5 whitespace-nowrap">Payment</th>
+                        <th className="px-4 sm:px-6 py-3.5 text-right whitespace-nowrap">Admission Date</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/20 text-slate-800">
@@ -4878,7 +5312,11 @@ export default function App() {
                                   <td colSpan={5} className="px-6 py-2 border-y border-white/20">{group}</td>
                                 </tr>
                               )}
-                              <tr className="hover:bg-white/40 transition-colors duration-200">
+                              <tr
+                                onClick={() => setSelectedPatient(p)}
+                                className="hover:bg-teal-50/60 dark:hover:bg-emerald-950/40 transition-colors duration-150 cursor-pointer"
+                                title="Click to inspect patient 360° details"
+                              >
                                 <td className="px-6 py-3 text-slate-500 font-mono text-[11px]">{serial++}</td>
                                 <td className="px-6 py-3 font-mono text-teal-700 font-extrabold text-[11px]">{p.room}</td>
                                 <td className="px-6 py-3">
@@ -4887,15 +5325,15 @@ export default function App() {
                                   {p.doctor && <div className="text-[9px] text-teal-600 font-extrabold uppercase mt-1 leading-none tracking-wide bg-teal-500/5 px-2 py-1 rounded-md border border-teal-500/10 inline-block">Dr. {p.doctor}</div>}
                                 </td>
                                 <td className="px-6 py-3">
-                                  <span className={`px-2.5 py-1 rounded-lg text-[9px] font-extrabold uppercase tracking-wider border ${
+                                  <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border ${
                                     isCashPayment(p.payment)
-                                      ? 'bg-teal-500/10 text-brand-primary border-teal-500/20' 
-                                      : 'bg-sky-500/10 text-sky-800 border-sky-500/20'
+                                      ? 'bg-teal-500/10 text-teal-800 border-teal-500/20 dark:bg-emerald-950/70 dark:text-emerald-200 dark:border-emerald-500/35' 
+                                      : 'bg-sky-500/10 text-sky-800 border-sky-500/20 dark:bg-sky-950/70 dark:text-sky-200 dark:border-sky-400/35'
                                   }`}>
                                     {p.payment || 'Unknown'}
                                   </span>
                                 </td>
-                                <td className="px-6 py-3 text-right text-slate-600 font-mono text-[11px]">{p.date}</td>
+                                <td className="px-4 sm:px-6 py-3 text-right text-slate-600 dark:text-slate-300 font-mono text-[11px] whitespace-nowrap">{p.date}</td>
                               </tr>
                             </React.Fragment>
                           );
@@ -4917,7 +5355,7 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="space-y-12 pb-12"
+                className="space-y-12 pb-12 min-w-0 w-full max-w-full"
               >
                 {/* Section: Medical Director & Inpatient manager */}
                 {currentView === 'medical-director' ? (
@@ -4954,8 +5392,9 @@ export default function App() {
                 {/* Section: Mohanad's Sheets */}
                 {currentView === 'mohanad-sheets' && (
                   <section className="space-y-6">
-                    <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-                      <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">Mohanad's Sheets</h3>
+                    <div className="pb-3 border-b border-slate-200 dark:border-emerald-500/20">
+                      <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">Mohanad's Sheets</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Refined Excel exports, WhatsApp broadcasts, VIP &amp; discharge matchers, and transfers registry</p>
                     </div>
 
                     <div className="bg-brand-primary/10 border border-teal-500/20 rounded-xl p-4 flex gap-3 text-teal-900 text-xs shadow-sm">
@@ -5243,7 +5682,46 @@ export default function App() {
                     )}
 
                     {mohanadSubTab === 'downloads' && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <div className="space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-[#0f201c] p-3.5 rounded-xl border border-slate-200/90 dark:border-emerald-500/20">
+                          <div className="relative flex-1 max-w-md">
+                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              value={reportsSearchQuery}
+                              onChange={(e) => setReportsSearchQuery(e.target.value)}
+                              placeholder="Filter 14 refined reports (e.g. ALOS, VIP, Empty, Combined, Debts)..."
+                              aria-label="Filter refined reports"
+                              className="w-full pl-9 pr-8 py-2 text-xs font-medium bg-slate-50 dark:bg-[#142924] border border-slate-200 dark:border-emerald-500/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary/30 text-slate-800 dark:text-slate-100 placeholder-slate-400"
+                            />
+                            {reportsSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => setReportsSearchQuery('')}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                aria-label="Clear report filter"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400">
+                            14 Refined Excel &amp; WhatsApp Workflows
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 [&>*]:min-w-0" ref={(el) => {
+                          if (!el) return;
+                          const q = reportsSearchQuery.toLowerCase().trim();
+                          Array.from(el.children).forEach((child) => {
+                            const htmlChild = child as HTMLElement;
+                            if (!q) {
+                              htmlChild.style.display = '';
+                            } else {
+                              const txt = (htmlChild.textContent || '').toLowerCase();
+                              htmlChild.style.display = txt.includes(q) ? '' : 'none';
+                            }
+                          });
+                        }}>
                         <WorkflowCard 
                           title="Patient Transfers Sheet (سجل تحويلات المرضى)"
                           description="Download Mohanad's refined high-fidelity report of patients transferred between rooms, tracking room journeys, transfer history, and treating physicians."
@@ -5364,6 +5842,7 @@ export default function App() {
                           onAction={downloadInsuredNonCashReport}
                           disabled={!!processing}
                         />
+                        </div>
                       </div>
                     )}
 
@@ -5455,6 +5934,58 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Global Command Palette (Cmd+K / Ctrl+K) */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        patients={patients}
+        orList={orList}
+        actions={commandActions}
+        onSelectPatient={(p) => setSelectedPatient(p)}
+        onSelectORCase={(c) => {
+          setCurrentView('dashboard');
+          setDashboardTab('or-list');
+          setOrSearchQuery(c.patientName || c.mrn || '');
+        }}
+      />
+
+      {/* Patient 360° Slide-Over Drawer */}
+      <PatientDetailDrawer
+        patient={selectedPatient}
+        onClose={() => setSelectedPatient(null)}
+        orMatch={
+          selectedPatient
+            ? orList.find(
+                (o) =>
+                  (selectedPatient.id && o.mrn && String(o.mrn).trim() === String(selectedPatient.id).trim()) ||
+                  isClientNameMatch(selectedPatient.name, o.patientName || '')
+              ) || null
+            : null
+        }
+        losMatch={
+          selectedPatient
+            ? losData.find(
+                (l) =>
+                  (l.colB && String(l.colB).replace(/room/gi, '').trim() === String(selectedPatient.room).trim()) ||
+                  isClientNameMatch(selectedPatient.name, l.colD || '')
+              ) || null
+            : null
+        }
+        transferMatch={
+          selectedPatient
+            ? transfersList.find((t) => isClientNameMatch(selectedPatient.name, t.name || '')) || null
+            : null
+        }
+        isVip={selectedPatient ? isPatientVipClient(selectedPatient.name, vipCases) : false}
+        onCopySummary={handleCopyPatientSummary}
+        onAddVip={handleQuickAddVip}
+        onMarkPendingDischarge={handleQuickPendingDischarge}
+        onOpenTransfers={() => {
+          setCurrentView('mohanad-sheets');
+          setMohanadSubTab('transfers');
+        }}
+      />
 
       {/* Safety Confirmation Challenge Modal for Destructive Data Resets */}
       <AnimatePresence>

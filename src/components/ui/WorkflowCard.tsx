@@ -21,12 +21,12 @@ export interface WorkflowCardProps {
   tertiaryLoading?: boolean;
 }
 
-export const WorkflowCard = React.memo(function WorkflowCard({ 
-  title, 
-  description, 
-  icon, 
-  actionLabel, 
-  onAction, 
+export const WorkflowCard = React.memo(function WorkflowCard({
+  title,
+  description,
+  icon,
+  actionLabel,
+  onAction,
   disabled,
   isLoading,
   secondaryActionLabel,
@@ -38,27 +38,42 @@ export const WorkflowCard = React.memo(function WorkflowCard({
   onTertiaryAction,
   tertiaryIcon,
   tertiaryDisabled,
-  tertiaryLoading
+  tertiaryLoading,
 }: WorkflowCardProps) {
   const isPrimaryBusy = disabled || isLoading;
   const isSecondaryBusy = disabled || secondaryDisabled || secondaryLoading;
   const isTertiaryBusy = disabled || tertiaryDisabled || tertiaryLoading;
 
   return (
-    <div className={`bg-white/60 backdrop-blur-md p-6 rounded-2xl border border-white/45 shadow-sm flex flex-col hover:border-teal-500/40 hover:shadow-md transition-all group ${disabled && !isLoading ? 'opacity-60' : ''}`}>
-      <div className="mb-4 p-3.5 bg-teal-500/10 rounded-xl w-fit group-hover:bg-teal-500/20 transition-all shadow-sm">
-        {React.cloneElement(icon, { className: 'w-7 h-7 text-brand-primary transition-transform group-hover:scale-110' } as any)}
+    <div
+      className={`bg-white dark:bg-[#0f201c] p-5 rounded-xl border border-slate-200/90 dark:border-emerald-500/20 shadow-[0_1px_2px_rgba(15,23,42,0.04)] flex flex-col hover:border-teal-600/40 dark:hover:border-emerald-400/40 hover:shadow-md transition-all duration-150 group ${
+        disabled && !isLoading ? 'opacity-60' : ''
+      }`}
+    >
+      <div className="flex items-start gap-3.5 mb-3">
+        <div className="p-2.5 bg-teal-50 dark:bg-emerald-950/60 border border-teal-100 dark:border-emerald-500/20 rounded-lg w-fit shrink-0">
+          {React.cloneElement(icon, {
+            className: 'w-5 h-5 text-brand-primary dark:text-emerald-400',
+          } as any)}
+        </div>
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-50 tracking-tight leading-snug">
+            {title}
+          </h3>
+        </div>
       </div>
-      <h3 className="text-base font-extrabold mb-2 text-brand-primary tracking-tight">{title}</h3>
-      <p className="text-slate-600 text-[12px] mb-6 leading-relaxed font-semibold">
+
+      <p className="text-slate-600 dark:text-slate-300 text-xs mb-5 leading-relaxed">
         {description}
       </p>
+
       <div className="mt-auto flex flex-col gap-2">
-        <button 
+        <button
+          type="button"
           onClick={onAction}
           disabled={isPrimaryBusy}
           aria-busy={isLoading}
-          className="w-full py-3 px-5 bg-brand-primary text-white rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-95 shadow-md shadow-teal-900/10 disabled:bg-slate-300 disabled:cursor-not-allowed cursor-pointer"
+          className="w-full py-2.5 px-4 bg-brand-primary text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 hover:bg-brand-hover transition-all active:scale-[0.98] shadow-xs disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed cursor-pointer"
         >
           {isLoading ? (
             <>
@@ -74,11 +89,12 @@ export const WorkflowCard = React.memo(function WorkflowCard({
         </button>
 
         {secondaryActionLabel && onSecondaryAction && (
-          <button 
+          <button
+            type="button"
             onClick={onSecondaryAction}
             disabled={isSecondaryBusy}
             aria-busy={secondaryLoading}
-            className="w-full py-2.5 px-4 bg-emerald-600 text-white rounded-xl font-bold text-[10px] tracking-wider flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all active:scale-95 shadow-md shadow-emerald-900/10 disabled:bg-slate-300 disabled:cursor-not-allowed cursor-pointer"
+            className="w-full py-2 px-4 bg-emerald-600 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all active:scale-[0.98] shadow-xs disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed cursor-pointer"
           >
             {secondaryLoading ? (
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
@@ -90,11 +106,12 @@ export const WorkflowCard = React.memo(function WorkflowCard({
         )}
 
         {tertiaryActionLabel && onTertiaryAction && (
-          <button 
+          <button
+            type="button"
             onClick={onTertiaryAction}
             disabled={isTertiaryBusy}
             aria-busy={tertiaryLoading}
-            className="w-full py-2.5 px-4 bg-[#0a463c] text-white rounded-xl font-bold text-[10px] tracking-wider flex items-center justify-center gap-2 hover:bg-[#07362e] transition-all active:scale-95 shadow-md shadow-teal-950/15 disabled:bg-slate-300 disabled:cursor-not-allowed cursor-pointer"
+            className="w-full py-2 px-4 bg-slate-800 dark:bg-emerald-950 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 hover:bg-slate-900 dark:hover:bg-emerald-900 transition-all active:scale-[0.98] shadow-xs disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed cursor-pointer"
           >
             {tertiaryLoading ? (
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200" />

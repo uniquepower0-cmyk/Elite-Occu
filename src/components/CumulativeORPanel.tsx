@@ -133,8 +133,8 @@ export const CumulativeORPanel: React.FC<CumulativeORPanelProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-500">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap">
             {isOpen ? 'Hide Panel' : 'Show Details & Trends'}
           </span>
           {isOpen ? (
@@ -208,7 +208,7 @@ export const CumulativeORPanel: React.FC<CumulativeORPanelProps> = ({
                   No daily OR census records captured for this month yet.
                 </div>
               ) : (
-                <div className="w-full h-72">
+                <div className="w-full h-72 pb-3">
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />

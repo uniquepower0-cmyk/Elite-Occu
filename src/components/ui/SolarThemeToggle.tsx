@@ -130,7 +130,7 @@ export const SolarThemeToggle: React.FC = () => {
 
         {/* Mode badge */}
         <span
-          className={`px-1.5 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider font-extrabold ${
+          className={`hidden sm:inline-block px-1.5 py-0.5 rounded-md text-[10px] uppercase font-mono tracking-wider font-extrabold ${
             themeMode === 'auto'
               ? isDark
                 ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'

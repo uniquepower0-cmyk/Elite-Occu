@@ -18,10 +18,13 @@ export function DutyManagerView({
 
   return (
     <section>
-      <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-        <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">
+      <div className="mb-6 pb-3 border-b border-slate-200 dark:border-emerald-500/20">
+        <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">
           Duty Manager
         </h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+          Shift handover combined workbooks and SBAR medical plans
+        </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

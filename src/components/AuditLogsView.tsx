@@ -23,8 +23,8 @@ export function AuditLogsView({
   return (
     <section className="space-y-6 animate-fade-in">
       <div>
-        <div className="flex items-center gap-3 mb-6 border-l-4 border-teal-600 pl-4">
-          <h3 className="text-xl font-extrabold text-brand-primary tracking-tight underline decoration-teal-100 underline-offset-8 uppercase font-sans">
+        <div className="mb-6 pb-3 border-b border-slate-200 dark:border-emerald-500/20">
+          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">
             User Login Audit Logs
           </h3>
         </div>

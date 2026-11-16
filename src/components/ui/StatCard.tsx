@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, ArrowUpRight } from 'lucide-react';
 
 export interface StatCardProps {
   label: string;
@@ -10,135 +10,202 @@ export interface StatCardProps {
   onCopy?: () => void;
   copyLabel?: string;
   highlighted?: boolean;
+  progress?: number;
+  badge?: string;
+  onClick?: () => void;
 }
 
-export const StatCard = React.memo(function StatCard({ 
-  label, 
-  value, 
-  subValue, 
-  icon, 
-  onCopy, 
-  copyLabel, 
-  highlighted 
+const ACCENT_STYLES: Record<string, { iconBg: string; iconText: string; bar: string; ring: string }> = {
+  teal: {
+    iconBg: 'bg-teal-50 dark:bg-teal-950/60',
+    iconText: 'text-teal-700 dark:text-teal-300',
+    bar: 'bg-teal-600 dark:bg-teal-400',
+    ring: 'border-teal-500/35 dark:border-teal-400/35',
+  },
+  emerald: {
+    iconBg: 'bg-emerald-50 dark:bg-emerald-950/60',
+    iconText: 'text-emerald-700 dark:text-emerald-300',
+    bar: 'bg-emerald-600 dark:bg-emerald-400',
+    ring: 'border-emerald-500/35 dark:border-emerald-400/35',
+  },
+  sky: {
+    iconBg: 'bg-sky-50 dark:bg-sky-950/60',
+    iconText: 'text-sky-700 dark:text-sky-300',
+    bar: 'bg-sky-600 dark:bg-sky-400',
+    ring: 'border-sky-500/35 dark:border-sky-400/35',
+  },
+  blue: {
+    iconBg: 'bg-blue-50 dark:bg-blue-950/60',
+    iconText: 'text-blue-700 dark:text-blue-300',
+    bar: 'bg-blue-600 dark:bg-blue-400',
+    ring: 'border-blue-500/35 dark:border-blue-400/35',
+  },
+  amber: {
+    iconBg: 'bg-amber-50 dark:bg-amber-950/50',
+    iconText: 'text-amber-700 dark:text-amber-300',
+    bar: 'bg-amber-500 dark:bg-amber-400',
+    ring: 'border-amber-500/40 dark:border-amber-400/40',
+  },
+  yellow: {
+    iconBg: 'bg-amber-50 dark:bg-amber-950/50',
+    iconText: 'text-amber-700 dark:text-amber-300',
+    bar: 'bg-amber-500 dark:bg-amber-400',
+    ring: 'border-amber-500/40 dark:border-amber-400/40',
+  },
+  pink: {
+    iconBg: 'bg-rose-50 dark:bg-rose-950/50',
+    iconText: 'text-rose-700 dark:text-rose-300',
+    bar: 'bg-rose-500 dark:bg-rose-400',
+    ring: 'border-rose-400/35 dark:border-rose-400/35',
+  },
+  rose: {
+    iconBg: 'bg-rose-50 dark:bg-rose-950/50',
+    iconText: 'text-rose-700 dark:text-rose-300',
+    bar: 'bg-rose-600 dark:bg-rose-400',
+    ring: 'border-rose-400/35 dark:border-rose-400/35',
+  },
+  indigo: {
+    iconBg: 'bg-slate-100 dark:bg-slate-800/70',
+    iconText: 'text-slate-700 dark:text-slate-200',
+    bar: 'bg-slate-700 dark:bg-slate-300',
+    ring: 'border-slate-300 dark:border-slate-600',
+  },
+  purple: {
+    iconBg: 'bg-slate-100 dark:bg-slate-800/70',
+    iconText: 'text-slate-700 dark:text-slate-200',
+    bar: 'bg-slate-700 dark:bg-slate-300',
+    ring: 'border-slate-300 dark:border-slate-600',
+  },
+  orange: {
+    iconBg: 'bg-orange-50 dark:bg-orange-950/50',
+    iconText: 'text-orange-700 dark:text-orange-300',
+    bar: 'bg-orange-500 dark:bg-orange-400',
+    ring: 'border-orange-400/40 dark:border-orange-400/40',
+  },
+};
+
+export const StatCard = React.memo(function StatCard({
+  label,
+  value,
+  subValue,
+  icon,
+  color = 'teal',
+  onCopy,
+  copyLabel,
+  highlighted,
+  progress,
+  badge,
+  onClick,
 }: StatCardProps) {
   const [copied, setCopied] = useState(false);
-  const isHighlighted = highlighted || label.toUpperCase().includes('TOTAL OCCUPIED') || label.toUpperCase().includes('AVAILABLE') || label.toUpperCase().includes('EXCEEDING') || label.toUpperCase().includes('VIP') || label.toUpperCase().includes('INPATIENT OCCUPANCY');
+  const accent = ACCENT_STYLES[color] || ACCENT_STYLES.teal;
+  const clampedProgress =
+    typeof progress === 'number' && !isNaN(progress)
+      ? Math.max(0, Math.min(100, progress))
+      : null;
 
-  const renderMiniChart = (lbl: string) => {
-    const uLabel = lbl.toUpperCase();
-    
-    if (uLabel.includes("TOTAL OCCUPIED") || uLabel.includes("CASH") || uLabel.includes("DISCHARGED") || uLabel.includes("RATE") || uLabel.includes("OCCUPANCY RATE")) {
-      const barHeights = uLabel.includes("TOTAL OCCUPIED") ? [10, 16, 22, 14, 18, 30, 26, 35] :
-                         uLabel.includes("CASH") ? [6, 11, 17, 22, 28, 34, 40, 44] :
-                         uLabel.includes("DISCHARGED") ? [8, 14, 20, 26, 32, 38, 30, 42] : [8, 14, 20, 26, 32, 38, 32, 44];
-      return (
-        <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 120 45">
-          <g className="opacity-50">
-            {barHeights.map((h, i) => (
-              <rect 
-                key={i}
-                x={12 + i * 12} 
-                y={45 - h} 
-                width="6" 
-                height={h} 
-                fill="currentColor" 
-                rx="1"
-              />
-            ))}
-          </g>
-        </svg>
-      );
-    }
-    
-    if (uLabel.includes("INSURED") || uLabel.includes("ENTRY") || uLabel.includes("ENTRIES") || uLabel.includes("CRITICAL") || uLabel.includes("AVAILABLE")) {
-      const pathData = uLabel.includes("INSURED") ? "M10,28 L25,36 L40,16 L55,32 L70,22 L85,38 L100,12" :
-                       uLabel.includes("AVAILABLE") ? "M10,38 L25,25 L40,32 L55,14 L70,24 L85,36 L100,18" :
-                       uLabel.includes("ENTRIES") ? "M10,32 L25,20 L40,36 L55,16 L70,26 L85,38 L100,22" : "M10,34 L25,14 L40,24 L55,10 L70,22 L85,34 L100,16";
-      return (
-        <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 110 45">
-          <path 
-            d={pathData} 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="opacity-70"
-          />
-        </svg>
-      );
-    }
-    
-    return (
-      <svg className="w-full h-11 mt-4 text-[#0e4e43]" viewBox="0 0 100 45">
-        <g className="opacity-30">
-          {[12, 22, 18, 28, 32, 38].map((h, i) => (
-            <rect key={i} x={10 + i * 14} y={45 - h} width="6" height={h} fill="currentColor" rx="1" />
-          ))}
-        </g>
-      </svg>
-    );
-  };
+  const baseBorder = highlighted
+    ? accent.ring
+    : 'border-slate-200/90 dark:border-emerald-500/20';
+
+  const interactiveClasses = onClick
+    ? 'cursor-pointer hover:border-brand-primary/40 hover:shadow-md active:scale-[0.99]'
+    : 'hover:border-slate-300/90 dark:hover:border-emerald-500/35';
 
   return (
-    <div 
-      className={`p-5 rounded-2xl border transition-all duration-300 flex flex-col justify-between group h-full relative overflow-hidden backdrop-blur-md ${
-        isHighlighted 
-          ? label.toUpperCase().includes('EXCEEDING')
-            ? 'bg-amber-500/10 border-amber-400/80 shadow-[0_0_20px_rgba(245,158,11,0.25)]'
-            : 'bg-emerald-500/10 border-teal-400/80 shadow-[0_0_20px_rgba(20,184,166,0.25)]' 
-          : 'bg-white/45 border-white/40 shadow-sm hover:border-white/60 hover:shadow-md'
-      }`}
-      style={{
-        backgroundImage: 'radial-gradient(rgba(14, 78, 67, 0.08) 1.2px, transparent 1.2px)',
-        backgroundSize: '12px 12px'
-      }}
+    <div
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      className={`p-4 rounded-xl bg-white dark:bg-[#0f201c] border transition-all duration-150 flex flex-col group h-full min-w-0 overflow-hidden relative shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${baseBorder} ${interactiveClasses}`}
     >
-      <div className="flex justify-between items-start mb-6">
-        <div className="w-10 h-10 rounded-full flex items-center justify-center bg-teal-500/10 text-emerald-800 shadow-[0_0_15px_rgba(20,184,166,0.25)] relative">
-          <div className="absolute inset-0 rounded-full bg-emerald-400/20 blur-sm"></div>
-          {React.cloneElement(icon, { className: 'w-5 h-5 relative z-10 text-brand-primary' } as any)}
+      {/* Top Row: Label + Icon strictly contained inside card */}
+      <div className="flex items-start justify-between gap-2.5 min-h-[32px] mb-2">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 leading-snug min-w-0 break-words">
+          {label}
+        </span>
+        <div
+          className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${accent.iconBg} ${accent.iconText}`}
+        >
+          {React.cloneElement(icon, { className: 'w-3.5 h-3.5' } as any)}
         </div>
-        <div className="text-[10px] font-mono text-slate-500 font-bold">{new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" })).getHours()}:00 HR</div>
-      </div>
-      
-      <div className="flex flex-col items-center justify-center flex-1">
-        <h2 className="text-3xl font-extrabold text-[#0f172a] mb-1 tracking-tight text-center">{value}</h2>
-        <p className="text-[11px] font-black text-[#0f172a]/95 uppercase tracking-widest text-center mt-3">{label}</p>
-        <div className="text-[10px] text-slate-500 font-semibold italic text-center mt-1">
-          {subValue}
-        </div>
-        {onCopy && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopy();
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2000);
-            }}
-            className={`mt-4 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider transition-all shadow-sm flex items-center gap-1.5 border rounded-lg cursor-pointer z-10 ${
-              copied
-                ? 'bg-emerald-500/20 text-emerald-800 border-emerald-500/40'
-                : 'bg-amber-500/20 text-amber-800 hover:bg-amber-500/30 active:scale-95 border-amber-500/30'
-            }`}
-            title={copyLabel || "Copy Patients List"}
-          >
-            {copied ? (
-              <>
-                <Check size={10} className="stroke-[2.5]" />
-                Copied!
-              </>
-            ) : (
-              <>
-                <Copy size={10} className="stroke-[2.5]" />
-                {copyLabel || "Copy Patients List"}
-              </>
-            )}
-          </button>
-        )}
       </div>
 
-      {renderMiniChart(label)}
+      {/* Middle Row: Value & SubValue aligned cleanly across all cards */}
+      <div className="min-w-0">
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-2xl sm:text-[26px] font-bold text-slate-900 dark:text-slate-50 tracking-tight tabular-nums leading-tight">
+            {value}
+          </div>
+          {badge && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-slate-100 text-slate-700 dark:bg-emerald-950/70 dark:text-emerald-300 shrink-0">
+              {badge}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1 flex items-center justify-between gap-1.5 min-w-0">
+          <span className="leading-snug break-words">{subValue}</span>
+          {onClick && (
+            <ArrowUpRight className="w-3.5 h-3.5 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+          )}
+        </div>
+      </div>
+
+      {/* Bottom Anchored Section (Progress Bar or Copy Action) */}
+      {(clampedProgress !== null || onCopy) && (
+        <div className="mt-auto pt-3 space-y-2.5">
+          {clampedProgress !== null && (
+            <div className="pt-2.5 border-t border-slate-100 dark:border-emerald-500/10">
+              <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800/80 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${accent.bar}`}
+                  style={{ width: `${clampedProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {onCopy && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCopy();
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className={`w-full px-3 py-1.5 text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 border rounded-lg cursor-pointer ${
+                copied
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-500/40'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200 active:scale-[0.98] dark:bg-[#142924] dark:hover:bg-[#18332c] dark:text-slate-200 dark:border-emerald-500/20'
+              }`}
+              title={copyLabel || 'Copy Patients List'}
+            >
+              {copied ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>Copied!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
+                  <span className="leading-tight whitespace-nowrap">{copyLabel || 'Copy Patients List'}</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 });
