@@ -4310,17 +4310,6 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        {orList.length === 0 && (
-                          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-500/30 p-4 rounded-2xl flex items-center gap-3">
-                            <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
-                            <div>
-                              <h4 className="text-xs font-extrabold text-amber-900 dark:text-amber-200">Showing Live Occupancy-Based OR Patients / عرض مرضى غرف العمليات من الإشغال المباشر</h4>
-                              <p className="text-[10px] text-amber-800 dark:text-amber-300 font-medium mt-1">
-                                Since the scheduled OR list is not uploaded or has been reset, the dashboard statistics and active lists are generated dynamically from patients currently inside rooms starting with "OR-" in the live Occupancy/Bed state.
-                              </p>
-                            </div>
-                          </div>
-                        )}
                         {orList.length > 0 && (() => {
                           const times = getORListStartAndEndTimes(orList);
                           if (times.start || times.end) {
