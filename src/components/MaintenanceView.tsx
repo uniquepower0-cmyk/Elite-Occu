@@ -180,7 +180,7 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-emerald-500/20">
         <div>
           <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">
-            System Maintenance & Auto-Sync Supervisor
+            Automated Sync Script Status
           </h3>
         </div>
         <div className="flex flex-wrap items-center gap-2">
