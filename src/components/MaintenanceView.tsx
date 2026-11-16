@@ -182,9 +182,6 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
           <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">
             System Maintenance & Auto-Sync Supervisor
           </h3>
-          <p className="text-xs text-slate-500 mt-1">
-            Monitors `sync_powerbi_relational.py` across up to 2 on-premises runners (1 macOS + 1 Windows) & Cybernetics Nurse Portal Pending Discharges
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
