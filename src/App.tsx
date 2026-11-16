@@ -3382,10 +3382,10 @@ export default function App() {
             </div>
             <div className="min-w-0 flex-1">
               <h1 className="text-sm sm:text-base font-bold tracking-tight text-slate-900 dark:text-slate-50 truncate max-w-[135px] sm:max-w-none">
-                Elite Occupancy Command Center
+                Elite Hospital Occupancy Manager
               </h1>
               <p className="hidden sm:block text-[11px] text-slate-500 dark:text-slate-400 font-medium leading-none mt-0.5 truncate">
-                Mohanad's Unified Hospital Operations
+                All rights reserved to Dr. Mohand El Ma'moun - Duty manager
               </p>
             </div>
           </div>
