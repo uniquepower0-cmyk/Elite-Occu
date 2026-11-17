@@ -575,21 +575,53 @@ def normalize_specialty(raw: Any) -> str:
     return SPECIALTY_CANONICAL_MAP.get(lower, stripped)
 
 
+def is_readmission_after_discharge(admission_date: Optional[str], discharge_date: Optional[str]) -> bool:
+    """Returns True when an active admission timestamp is strictly newer than a manual discharge timestamp."""
+    if not admission_date or not discharge_date:
+        return False
+    adm_comp = _parse_unified_date_components(admission_date)
+    disc_comp = _parse_unified_date_components(discharge_date)
+    if not adm_comp or not disc_comp:
+        return False
+    if (disc_comp[3], disc_comp[4]) != (0, 0):
+        return adm_comp > disc_comp
+    return adm_comp[:3] > disc_comp[:3]
+
+
 def is_patient_manually_discharged(
     name: str,
     mrn: str,
     manual_names: list[str],
-    manual_mrns: set[str]
+    manual_mrns: set[str],
+    admission_date: Optional[str] = None,
+    manual_discharges: Optional[list[dict[str, str]]] = None,
 ) -> bool:
-    """Checks if a patient was manually discharged by hospital staff today."""
+    """Checks if a patient was manually discharged today and has NOT been re-admitted afterward."""
     c_mrn = clean_mrn_str(mrn)
-    if c_mrn and c_mrn in manual_mrns:
-        return True
-    if name and manual_names:
-        for m_name in manual_names:
-            if is_name_match(name, m_name):
-                return True
-    return False
+    matched = bool(c_mrn and c_mrn in manual_mrns) or (
+        bool(name and manual_names) and any(is_name_match(name, m_name) for m_name in manual_names)
+    )
+    if not matched:
+        return False
+
+    if admission_date and manual_discharges:
+        matching_discharges = [
+            d for d in manual_discharges
+            if (c_mrn and d.get("mrn") and d["mrn"] == c_mrn)
+            or (name and d.get("name") and is_name_match(name, d["name"]))
+        ]
+        if matching_discharges:
+            latest_disc_comp: Optional[tuple[int, int, int, int, int]] = None
+            latest_disc_raw: Optional[str] = None
+            for d in matching_discharges:
+                dc = _parse_unified_date_components(d.get("discharge_date"))
+                if dc and (latest_disc_comp is None or dc > latest_disc_comp):
+                    latest_disc_comp = dc
+                    latest_disc_raw = d.get("discharge_date")
+            if latest_disc_raw and is_readmission_after_discharge(admission_date, latest_disc_raw):
+                return False
+
+    return True
 
 
 # --- DOMAIN MODELS (Python 3.12+ Slots) ---
@@ -731,6 +763,7 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
 
     manual_names_set: set[str] = set()
     manual_mrns_set: set[str] = set()
+    manual_discharges: list[dict[str, str]] = []
     if not is_new_day and not is_system_reset:
         for dp in clean_disc_patients:
             if isinstance(dp, dict):
@@ -744,6 +777,12 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
                         manual_names_set.add(str(p_name).strip())
                     if p_mrn:
                         manual_mrns_set.add(p_mrn)
+                    manual_discharges.append({
+                        "name": str(p_name or "").strip(),
+                        "mrn": p_mrn,
+                        "discharge_date": str(dp.get("dischargeDate") or dp.get("date") or "").strip(),
+                        "room": str(dp.get("room") or "").strip(),
+                    })
 
     dial = state_map.get("state/dialysis") or {}
     raw_dial = dial.get("items", []) if isinstance(dial, dict) else (dial if isinstance(dial, list) else [])
@@ -806,6 +845,7 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
         "registry": raw_registry if isinstance(raw_registry, dict) else {},
         "manually_discharged_names": list(manual_names_set),
         "manually_discharged_mrns": list(manual_mrns_set),
+        "manual_discharges": manual_discharges,
         "occupancy_index": state_map.get("history/occupancy_index") or [],
         "existing_metadata": meta,
         "is_new_day": is_new_day,
@@ -1407,6 +1447,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
             existing = fetch_existing_supabase_state(cairo_date_str)
             manual_names = existing.get("manually_discharged_names", [])
             manual_mrns = set(existing.get("manually_discharged_mrns", []))
+            manual_discharges = existing.get("manual_discharges", [])
             if manual_names or manual_mrns:
                 log(f"[Sync Guard] Active manual discharges recognized: {len(manual_names)} names, {len(manual_mrns)} MRNs.")
 
@@ -1544,15 +1585,23 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     if RE_ER_ROOM.search(f"{pc['bed']} - {pc.get('structure', '')}"):
                         log(f"[HMIS Pending] Skipped ER case: {label}")
                         continue
-                    if is_patient_manually_discharged(pc["name"], pc["mrn"], manual_names, manual_mrns):
-                        log(f"[HMIS Pending] Already discharged, skipping: {label}")
-                        continue
                     match_rec = next((r for r in records if pc["mrn"] and r.clean_mrn == pc["mrn"]), None)
                     p_name = (match_rec.name if match_rec else pc["name"]) or pc["name_en"]
+                    if is_patient_manually_discharged(
+                        pc["name"], pc["mrn"], manual_names, manual_mrns,
+                        admission_date=(match_rec.admission_date if match_rec else None),
+                        manual_discharges=manual_discharges,
+                    ):
+                        log(f"[HMIS Pending] Already discharged, skipping: {label}")
+                        continue
                     if any(
                         isinstance(dp, dict) and (
                             (pc["mrn"] and clean_mrn_str(dp.get("mrn") or "") == pc["mrn"])
                             or is_name_match(dp.get("name"), p_name)
+                        ) and not (
+                            match_rec and is_readmission_after_discharge(
+                                match_rec.admission_date, dp.get("dischargeDate") or dp.get("date")
+                            )
                         )
                         for dp in already_disc
                     ):
@@ -1562,9 +1611,11 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     if HMIS_PENDING_DRY_RUN:
                         log(f"[HMIS Pending][DRY-RUN] Would add to cumulative discharged: {label}")
                         continue
+                    disc_room = clean_room_str(match_rec.bed if match_rec else pc["bed"])
+                    disc_mrn = (match_rec.clean_mrn if match_rec else pc["mrn"]) or pc["mrn"]
                     already_disc.append({
-                        "room": clean_room_str(match_rec.bed if match_rec else pc["bed"]),
-                        "mrn": (match_rec.clean_mrn if match_rec else pc["mrn"]) or pc["mrn"],
+                        "room": disc_room,
+                        "mrn": disc_mrn,
                         "name": p_name,
                         "physician": match_rec.physician if match_rec else "",
                         "contractor": match_rec.contractor if match_rec else "",
@@ -1577,6 +1628,12 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     manual_names.append(p_name)
                     if pc["mrn"]:
                         manual_mrns.add(pc["mrn"])
+                    manual_discharges.append({
+                        "name": p_name,
+                        "mrn": disc_mrn,
+                        "discharge_date": cairo_time_str,
+                        "room": disc_room,
+                    })
                     log(f"[HMIS Pending] Added to cumulative discharged: {label}")
                 if new_count:
                     log(f"[HMIS Pending] {new_count} new case(s) {'detected (dry-run, nothing written)' if HMIS_PENDING_DRY_RUN else 'added'}.")
@@ -1594,9 +1651,17 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
             los_data_list: list[dict[str, Any]] = []
 
             for rec in records:
-                # Guard against manually discharged patients
-                if is_patient_manually_discharged(rec.name, rec.clean_mrn, manual_names, manual_mrns):
+                # Guard against manually discharged patients (skip only if NOT re-admitted after discharge)
+                if is_patient_manually_discharged(
+                    rec.name, rec.clean_mrn, manual_names, manual_mrns,
+                    admission_date=rec.admission_date, manual_discharges=manual_discharges
+                ):
                     continue
+                if (rec.clean_mrn and rec.clean_mrn in manual_mrns) or any(is_name_match(rec.name, mn) for mn in manual_names):
+                    log(f"[Sync Guard] Re-admission detected after manual discharge: {rec.name} (MRN {rec.clean_mrn or rec.mrn}, {rec.bed}, adm {rec.admission_date}) — keeping active.")
+                    manual_names = [mn for mn in manual_names if not is_name_match(rec.name, mn)]
+                    if rec.clean_mrn:
+                        manual_mrns.discard(rec.clean_mrn)
 
                 active_records.append(rec)
 

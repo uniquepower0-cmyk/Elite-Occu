@@ -363,15 +363,31 @@ async function ensureVipCasesLoaded(): Promise<string> {
   return vipCasesText;
 }
 
-function isManuallyDischarged(patientName: string): boolean {
+function isManuallyDischarged(patientName: string, admissionDateVal?: any): boolean {
   if (!patientName) return false;
-  if (manuallyDischargedNames && manuallyDischargedNames.length > 0) {
-    if (manuallyDischargedNames.some(mName => isNameMatch(mName, patientName))) return true;
+  const isInNames = !!(manuallyDischargedNames && manuallyDischargedNames.length > 0 && manuallyDischargedNames.some(mName => isNameMatch(mName, patientName)));
+  const matchingDischarges = (cumulativeDischarged || []).filter(p =>
+    (p.dischargeType === 'manual' || (p.name && manuallyDischargedNames.some(m => isNameMatch(m, p.name)))) &&
+    isNameMatch(p.name, patientName)
+  );
+  if (!isInNames && matchingDischarges.length === 0) return false;
+
+  if (admissionDateVal && matchingDischarges.length > 0) {
+    const admTs = parseDateToTimestamp(admissionDateVal);
+    if (admTs !== null) {
+      let latestDiscTs: number | null = null;
+      for (const d of matchingDischarges) {
+        const dt = parseDateToTimestamp(d.dischargeDate || d.date);
+        if (dt !== null && (latestDiscTs === null || dt > latestDiscTs)) {
+          latestDiscTs = dt;
+        }
+      }
+      if (latestDiscTs !== null && admTs > latestDiscTs) {
+        return false;
+      }
+    }
   }
-  if (cumulativeDischarged && cumulativeDischarged.length > 0) {
-    if (cumulativeDischarged.some(p => (p.dischargeType === 'manual' || (p.name && manuallyDischargedNames.some(m => isNameMatch(m, p.name)))) && isNameMatch(p.name, patientName))) return true;
-  }
-  return false;
+  return true;
 }
 
 function normalizeRoom(roomStr: string): string {
@@ -8259,7 +8275,8 @@ async function updateHospitalState(rows: any[][]) {
       const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
       const is30Col = row.length < 35 && row.length >= 15;
       const patientName = is30Col ? String(row[2] || "").trim() : (isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim());
-      return !isManuallyDischarged(patientName) && !isManuallyDischarged(String(row[3] || "").trim()) && !isManuallyDischarged(String(row[2] || "").trim()) && !isManuallyDischarged(String(row[1] || "").trim());
+      const admDateVal = row[0];
+      return !isManuallyDischarged(patientName, admDateVal) && !isManuallyDischarged(String(row[3] || "").trim(), admDateVal) && !isManuallyDischarged(String(row[2] || "").trim(), admDateVal) && !isManuallyDischarged(String(row[1] || "").trim(), admDateVal);
     });
     rows = [...headerPrefix, ...dataRowsFiltered];
   }
