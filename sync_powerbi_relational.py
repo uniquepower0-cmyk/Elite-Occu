@@ -131,6 +131,10 @@ if not SUPABASE_SSL_VERIFY:
 SUPABASE_REST_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rtdb_nodes"
 SUPABASE_RPC_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rpc/sync_powerbi_admissions"
 SUPABASE_OR_RPC_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rpc/sync_or_cases"
+SUPABASE_OR_FOR_DATE_RPC_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rpc/sync_or_cases_for_date"
+
+OR_FUTURE_WEEKS: Final[int] = max(0, int(os.getenv("OR_FUTURE_WEEKS", "2")))
+OR_FUTURE_SYNC_ENABLED: Final[bool] = os.getenv("OR_FUTURE_SYNC_ENABLED", "1").lower() not in ("0", "false", "no")
 
 SUPABASE_HEADERS: Final[dict[str, str]] = {
     "apikey": SUPABASE_KEY,
@@ -2452,9 +2456,113 @@ def get_or_powerbi_model_id(auth: Optional[Any] = None) -> str:
     return fallback_id
 
 
-def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dict[str, Any]:
-    """Constructs the executeSemanticQueryRequest payload for the Power BI OR schedule report (same-day filter)."""
-    date_label = f"{cairo_now.month}/{cairo_now.day}/{cairo_now.year}"
+def build_or_powerbi_payload(
+    model_id: str,
+    cairo_now: datetime.datetime,
+    start_date: Optional[datetime.date] = None,
+    end_date: Optional[datetime.date] = None,
+) -> dict[str, Any]:
+    """Constructs the executeSemanticQueryRequest payload for the Power BI OR schedule report.
+    When start_date & end_date are omitted, preserves the exact same-day DateSpan filter.
+    When provided, queries an inclusive date range and includes StartDateTime in the export."""
+    is_range = start_date is not None and end_date is not None
+    if is_range:
+        assert start_date is not None and end_date is not None
+        start_lit = f"datetime'{start_date.isoformat()}T00:00:00'"
+        end_lit = f"datetime'{end_date.isoformat()}T23:59:59'"
+        date_filter_condition: dict[str, Any] = {
+            "Condition": {
+                "And": {
+                    "Left": {
+                        "Comparison": {
+                            "ComparisonKind": 2,
+                            "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                            "Right": {"Literal": {"Value": start_lit}},
+                        }
+                    },
+                    "Right": {
+                        "Comparison": {
+                            "ComparisonKind": 3,
+                            "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                            "Right": {"Literal": {"Value": end_lit}},
+                        }
+                    },
+                }
+            }
+        }
+        date_label = f"{start_date.month}/{start_date.day}/{start_date.year} - {end_date.month}/{end_date.day}/{end_date.year}"
+    else:
+        date_filter_condition = {
+            "Condition": {
+                "Comparison": {
+                    "ComparisonKind": 0,
+                    "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                    "Right": {"DateSpan": {"Expression": {"Now": {}}, "TimeUnit": 0}},
+                }
+            }
+        }
+        date_label = f"{cairo_now.month}/{cairo_now.day}/{cairo_now.year} - {cairo_now.month}/{cairo_now.day}/{cairo_now.year}"
+
+    select_cols: list[dict[str, Any]] = [
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Surgeon Name"}, "Name": "OperationReservation_soussi.EnglishFullName"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLClassName"}, "Name": "OperationReservation_soussi.FLClassName"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}, "Name": "OperationReservation_soussi.FLOperationName"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PreparationInstructions"}, "Name": "OperationReservation_soussi.PreparationInstructions"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OR Room"}, "Name": "OperationReservation_soussi.Room Name"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ContractorName"}, "Name": "OperationReservation_soussi.ContractorName"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PaidBy"}, "Name": "OperationReservation_soussi.PaidBy"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "SLOperationName"}, "Name": "OperationReservation_soussi.SLOperationName"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "VT"}, "Name": "OperationReservation_soussi.Visit Type"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}, "Name": "OperationReservation_soussi.Start Time"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "End Time"}, "Name": "OperationReservation_soussi.End Time"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Post C"}, "Name": "OperationReservation_soussi.PostRoomCategoryGUID"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OperativeComment"}, "Name": "OperationReservation_soussi.OperativeComment"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "i/o"}, "Name": "OperationReservation_soussi.InOutReservationType"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "MRN"}, "Name": "OperationReservation_soussi.MRN"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Patient Name"}, "Name": "OperationReservation_soussi.Patient Name"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OverWeight"}, "Name": "oPERAT.OverWeight", "NativeReferenceName": "OverWeight"},
+    ]
+
+    export_cols: list[dict[str, Any]] = [
+        {"QueryName": "OperationReservation_soussi.EnglishFullName", "Name": "Surgeon Name"},
+        {"QueryName": "OperationReservation_soussi.FLClassName", "Name": "FLClassName"},
+        {"QueryName": "OperationReservation_soussi.FLOperationName", "Name": "FLOperationName"},
+        {"QueryName": "OperationReservation_soussi.PreparationInstructions", "Name": "PreparationInstructions"},
+        {"QueryName": "OperationReservation_soussi.Room Name", "Name": "OR Room"},
+        {"QueryName": "OperationReservation_soussi.ContractorName", "Name": "ContractorName"},
+        {"QueryName": "OperationReservation_soussi.PaidBy", "Name": "PaidBy"},
+        {"QueryName": "OperationReservation_soussi.SLOperationName", "Name": "SLOperationName"},
+        {"QueryName": "OperationReservation_soussi.Visit Type", "Name": "VT"},
+        {"QueryName": "OperationReservation_soussi.Start Time", "Name": "Start Time"},
+        {"QueryName": "OperationReservation_soussi.End Time", "Name": "End Time"},
+        {"QueryName": "OperationReservation_soussi.PostRoomCategoryGUID", "Name": "Post C"},
+        {"QueryName": "OperationReservation_soussi.OperativeComment", "Name": "OperativeComment"},
+        {"QueryName": "OperationReservation_soussi.InOutReservationType", "Name": "i/o"},
+        {"QueryName": "OperationReservation_soussi.MRN", "Name": "MRN"},
+        {"QueryName": "OperationReservation_soussi.Patient Name", "Name": "Patient Name"},
+        {"QueryName": "oPERAT.OverWeight", "Name": "OverWeight"},
+    ]
+
+    projections = list(range(17))
+    ordering = [9, 10, 15, 14, 2, 7, 0, 3, 4, 5, 6, 8, 11, 12, 13, 1, 16]
+    order_by: list[dict[str, Any]] = [
+        {"Direction": 1, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}}}
+    ]
+
+    if is_range:
+        select_cols.append(
+            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}, "Name": "OperationReservation_soussi.StartDateTime"}
+        )
+        export_cols.append(
+            {"QueryName": "OperationReservation_soussi.StartDateTime", "Name": "StartDateTime"}
+        )
+        projections.append(17)
+        ordering = [17] + ordering
+        order_by.insert(
+            0,
+            {"Direction": 1, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}}},
+        )
+
     return {
         "exportDataType": 0,
         "executeSemanticQueryRequest": {
@@ -2468,31 +2576,13 @@ def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dic
                                     "Query": {
                                         "Version": 2,
                                         "From": [{"Name": "o", "Entity": "oPERAT", "Type": 0}],
-                                        "Select": [
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Surgeon Name"}, "Name": "OperationReservation_soussi.EnglishFullName"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLClassName"}, "Name": "OperationReservation_soussi.FLClassName"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}, "Name": "OperationReservation_soussi.FLOperationName"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PreparationInstructions"}, "Name": "OperationReservation_soussi.PreparationInstructions"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OR Room"}, "Name": "OperationReservation_soussi.Room Name"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ContractorName"}, "Name": "OperationReservation_soussi.ContractorName"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "PaidBy"}, "Name": "OperationReservation_soussi.PaidBy"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "SLOperationName"}, "Name": "OperationReservation_soussi.SLOperationName"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "VT"}, "Name": "OperationReservation_soussi.Visit Type"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}, "Name": "OperationReservation_soussi.Start Time"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "End Time"}, "Name": "OperationReservation_soussi.End Time"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Post C"}, "Name": "OperationReservation_soussi.PostRoomCategoryGUID"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OperativeComment"}, "Name": "OperationReservation_soussi.OperativeComment"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "i/o"}, "Name": "OperationReservation_soussi.InOutReservationType"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "MRN"}, "Name": "OperationReservation_soussi.MRN"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Patient Name"}, "Name": "OperationReservation_soussi.Patient Name"},
-                                            {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OverWeight"}, "Name": "oPERAT.OverWeight", "NativeReferenceName": "OverWeight"}
-                                        ],
+                                        "Select": select_cols,
                                         "Where": [
                                             {
                                                 "Condition": {
                                                     "In": {
                                                         "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Status"}}],
-                                                        "Values": [[{"Literal": {"Value": "'Completed'"}}], [{"Literal": {"Value": "'Scheduled'"}}], [{"Literal": {"Value": "'InOR'"}}]]
+                                                        "Values": [[{"Literal": {"Value": "'Completed'"}}], [{"Literal": {"Value": "'Scheduled'"}}], [{"Literal": {"Value": "'InOR'"}}]],
                                                     }
                                                 }
                                             },
@@ -2502,7 +2592,7 @@ def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dic
                                                         "Expression": {
                                                             "In": {
                                                                 "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ORStatus"}}],
-                                                                "Values": [[{"Literal": {"Value": "'Cancel'"}}]]
+                                                                "Values": [[{"Literal": {"Value": "'Cancel'"}}]],
                                                             }
                                                         }
                                                     }
@@ -2514,21 +2604,13 @@ def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dic
                                                         "Expression": {
                                                             "In": {
                                                                 "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}}],
-                                                                "Values": [[{"Literal": {"Value": "null"}}]]
+                                                                "Values": [[{"Literal": {"Value": "null"}}]],
                                                             }
                                                         }
                                                     }
                                                 }
                                             },
-                                            {
-                                                "Condition": {
-                                                    "Comparison": {
-                                                        "ComparisonKind": 0,
-                                                        "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
-                                                        "Right": {"DateSpan": {"Expression": {"Now": {}}, "TimeUnit": 0}}
-                                                    }
-                                                }
-                                            },
+                                            date_filter_condition,
                                             {
                                                 "Condition": {
                                                     "Not": {
@@ -2538,76 +2620,56 @@ def build_or_powerbi_payload(model_id: str, cairo_now: datetime.datetime) -> dic
                                                                 "Values": [
                                                                     [{"Literal": {"Value": "'Cath Lab Theatre'"}}],
                                                                     [{"Literal": {"Value": "'CathLab Operation Theatre 2'"}}],
-                                                                    [{"Literal": {"Value": "'Endoscopy Operation Theatre'"}}]
-                                                                ]
+                                                                    [{"Literal": {"Value": "'Endoscopy Operation Theatre'"}}],
+                                                                ],
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
+                                            },
                                         ],
-                                        "OrderBy": [
-                                            {"Direction": 1, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Start Time"}}}
-                                        ]
+                                        "OrderBy": order_by,
                                     },
                                     "Binding": {
-                                        "Primary": {"Groupings": [{"Projections": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], "Subtotal": 0}]},
+                                        "Primary": {"Groupings": [{"Projections": projections, "Subtotal": 0}]},
                                         "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
-                                        "Version": 1
-                                    }
+                                        "Version": 1,
+                                    },
                                 }
                             },
                             {
                                 "ExportDataCommand": {
-                                    "Columns": [
-                                        {"QueryName": "OperationReservation_soussi.EnglishFullName", "Name": "Surgeon Name"},
-                                        {"QueryName": "OperationReservation_soussi.FLClassName", "Name": "FLClassName"},
-                                        {"QueryName": "OperationReservation_soussi.FLOperationName", "Name": "FLOperationName"},
-                                        {"QueryName": "OperationReservation_soussi.PreparationInstructions", "Name": "PreparationInstructions"},
-                                        {"QueryName": "OperationReservation_soussi.Room Name", "Name": "OR Room"},
-                                        {"QueryName": "OperationReservation_soussi.ContractorName", "Name": "ContractorName"},
-                                        {"QueryName": "OperationReservation_soussi.PaidBy", "Name": "PaidBy"},
-                                        {"QueryName": "OperationReservation_soussi.SLOperationName", "Name": "SLOperationName"},
-                                        {"QueryName": "OperationReservation_soussi.Visit Type", "Name": "VT"},
-                                        {"QueryName": "OperationReservation_soussi.Start Time", "Name": "Start Time"},
-                                        {"QueryName": "OperationReservation_soussi.End Time", "Name": "End Time"},
-                                        {"QueryName": "OperationReservation_soussi.PostRoomCategoryGUID", "Name": "Post C"},
-                                        {"QueryName": "OperationReservation_soussi.OperativeComment", "Name": "OperativeComment"},
-                                        {"QueryName": "OperationReservation_soussi.InOutReservationType", "Name": "i/o"},
-                                        {"QueryName": "OperationReservation_soussi.MRN", "Name": "MRN"},
-                                        {"QueryName": "OperationReservation_soussi.Patient Name", "Name": "Patient Name"},
-                                        {"QueryName": "oPERAT.OverWeight", "Name": "OverWeight"}
-                                    ],
-                                    "Ordering": [9, 10, 15, 14, 2, 7, 0, 3, 4, 5, 6, 8, 11, 12, 13, 1, 16],
+                                    "Columns": export_cols,
+                                    "Ordering": ordering,
                                     "FiltersDescription": (
                                         "Applied filters:\nStatus is Completed, Scheduled, or InOR\n"
                                         "ORStatus is not Cancel\nFLOperationName is not (Blank)\n"
-                                        f"StartDateTime {date_label} - {date_label}\n"
+                                        f"StartDateTime {date_label}\n"
                                         "OR Room is not Cath Lab Theatre, CathLab Operation Theatre 2, or Endoscopy Operation Theatre"
-                                    )
+                                    ),
                                 }
-                            }
+                            },
                         ]
                     }
                 }
             ],
             "cancelQueries": [],
             "modelId": model_id,
-            "userPreferredLocale": "en-US"
-        }
+            "userPreferredLocale": "en-US",
+        },
     }
 
 
-def parse_powerbi_or_excel(
+def _parse_powerbi_or_excel_internal(
     excel_bytes: bytes,
     cairo_date_str: str,
-    known_mrns_by_name: dict[str, str]
-) -> list[dict[str, Any]]:
-    """Parses Power BI OR Schedule Excel bytes into the exact 19-field OR case schema with 12-hour Start/End times
-    and merges multi-procedure rows for the same patient/session into a single OR case row."""
+    known_mrns_by_name: dict[str, str],
+    group_by_date: bool = False,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """Internal parser returning (cases_by_date, header_found)."""
     df = pd.read_excel(io.BytesIO(excel_bytes), header=None)
     if df.empty:
-        return []
+        return {}, False
 
     header_row_idx = -1
     for r_idx in range(min(10, len(df))):
@@ -2621,18 +2683,16 @@ def parse_powerbi_or_excel(
             break
 
     if header_row_idx < 0:
-        return []
+        return {}, False
 
     headers = [str(x).strip().lower() if pd.notna(x) else "" for x in df.iloc[header_row_idx].values]
 
     def find_col_idx(possible_names: list[str], fallback: int = -1) -> int:
-        # Pass 1: exact header match
         for name in possible_names:
             nl = name.lower()
             for idx, h in enumerate(headers):
                 if h == nl:
                     return idx
-        # Pass 2: substring match (only for keywords > 3 chars)
         for name in possible_names:
             nl = name.lower()
             if len(nl) <= 3:
@@ -2642,6 +2702,7 @@ def parse_powerbi_or_excel(
                     return idx
         return fallback
 
+    idx_start_dt = find_col_idx(["startdatetime", "start date", "scheduled date"], -1)
     idx_serial = find_col_idx(["serial", "column 1", "م", "#"], -1)
     idx_start = find_col_idx(["start time", "starttime", "وقت البدء"], 0)
     idx_end = find_col_idx(["end time", "endtime", "وقت الانتهاء"], 1)
@@ -2687,6 +2748,15 @@ def parse_powerbi_or_excel(
         if patient_name.lower() in ("patient name", "total", "applied filters:"):
             continue
 
+        row_date_str = cairo_date_str
+        if group_by_date and idx_start_dt >= 0 and idx_start_dt < len(row_vals):
+            parsed_comps = _parse_unified_date_components(row_vals[idx_start_dt])
+            if parsed_comps:
+                yr, mo, dy, _, _ = parsed_comps
+                row_date_str = f"{yr:04d}-{mo:02d}-{dy:02d}"
+            else:
+                continue
+
         clean_m = clean_mrn_str(raw_mrn)
         if not clean_m and patient_name:
             norm_pn = normalize_arabic_name(patient_name)
@@ -2715,9 +2785,8 @@ def parse_powerbi_or_excel(
         class_val = cell_str(row_vals, idx_class)
         fin_val = cell_str(row_vals, idx_fin)
 
-        # Group multi-procedure rows belonging to the same patient surgical session
         norm_key_name = normalize_arabic_name(patient_name) or patient_name.lower()
-        group_key = f"{clean_m or norm_key_name}|{start_12h}|{or_room.lower()}"
+        group_key = f"{row_date_str}|{clean_m or norm_key_name}|{start_12h}|{or_room.lower()}"
 
         if group_key not in grouped_cases:
             ordered_keys.append(group_key)
@@ -2740,7 +2809,7 @@ def parse_powerbi_or_excel(
                 "operativeComment": comment_val,
                 "flClassName": class_val,
                 "financialStatus": fin_val,
-                "orListDate": cairo_date_str
+                "orListDate": row_date_str,
             }
         else:
             existing_case = grouped_cases[group_key]
@@ -2769,7 +2838,202 @@ def parse_powerbi_or_excel(
             if not existing_case["flClassName"] and class_val:
                 existing_case["flClassName"] = class_val
 
-    return [grouped_cases[k] for k in ordered_keys]
+    cases_by_date: dict[str, list[dict[str, Any]]] = {}
+    for k in ordered_keys:
+        c = grouped_cases[k]
+        d = c["orListDate"]
+        bucket = cases_by_date.setdefault(d, [])
+        c["serial"] = str(len(bucket) + 1)
+        bucket.append(c)
+    return cases_by_date, True
+
+
+def parse_powerbi_or_excel(
+    excel_bytes: bytes,
+    cairo_date_str: str,
+    known_mrns_by_name: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Parses Power BI OR Schedule Excel bytes into the exact 19-field OR case schema with 12-hour Start/End times
+    and merges multi-procedure rows for the same patient/session into a single OR case row."""
+    by_date, _ = _parse_powerbi_or_excel_internal(excel_bytes, cairo_date_str, known_mrns_by_name, group_by_date=False)
+    return by_date.get(cairo_date_str, [])
+
+
+def parse_powerbi_or_excel_by_date(
+    excel_bytes: bytes,
+    default_date_str: str,
+    known_mrns_by_name: dict[str, str],
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """Parses a multi-day Power BI OR Schedule Excel export into {YYYY-MM-DD: [cases]} plus header_found."""
+    return _parse_powerbi_or_excel_internal(excel_bytes, default_date_str, known_mrns_by_name, group_by_date=True)
+
+
+def week_windows(today: datetime.date, weeks: int) -> list[tuple[datetime.date, datetime.date]]:
+    """Returns sequential 7-day future windows starting at today+1: [(D+1, D+7), (D+8, D+14), ...]."""
+    windows: list[tuple[datetime.date, datetime.date]] = []
+    for w in range(max(0, weeks)):
+        w_start = today + datetime.timedelta(days=1 + w * 7)
+        w_end = today + datetime.timedelta(days=7 + w * 7)
+        windows.append((w_start, w_end))
+    return windows
+
+
+def compute_or_cases_hash(cases: list[dict[str, Any]]) -> str:
+    """Computes a deterministic SHA-256 hash for a list of OR case dicts."""
+    return hashlib.sha256(
+        json.dumps(cases, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def or_case_reconcile_key(case: dict[str, Any]) -> str:
+    """Builds the stable identity key for diffing OR cases within a single date."""
+    mrn = str(case.get("mrn") or "").strip()
+    if mrn:
+        return f"mrn:{mrn}"
+    norm_name = normalize_arabic_name(case.get("patientName") or "") or str(case.get("patientName") or "").lower().strip()
+    start = str(case.get("startTime") or "").strip()
+    room = str(case.get("orRoom") or "").lower().strip()
+    return f"name:{norm_name}|{start}|{room}"
+
+
+def reconcile_or_date(
+    date_str: str,
+    today_str: str,
+    new_cases: list[dict[str, Any]],
+    stored_cases: Optional[list[dict[str, Any]]],
+    stored_hash: Optional[str],
+    consecutive_empty_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Computes per-date reconciliation result (added/removed/changed, hash, skip reason, empty-guard)."""
+    if date_str <= today_str:
+        return {
+            "date": date_str,
+            "skip": True,
+            "reason": "not_future",
+            "hash": "",
+            "diff": {"added": 0, "removed": 0, "changed": 0},
+        }
+
+    new_hash = compute_or_cases_hash(new_cases)
+    if stored_hash is not None and new_hash == stored_hash:
+        consecutive_empty_counts[date_str] = 0
+        return {
+            "date": date_str,
+            "skip": True,
+            "reason": "hash_match",
+            "hash": new_hash,
+            "diff": {"added": 0, "removed": 0, "changed": 0},
+        }
+
+    had_previous_cases = bool(stored_cases) or (
+        stored_hash is not None and stored_hash != compute_or_cases_hash([])
+    )
+    if len(new_cases) == 0 and had_previous_cases:
+        consecutive_empty_counts[date_str] = consecutive_empty_counts.get(date_str, 0) + 1
+        if consecutive_empty_counts[date_str] < 2:
+            return {
+                "date": date_str,
+                "skip": True,
+                "reason": "empty_guard",
+                "hash": new_hash,
+                "diff": {"added": 0, "removed": 0, "changed": 0},
+            }
+    consecutive_empty_counts[date_str] = 0
+
+    old_map = {or_case_reconcile_key(c): c for c in (stored_cases or [])}
+    new_map = {or_case_reconcile_key(c): c for c in new_cases}
+
+    added = sum(1 for k in new_map if k not in old_map)
+    removed = sum(1 for k in old_map if k not in new_map)
+    changed = sum(
+        1 for k, nc in new_map.items()
+        if k in old_map and {fk: fv for fk, fv in nc.items() if fk != "serial"} != {fk: fv for fk, fv in old_map[k].items() if fk != "serial"}
+    )
+
+    return {
+        "date": date_str,
+        "skip": False,
+        "reason": "changed",
+        "hash": new_hash,
+        "diff": {"added": added, "removed": removed, "changed": changed},
+    }
+
+
+_last_future_or_sync_ts: float = 0.0
+_consecutive_empty_or_dates: dict[str, int] = {}
+
+
+def _load_known_mrns_cache(session: requests.Session) -> None:
+    """Populates _last_known_mrns_by_name from state/registry once if empty."""
+    global _last_known_mrns_by_name
+    if _last_known_mrns_by_name or not SUPABASE_KEY:
+        return
+    try:
+        reg_res = session.get(
+            f"{SUPABASE_REST_URL}?path=eq.state/registry&select=data",
+            timeout=10,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+        if reg_res.status_code == 200 and reg_res.json():
+            reg_data = (reg_res.json()[0].get("data") or {}).get("patientRoomRegistry") or {}
+            for rk, rv in reg_data.items():
+                if isinstance(rv, dict):
+                    r_name = str(rv.get("name") or rk or "").strip()
+                    r_mrn = clean_mrn_str(rv.get("mrn"))
+                    if r_name and r_mrn and not r_mrn.startswith("UNKNOWN-") and any(c.isdigit() for c in r_mrn):
+                        norm_rn = normalize_arabic_name(r_name)
+                        if norm_rn:
+                            _last_known_mrns_by_name[norm_rn] = r_mrn
+    except Exception:
+        pass
+
+
+def _sync_or_cases_relational(
+    cases: list[dict[str, Any]],
+    target_date_str: str,
+    session: requests.Session,
+    use_replace_rpc: bool = False,
+) -> None:
+    """Syncs OR cases for target_date_str to PostgreSQL via sync_or_cases_for_date (or sync_or_cases fallback)."""
+    rpc_cases = []
+    for c in cases:
+        s_pg = parse_to_pg_time(c.get("startTime"))
+        e_pg = parse_to_pg_time(c.get("endTime"))
+        if s_pg and e_pg and e_pg < s_pg:
+            e_pg = None
+        rpc_cases.append({
+            **c,
+            "startTime": s_pg,
+            "endTime": e_pg,
+            "orListDate": target_date_str,
+        })
+
+    if use_replace_rpc:
+        try:
+            r = session.post(
+                SUPABASE_OR_FOR_DATE_RPC_URL,
+                json={"p_date": target_date_str, "payload": rpc_cases},
+                timeout=20,
+                verify=SUPABASE_SSL_VERIFY,
+            )
+            if r.status_code < 400:
+                return
+            if r.status_code != 404:
+                log(f"[OR Sync] sync_or_cases_for_date({target_date_str}) returned {r.status_code}: {r.text}", level="warning")
+                return
+        except Exception as rpc_err:
+            log(f"[OR Sync] sync_or_cases_for_date notice: {rpc_err}", level="warning")
+
+    if rpc_cases:
+        try:
+            session.post(
+                SUPABASE_OR_RPC_URL,
+                json={"payload": rpc_cases},
+                timeout=20,
+                verify=SUPABASE_SSL_VERIFY,
+            )
+        except Exception as rpc_err:
+            log(f"[OR Sync] Relational RPC notice (non-fatal): {rpc_err}", level="warning")
 
 
 def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
@@ -2795,33 +3059,13 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
         resp.raise_for_status()
 
         session = get_supabase_session()
-        if not _last_known_mrns_by_name and SUPABASE_KEY:
-            try:
-                reg_res = session.get(
-                    f"{SUPABASE_REST_URL}?path=eq.state/registry&select=data",
-                    timeout=10,
-                    verify=SUPABASE_SSL_VERIFY
-                )
-                if reg_res.status_code == 200 and reg_res.json():
-                    reg_data = (reg_res.json()[0].get("data") or {}).get("patientRoomRegistry") or {}
-                    for rk, rv in reg_data.items():
-                        if isinstance(rv, dict):
-                            r_name = str(rv.get("name") or rk or "").strip()
-                            r_mrn = clean_mrn_str(rv.get("mrn"))
-                            if r_name and r_mrn and not r_mrn.startswith("UNKNOWN-") and any(c.isdigit() for c in r_mrn):
-                                norm_rn = normalize_arabic_name(r_name)
-                                if norm_rn:
-                                    _last_known_mrns_by_name[norm_rn] = r_mrn
-            except Exception:
-                pass
+        _load_known_mrns_cache(session)
 
         or_cases = parse_powerbi_or_excel(resp.content, cairo_date_str, _last_known_mrns_by_name)
         _last_or_sync_ts = time.time()
         _in_memory_or_count = len(or_cases)
 
-        current_or_hash = hashlib.sha256(
-            json.dumps(or_cases, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        current_or_hash = compute_or_cases_hash(or_cases)
 
         if (
             not force
@@ -2834,6 +3078,24 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
         if not SUPABASE_KEY:
             log(f"[OR Sync] Parsed {len(or_cases)} OR cases (12-hour format). SUPABASE_KEY not set; skipping DB write.", level="warning")
             return True
+
+        # Check persisted hash in history/or/{today}/summary so restarts & peer runners skip unchanged writes
+        if not force:
+            try:
+                sum_res = session.get(
+                    f"{SUPABASE_REST_URL}?path=eq.history/or/{cairo_date_str}/summary&select=data",
+                    timeout=10,
+                    verify=SUPABASE_SSL_VERIFY,
+                )
+                if sum_res.status_code == 200 and sum_res.json():
+                    sum_data = sum_res.json()[0].get("data") or {}
+                    if isinstance(sum_data, dict) and sum_data.get("hash") == current_or_hash:
+                        _last_synced_or_hash = current_or_hash
+                        _last_synced_or_cairo_date = cairo_date_str
+                        log(f"[OR Sync Dedup] OR schedule ({len(or_cases)} cases) matches persisted Supabase hash; skipping redundant upsert.")
+                        return True
+            except Exception:
+                pass
 
         # 1. Fetch lightweight state/metadata and history/or_index for atomic update
         existing_meta: dict[str, Any] = {}
@@ -2872,6 +3134,7 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
             "totalCases": len(or_cases),
             "matched": matched_inpatients,
             "outpatients": outpatients_cnt,
+            "hash": current_or_hash,
             "timestamp": int(time.time() * 1000),
             "cairoTime": cairo_now.strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -2909,29 +3172,8 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
             log(f"[OR Sync] Supabase RTDB upsert returned {sb_resp.status_code}: {sb_resp.text}", level="warning")
             return False
 
-        # 2. Relational sync via sync_or_cases RPC (converts 12h display time to 24h PG TIME)
-        if or_cases:
-            try:
-                rpc_cases = []
-                for c in or_cases:
-                    s_pg = parse_to_pg_time(c.get("startTime"))
-                    e_pg = parse_to_pg_time(c.get("endTime"))
-                    if s_pg and e_pg and e_pg < s_pg:
-                        e_pg = None
-                    rpc_cases.append({
-                        **c,
-                        "startTime": s_pg,
-                        "endTime": e_pg,
-                        "orListDate": cairo_date_str
-                    })
-                session.post(
-                    SUPABASE_OR_RPC_URL,
-                    json={"payload": rpc_cases},
-                    timeout=20,
-                    verify=SUPABASE_SSL_VERIFY
-                )
-            except Exception as rpc_err:
-                log(f"[OR Sync] Relational RPC notice (non-fatal): {rpc_err}", level="warning")
+        # 2. Relational sync via sync_or_cases_for_date (with fallback to sync_or_cases)
+        _sync_or_cases_relational(or_cases, cairo_date_str, session, use_replace_rpc=True)
 
         _last_synced_or_hash = current_or_hash
         _last_synced_or_cairo_date = cairo_date_str
@@ -2945,13 +3187,234 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
         return False
 
 
+def fetch_powerbi_or_future_and_sync(force: bool = False, dry_run: bool = False) -> bool:
+    """Fetches future weeks of OR schedules week-by-week from Power BI, reconciles each future date
+    against history/or/{d}/* (hash-first), and saves only changed dates into history + relational or_cases.
+    Never touches state/or_list or state/metadata."""
+    global _last_future_or_sync_ts
+    if not OR_FUTURE_SYNC_ENABLED or OR_FUTURE_WEEKS <= 0:
+        return True
+
+    try:
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now_iso = now_dt.isoformat()
+        cairo_now = get_cairo_now()
+        today_str = cairo_now.strftime("%Y-%m-%d")
+        windows = week_windows(cairo_now.date(), OR_FUTURE_WEEKS)
+        if not windows:
+            return True
+
+        auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+        or_model_id = get_or_powerbi_model_id(auth=auth)
+        session = get_supabase_session()
+        if SUPABASE_KEY:
+            _load_known_mrns_cache(session)
+
+        changed_index_entries: dict[str, dict[str, Any]] = {}
+        total_dates_updated = 0
+
+        for w_idx, (w_start, w_end) in enumerate(windows, start=1):
+            log(f"[OR Future] Fetching week {w_idx}/{len(windows)} ({w_start.isoformat()} .. {w_end.isoformat()})...")
+            payload = build_or_powerbi_payload(or_model_id, cairo_now, start_date=w_start, end_date=w_end)
+            resp = requests.post(
+                POWERBI_OR_EXPORT_URL,
+                json=payload,
+                auth=auth,
+                timeout=(10, min(45, POWERBI_TIMEOUT)),
+            )
+            resp.raise_for_status()
+
+            cases_by_date, header_found = parse_powerbi_or_excel_by_date(
+                resp.content, w_start.isoformat(), _last_known_mrns_by_name
+            )
+            if not header_found:
+                log(f"[OR Future] Week {w_idx} header missing/unparseable; skipping window without overwriting history.", level="warning")
+                continue
+
+            window_dates: list[str] = []
+            cur_d = w_start
+            while cur_d <= w_end:
+                window_dates.append(cur_d.isoformat())
+                cur_d += datetime.timedelta(days=1)
+
+            # Hash-first read: fetch only small summary rows for this 7-day window
+            stored_summaries: dict[str, dict[str, Any]] = {}
+            if SUPABASE_KEY:
+                sum_paths = ",".join(f"history/or/{d}/summary" for d in window_dates)
+                try:
+                    sum_res = session.get(
+                        f"{SUPABASE_REST_URL}?path=in.({sum_paths})&select=path,data",
+                        timeout=12,
+                        verify=SUPABASE_SSL_VERIFY,
+                    )
+                    if sum_res.status_code == 200:
+                        for row in sum_res.json():
+                            p = str(row.get("path") or "")
+                            parts = p.split("/")
+                            if len(parts) >= 3 and isinstance(row.get("data"), dict):
+                                stored_summaries[parts[2]] = row["data"]
+                except Exception as e:
+                    log(f"[OR Future] Notice reading summaries for week {w_idx}: {e}", level="warning")
+
+            # Identify dates whose hash differs from stored summary hash (or force=True)
+            dirty_dates: list[str] = []
+            for d_str in window_dates:
+                new_cases = cases_by_date.get(d_str, [])
+                new_hash = compute_or_cases_hash(new_cases)
+                stored_hash = stored_summaries.get(d_str, {}).get("hash") if d_str in stored_summaries else None
+                if force or stored_hash is None or new_hash != stored_hash:
+                    dirty_dates.append(d_str)
+
+            if not dirty_dates:
+                log(f"[OR Future] Week {w_idx} ({w_start}..{w_end}): all 7 dates unchanged (hash match).")
+                continue
+
+            # Fetch full stored cases ONLY for dirty dates
+            stored_cases_map: dict[str, list[dict[str, Any]]] = {}
+            if SUPABASE_KEY and dirty_dates:
+                case_paths = ",".join(f"history/or/{d}/cases" for d in dirty_dates)
+                try:
+                    c_res = session.get(
+                        f"{SUPABASE_REST_URL}?path=in.({case_paths})&select=path,data",
+                        timeout=15,
+                        verify=SUPABASE_SSL_VERIFY,
+                    )
+                    if c_res.status_code == 200:
+                        for row in c_res.json():
+                            p = str(row.get("path") or "")
+                            parts = p.split("/")
+                            if len(parts) >= 3 and isinstance(row.get("data"), list):
+                                stored_cases_map[parts[2]] = row["data"]
+                except Exception as e:
+                    log(f"[OR Future] Notice reading stored cases for week {w_idx}: {e}", level="warning")
+
+            window_nodes: list[dict[str, Any]] = []
+            dirty_rpc_batches: list[tuple[str, list[dict[str, Any]]]] = []
+
+            for d_str in dirty_dates:
+                new_cases = cases_by_date.get(d_str, [])
+                stored_hash = stored_summaries.get(d_str, {}).get("hash") if d_str in stored_summaries else None
+                rec = reconcile_or_date(
+                    date_str=d_str,
+                    today_str=today_str,
+                    new_cases=new_cases,
+                    stored_cases=stored_cases_map.get(d_str),
+                    stored_hash=None if force else stored_hash,
+                    consecutive_empty_counts=_consecutive_empty_or_dates,
+                )
+                if rec["skip"]:
+                    if rec["reason"] == "empty_guard":
+                        log(f"[OR Future] {d_str}: empty result guarded (1/2 consecutive); keeping stored list.", level="warning")
+                    continue
+
+                diff = rec["diff"]
+                if dry_run:
+                    log(
+                        f"[OR Future Dry-Run] {d_str}: {len(new_cases)} cases "
+                        f"(+{diff['added']} / -{diff['removed']} / ~{diff['changed']})"
+                    )
+                    continue
+
+                matched_in = sum(1 for c in new_cases if c.get("mrn"))
+                out_cnt = max(0, len(new_cases) - matched_in)
+                ts_ms = int(time.time() * 1000)
+                cairo_time_str = cairo_now.strftime("%Y-%m-%d %H:%M:%S")
+                summary_obj = {
+                    "totalCases": len(new_cases),
+                    "matched": matched_in,
+                    "outpatients": out_cnt,
+                    "kind": "scheduled",
+                    "hash": rec["hash"],
+                    "diff": diff,
+                    "lastRefreshedAt": now_iso,
+                    "timestamp": ts_ms,
+                    "cairoTime": cairo_time_str,
+                }
+                window_nodes.append({"path": f"history/or/{d_str}/summary", "data": summary_obj, "updated_at": now_iso})
+                window_nodes.append({"path": f"history/or/{d_str}/cases", "data": new_cases, "updated_at": now_iso})
+                changed_index_entries[d_str] = {
+                    "date": d_str,
+                    "isFuture": True,
+                    "timestamp": ts_ms,
+                    "cairoTime": cairo_time_str,
+                    "summary": {
+                        "totalCases": len(new_cases),
+                        "matched": matched_in,
+                        "outpatients": out_cnt,
+                        "kind": "scheduled",
+                        "diff": diff,
+                    },
+                }
+                dirty_rpc_batches.append((d_str, new_cases))
+                total_dates_updated += 1
+                log(
+                    f"[OR Future] {d_str}: {len(new_cases)} cases "
+                    f"(+{diff['added']} / -{diff['removed']} / ~{diff['changed']})"
+                )
+
+            if not dry_run and SUPABASE_KEY and window_nodes:
+                sb_resp = session.post(SUPABASE_REST_URL, json=window_nodes, timeout=20, verify=SUPABASE_SSL_VERIFY)
+                if sb_resp.status_code not in (200, 201, 204):
+                    log(f"[OR Future] Supabase RTDB upsert returned {sb_resp.status_code}: {sb_resp.text}", level="warning")
+                    continue
+                for d_str, d_cases in dirty_rpc_batches:
+                    _sync_or_cases_relational(d_cases, d_str, session, use_replace_rpc=True)
+
+        # Single batched read-modify-write of history/or_index if any future date changed
+        if not dry_run and SUPABASE_KEY and changed_index_entries:
+            try:
+                idx_res = session.get(
+                    f"{SUPABASE_REST_URL}?path=eq.history/or_index&select=data",
+                    timeout=12,
+                    verify=SUPABASE_SSL_VERIFY,
+                )
+                existing_idx: list[dict[str, Any]] = []
+                if idx_res.status_code == 200 and idx_res.json():
+                    raw_idx = idx_res.json()[0].get("data")
+                    if isinstance(raw_idx, list):
+                        existing_idx = raw_idx
+
+                kept_existing = [
+                    e for e in existing_idx
+                    if isinstance(e, dict) and str(e.get("date", "")).strip() not in changed_index_entries
+                ]
+                merged_idx = list(changed_index_entries.values()) + kept_existing
+                merged_idx.sort(key=lambda x: str(x.get("date", "")), reverse=True)
+
+                session.post(
+                    SUPABASE_REST_URL,
+                    json=[{"path": "history/or_index", "data": merged_idx, "updated_at": now_iso}],
+                    timeout=15,
+                    verify=SUPABASE_SSL_VERIFY,
+                )
+            except Exception as idx_err:
+                log(f"[OR Future] Notice updating history/or_index: {idx_err}", level="warning")
+
+        _last_future_or_sync_ts = time.time()
+        log(f"[OR Future] Cycle complete ({total_dates_updated} future date(s) updated).")
+        return True
+    except Exception as e:
+        log(f"[OR Future] Error fetching/syncing future OR schedules: {e}", level="error")
+        return False
+
+
+def run_or_full_cycle(force: bool = False) -> bool:
+    """Runs today's live OR sync first, then future weekly OR history reconciliation (non-fatal)."""
+    today_ok = fetch_powerbi_or_and_sync(force=force)
+    try:
+        fetch_powerbi_or_future_and_sync(force=force)
+    except Exception as e:
+        log(f"[OR Future] Non-fatal cycle error: {e}", level="warning")
+    return today_ok
+
+
 def run_or_sync_job(force: bool = False) -> None:
     """Executes the scheduled 2-hour OR schedule sync job."""
     if _is_paused and not force:
         log("[OR Sync Paused] Skipping scheduled OR sync cycle while paused.")
         return
     fortinet_reconnect()
-    fetch_powerbi_or_and_sync(force=force)
+    run_or_full_cycle(force=force)
     publish_standalone_heartbeat()
 
 
@@ -2972,14 +3435,14 @@ def check_cairo_day_rollover() -> None:
 
     clean_last_seen = last_cairo_seen_date.replace("_1159_done", "")
     if today_str != clean_last_seen:
-        log(f"[Calendar Rollover] Date transitioned from {clean_last_seen} to {today_str}. Triggering midnight sync...")
+        log(f"[Calendar Rollover] Date transitioned from {clean_last_seen} to {today_str}. Triggering midnight sync & OR refresh...")
         last_cairo_seen_date = today_str
-        run_sync_job()
+        run_sync_job(force=True)
     elif now_cairo.hour == 23 and now_cairo.minute >= 58:
         if last_cairo_seen_date == today_str:
             last_cairo_seen_date = f"{today_str}_1159_done"
             log(f"[EOD Reset] 23:59 Cairo reached ({today_str} {now_cairo.strftime('%H:%M')}). Triggering closing snapshot...")
-            run_sync_job()
+            run_sync_job(force=True)
 
 
 def is_recent_sync_fresh(min_interval_sec: int = 180) -> bool:
@@ -3257,7 +3720,7 @@ def run_sync_job(force: bool = False) -> None:
     fortinet_reconnect()
     fetch_powerbi_and_sync()
     if force or _last_or_sync_ts == 0.0 or (time.time() - _last_or_sync_ts) >= 7200.0:
-        fetch_powerbi_or_and_sync(force=force)
+        run_or_full_cycle(force=force)
     publish_standalone_heartbeat()
 
 
@@ -3273,6 +3736,13 @@ if __name__ == "__main__":
 
     force_now = "--force" in sys.argv or os.getenv("FORCE_SYNC_NOW", "").strip() == "1"
     run_once = "--once" in sys.argv
+    or_weekly_dry_run = "--or-weekly-dry-run" in sys.argv
+
+    if or_weekly_dry_run:
+        log("[OR Future Dry-Run] Running read-only future OR weekly reconciliation check...")
+        fortinet_reconnect()
+        fetch_powerbi_or_future_and_sync(force=True, dry_run=True)
+        sys.exit(0)
 
     poll_standalone_control(init_only=True)
     log(f"Hospital Occupancy Sync Service Online ({RUNNER_ID}). Initializing first run...")

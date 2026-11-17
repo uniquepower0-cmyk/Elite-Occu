@@ -553,4 +553,31 @@ describe('30-Day Rolling Data Retention & Permanent Cumulative Analytics / VIP P
       expect(sql).not.toMatch(/settings\/vip_cases'\s*;\s*DELETE/i);
     }
   });
+
+  it('never lets future scheduled OR dates push the 30-day retention cutoff forward or evict past history', async () => {
+    const hm = await import('../historyManager.js');
+    const today = '2026-11-17';
+    const pastDates = Array.from({ length: 30 }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 10, 17 - i));
+      return { date: d.toISOString().slice(0, 10) };
+    });
+    const futureDates = [
+      { date: '2026-11-25' },
+      { date: '2026-11-28' },
+      { date: '2026-12-01' },
+    ];
+    const allDesc = [...futureDates.sort((a, b) => b.date.localeCompare(a.date)), ...pastDates];
+
+    expect(hm.getRetentionReferenceDate(allDesc.map(e => e.date), today)).toBe(today);
+
+    const { kept, evicted, refDate, cutoffDate } = hm.partitionRetentionEntries(allDesc, {
+      type: 'or',
+      todayCairoStr: today,
+    });
+
+    expect(refDate).toBe(today);
+    expect(cutoffDate).toBe('2026-10-19');
+    expect(evicted).toHaveLength(0);
+    expect(kept).toHaveLength(33);
+  });
 });

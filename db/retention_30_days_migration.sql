@@ -44,6 +44,8 @@ DECLARE
   v_cutoff_date DATE := v_ref_date - (v_effective_max_days - 1);
   v_cutoff_ts TIMESTAMPTZ := (v_cutoff_date::TEXT || 'T00:00:00Z')::TIMESTAMPTZ;
   v_kept_occ_dates TEXT[];
+  v_kept_or_past_dates TEXT[];
+  v_kept_or_future_dates TEXT[];
   v_kept_or_dates TEXT[];
   v_kept_cl_dates TEXT[];
   v_deleted_rtdb INT := 0;
@@ -113,10 +115,11 @@ BEGIN
     AND jsonb_typeof(n.data) = 'array';
 
   -- ----------------------------------------------------------------------------
-  -- B. Determine Top N (30) Kept OR Dates (>= v_cutoff_date)
+  -- B. Determine Top N (30) Kept OR Past/Today Dates (v_cutoff_date .. v_ref_date)
+  --    plus up to 21 Future Scheduled OR Dates (> v_ref_date) in a separate bucket
   -- ----------------------------------------------------------------------------
   SELECT COALESCE(ARRAY_AGG(d ORDER BY d DESC), ARRAY[]::TEXT[])
-  INTO v_kept_or_dates
+  INTO v_kept_or_past_dates
   FROM (
     SELECT DISTINCT d
     FROM (
@@ -134,9 +137,36 @@ BEGIN
     WHERE d IS NOT NULL
       AND d ~ '^\d{4}-\d{2}-\d{2}$'
       AND d::DATE >= v_cutoff_date
+      AND d::DATE <= v_ref_date
     ORDER BY d DESC
     LIMIT v_effective_max_days
-  ) kept;
+  ) kept_past;
+
+  SELECT COALESCE(ARRAY_AGG(d ORDER BY d ASC), ARRAY[]::TEXT[])
+  INTO v_kept_or_future_dates
+  FROM (
+    SELECT DISTINCT d
+    FROM (
+      SELECT (regexp_match(path, '^history/or/(\d{4}-\d{2}-\d{2})'))[1] AS d
+      FROM public.rtdb_nodes
+      WHERE path LIKE 'history/or/%'
+      UNION
+      SELECT COALESCE(elem->>'date', TRIM(BOTH '"' FROM elem::TEXT)) AS d
+      FROM public.rtdb_nodes n,
+           LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(n.data) = 'array' THEN n.data ELSE '[]'::jsonb END
+           ) AS elem
+      WHERE n.path = 'history/or_index'
+    ) raw_dates
+    WHERE d IS NOT NULL
+      AND d ~ '^\d{4}-\d{2}-\d{2}$'
+      AND d::DATE > v_ref_date
+      AND d::DATE <= v_ref_date + 21
+    ORDER BY d ASC
+    LIMIT 21
+  ) kept_future;
+
+  v_kept_or_dates := v_kept_or_past_dates || v_kept_or_future_dates;
 
   -- Delete OR RTDB history nodes not in v_kept_or_dates
   DELETE FROM public.rtdb_nodes
@@ -148,7 +178,7 @@ BEGIN
   GET DIAGNOSTICS v_cnt = ROW_COUNT;
   v_deleted_rtdb := v_deleted_rtdb + v_cnt;
 
-  -- Trim history/or_index to only kept dates (max 30)
+  -- Trim history/or_index to kept past/today (max 30) + kept future (max 21)
   UPDATE public.rtdb_nodes n
   SET data = COALESCE(
     (
@@ -160,7 +190,6 @@ BEGIN
         ) WITH ORDINALITY AS t(elem, ord)
         WHERE COALESCE(elem->>'date', TRIM(BOTH '"' FROM elem::TEXT)) = ANY(v_kept_or_dates)
         ORDER BY COALESCE(elem->>'date', TRIM(BOTH '"' FROM elem::TEXT)) DESC, ord ASC
-        LIMIT v_effective_max_days
       ) sub
     ),
     '[]'::jsonb
@@ -224,12 +253,13 @@ BEGIN
   --          are NEVER touched.
   -- ----------------------------------------------------------------------------
 
-  -- 1. Delete OR cases older than cutoff date (or evicted from OR history)
+  -- 1. Delete OR cases older than cutoff date (or evicted from past/today OR history); never evict future scheduled dates
   DELETE FROM public.or_cases
   WHERE scheduled_date < v_cutoff_date
      OR (
-       CARDINALITY(v_kept_or_dates) >= v_effective_max_days
-       AND NOT (scheduled_date::TEXT = ANY(v_kept_or_dates))
+       scheduled_date <= v_ref_date
+       AND CARDINALITY(v_kept_or_past_dates) >= v_effective_max_days
+       AND NOT (scheduled_date::TEXT = ANY(v_kept_or_past_dates))
      );
   GET DIAGNOSTICS v_deleted_or_cases = ROW_COUNT;
 

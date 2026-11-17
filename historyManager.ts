@@ -323,6 +323,67 @@ export async function getChangeLogForDate(dateStr: string): Promise<ChangeLogEnt
 }
 
 export const MAX_HISTORY_RETENTION_DAYS = 30;
+export const MAX_FUTURE_OR_DAYS = 21;
+
+/**
+ * Computes the retention reference date anchored to at most today's Cairo date.
+ * Never lets future scheduled OR dates push the 30-day cutoff forward.
+ */
+export function getRetentionReferenceDate(
+  sortedDatesDesc: string[],
+  todayCairoStr?: string
+): string {
+  const today = normalizeToISODate(todayCairoStr || '') || getCairoDateTime().dateStr;
+  const nonFuture = sortedDatesDesc
+    .map(d => normalizeToISODate(d) || d)
+    .filter(d => Boolean(d) && d <= today);
+  return nonFuture[0] || today;
+}
+
+/**
+ * Splits sorted (DESC) entries into kept and evicted using the 30-day rolling window
+ * for past/today dates, while preserving up to MAX_FUTURE_OR_DAYS future OR dates separately.
+ */
+export function partitionRetentionEntries<T extends { date: string }>(
+  sortedEntriesDesc: T[],
+  options?: {
+    type?: 'occupancy' | 'or';
+    referenceDate?: string;
+    maxDays?: number;
+    todayCairoStr?: string;
+  }
+): { kept: T[]; evicted: T[]; refDate: string; cutoffDate: string } {
+  const maxDays = Math.max(1, options?.maxDays ?? MAX_HISTORY_RETENTION_DAYS);
+  const today = normalizeToISODate(options?.todayCairoStr || '') || getCairoDateTime().dateStr;
+  const refDate = options?.referenceDate
+    ? normalizeToISODate(options.referenceDate) || options.referenceDate
+    : getRetentionReferenceDate(sortedEntriesDesc.map(e => e.date), today);
+  const cutoffDate = getRetentionCutoffDate(refDate, maxDays);
+
+  const kept: T[] = [];
+  const evicted: T[] = [];
+  let pastCount = 0;
+  let futureCount = 0;
+
+  for (const item of sortedEntriesDesc) {
+    const itemDate = normalizeToISODate(item.date) || item.date;
+    if (options?.type === 'or' && itemDate > today) {
+      if (futureCount < MAX_FUTURE_OR_DAYS) {
+        kept.push({ ...item, date: itemDate });
+        futureCount++;
+      } else {
+        evicted.push({ ...item, date: itemDate });
+      }
+    } else if (pastCount < maxDays && itemDate >= cutoffDate) {
+      kept.push({ ...item, date: itemDate });
+      pastCount++;
+    } else {
+      evicted.push({ ...item, date: itemDate });
+    }
+  }
+
+  return { kept, evicted, refDate, cutoffDate };
+}
 
 export interface RetentionHooks {
   onBeforeDeleteDate?: (dateStr: string) => Promise<void>;
@@ -411,9 +472,17 @@ export async function getChangeLogDates(): Promise<string[]> {
             .filter(Boolean)
         )
       ).sort((a, b) => b.localeCompare(a));
-      const refDate = normalized[0] || getCairoDateTime().dateStr;
+      const refDate = getRetentionReferenceDate(normalized);
       const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
-      return normalized.filter((d, idx) => idx < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate);
+      let pastCount = 0;
+      return normalized.filter(d => {
+        if (d > getCairoDateTime().dateStr) return false;
+        if (pastCount < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate) {
+          pastCount++;
+          return true;
+        }
+        return false;
+      });
     }
   } catch (err) {
     console.error('[ChangeLog] Failed to fetch changelog dates index:', err);
@@ -439,10 +508,19 @@ async function updateChangeLogIndex(dateStr: string): Promise<void> {
       new Set([normDate, ...dates.map(d => normalizeToISODate(d) || d).filter(Boolean)])
     ).sort((a, b) => b.localeCompare(a));
 
-    const refDate = dates[0] || normDate;
+    const refDate = getRetentionReferenceDate(dates);
     const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
-    const keptDates = dates.filter((d, idx) => idx < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate);
-    const evictedDates = dates.filter((d, idx) => idx >= MAX_HISTORY_RETENTION_DAYS || d < cutoffDate);
+    const keptDates: string[] = [];
+    const evictedDates: string[] = [];
+    let pastCount = 0;
+    for (const d of dates) {
+      if (pastCount < MAX_HISTORY_RETENTION_DAYS && d >= cutoffDate) {
+        keptDates.push(d);
+        pastCount++;
+      } else {
+        evictedDates.push(d);
+      }
+    }
 
     await historySupabase.from('rtdb_nodes').upsert({
       path: 'history/changelog_index',
@@ -1573,21 +1651,12 @@ async function updateHistoryIndex(type: 'occupancy' | 'or', entry: DateIndexEntr
   entries.unshift(entry);
   entries.sort((a, b) => (normalizeToISODate(b.date) || b.date).localeCompare(normalizeToISODate(a.date) || a.date));
 
-  // Enforce 30-day rolling retention cap (both max 30 dates and 30-day calendar window)
-  const newestDate = normalizeToISODate(entries[0]?.date) || normDate;
-  const cutoffDate = getRetentionCutoffDate(newestDate, MAX_HISTORY_RETENTION_DAYS);
-
-  const keptEntries: DateIndexEntry[] = [];
-  const evictedDates: string[] = [];
-
-  entries.forEach((item, idx) => {
-    const itemDate = normalizeToISODate(item.date) || item.date;
-    if (idx < MAX_HISTORY_RETENTION_DAYS && itemDate >= cutoffDate) {
-      keptEntries.push({ ...item, date: itemDate });
-    } else {
-      evictedDates.push(itemDate);
-    }
-  });
+  // Enforce 30-day rolling retention cap for past/today dates, keeping future OR dates separate
+  const { kept: keptEntries, evicted: evictedItems, refDate: newestDate, cutoffDate } = partitionRetentionEntries(
+    entries,
+    { type }
+  );
+  const evictedDates = evictedItems.map(e => normalizeToISODate(e.date) || e.date);
 
   // Save trimmed 30-day index to disk asynchronously
   try {
@@ -1714,31 +1783,30 @@ export async function pruneExpiredHistory(options?: {
   const occEntries = await collectAllDatesForType('occupancy');
   const orEntries = await collectAllDatesForType('or');
 
+  const todayCairo = getCairoDateTime().dateStr;
   const candidateRefDates = [
     options?.referenceDate,
-    occEntries[0]?.date,
-    orEntries[0]?.date,
-    getCairoDateTime().dateStr,
+    getRetentionReferenceDate(occEntries.map(e => e.date), todayCairo),
+    getRetentionReferenceDate(orEntries.map(e => e.date), todayCairo),
+    todayCairo,
   ]
     .map(d => (d ? normalizeToISODate(d) || d : null))
-    .filter(Boolean) as string[];
+    .filter(d => Boolean(d) && (options?.referenceDate ? true : d! <= todayCairo)) as string[];
   candidateRefDates.sort((a, b) => b.localeCompare(a));
 
   const referenceDate = options?.referenceDate
     ? normalizeToISODate(options.referenceDate) || options.referenceDate
-    : candidateRefDates[0] || getCairoDateTime().dateStr;
+    : candidateRefDates[0] || todayCairo;
   const cutoffDate = getRetentionCutoffDate(referenceDate, maxDays);
 
   // 1. Prune Occupancy Dates
-  const keptOcc: DateIndexEntry[] = [];
-  for (let i = 0; i < occEntries.length; i++) {
-    const entry = occEntries[i];
-    if (i < maxDays && entry.date >= cutoffDate) {
-      keptOcc.push(entry);
-    } else {
-      prunedOccupancyDates.push(entry.date);
-    }
-  }
+  const { kept: keptOcc, evicted: evictedOcc } = partitionRetentionEntries(occEntries, {
+    type: 'occupancy',
+    referenceDate,
+    maxDays,
+    todayCairoStr: todayCairo,
+  });
+  for (const e of evictedOcc) prunedOccupancyDates.push(e.date);
 
   for (const oldDate of prunedOccupancyDates) {
     try {
@@ -1764,16 +1832,14 @@ export async function pruneExpiredHistory(options?: {
     } catch (_) {}
   }
 
-  // 2. Prune OR Dates
-  const keptOr: DateIndexEntry[] = [];
-  for (let i = 0; i < orEntries.length; i++) {
-    const entry = orEntries[i];
-    if (i < maxDays && entry.date >= cutoffDate) {
-      keptOr.push(entry);
-    } else {
-      prunedOrDates.push(entry.date);
-    }
-  }
+  // 2. Prune OR Dates (past/today capped at maxDays, future scheduled dates preserved separately)
+  const { kept: keptOr, evicted: evictedOr } = partitionRetentionEntries(orEntries, {
+    type: 'or',
+    referenceDate,
+    maxDays,
+    todayCairoStr: todayCairo,
+  });
+  for (const e of evictedOr) prunedOrDates.push(e.date);
 
   for (const oldDate of prunedOrDates) {
     try {
@@ -1972,18 +2038,11 @@ export async function getAvailableDates(type: 'occupancy' | 'or'): Promise<DateI
   }
 
   const allSorted = Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-  const refDate = allSorted[0]?.date || cairo.dateStr;
-  const cutoffDate = getRetentionCutoffDate(refDate, MAX_HISTORY_RETENTION_DAYS);
-
-  const kept: DateIndexEntry[] = [];
-  const expired: string[] = [];
-  allSorted.forEach((item, idx) => {
-    if (idx < MAX_HISTORY_RETENTION_DAYS && item.date >= cutoffDate) {
-      kept.push(item);
-    } else {
-      expired.push(item.date);
-    }
+  const { kept, evicted: evictedEntries, refDate, cutoffDate } = partitionRetentionEntries(allSorted, {
+    type,
+    todayCairoStr: cairo.dateStr,
   });
+  const expired = evictedEntries.map(e => e.date);
 
   if (expired.length > 0) {
     // Asynchronously evict expired dates discovered during listing

@@ -81,6 +81,7 @@ export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string =
 export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
   const toast = useToast();
   const [dates, setDates] = useState<string[]>([]);
+  const [futureDateSet, setFutureDateSet] = useState<Set<string>>(new Set());
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loadingDates, setLoadingDates] = useState<boolean>(true);
   const [datesError, setDatesError] = useState<string | null>(null);
@@ -116,6 +117,13 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
         const data = await res.json();
         const raw = data.dates || [];
         const available: string[] = raw.map((item: any) => typeof item === 'string' ? item : item.date).filter(Boolean);
+        const fSet = new Set<string>();
+        for (const item of raw) {
+          if (item && typeof item === 'object' && item.isFuture && item.date) {
+            fSet.add(item.date);
+          }
+        }
+        setFutureDateSet(fSet);
         setDates(available);
         if (available.length > 0) {
           if (!selectedDate || !available.includes(selectedDate)) {
@@ -379,17 +387,27 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                 {dates.length === 0 ? (
                   <option value="">No historical dates found</option>
                 ) : (
-                  dates.map((d) => (
-                    <option key={d} value={d}>
-                      {formatDateDDMMYYYY(d)} {d === cairoStatus?.cairoDate || formatDateDDMMYYYY(d) === formatDateDDMMYYYY(cairoStatus?.cairoDate) ? '(Today)' : ''}
-                    </option>
-                  ))
+                  dates.map((d) => {
+                    const isToday = d === cairoStatus?.cairoDate || formatDateDDMMYYYY(d) === formatDateDDMMYYYY(cairoStatus?.cairoDate);
+                    const isFuture = futureDateSet.has(d) || Boolean(cairoStatus?.cairoDate && d > cairoStatus.cairoDate);
+                    return (
+                      <option key={d} value={d}>
+                        {formatDateDDMMYYYY(d)} {isToday ? '(Today)' : isFuture ? '(Scheduled)' : ''}
+                      </option>
+                    );
+                  })
                 )}
               </select>
               <Calendar size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-teal-600 pointer-events-none" />
             </div>
 
-            {selectedDate && (
+            {selectedDate && (futureDateSet.has(selectedDate) || Boolean(cairoStatus?.cairoDate && selectedDate > cairoStatus.cairoDate)) && (
+              <span className="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px] font-bold uppercase tracking-wider">
+                Scheduled (Read-Only)
+              </span>
+            )}
+
+            {selectedDate && !(futureDateSet.has(selectedDate) || Boolean(cairoStatus?.cairoDate && selectedDate > cairoStatus.cairoDate)) && (
               <button
                 type="button"
                 id="delete-or-snapshot-btn"

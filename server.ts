@@ -10340,7 +10340,15 @@ app.get('/api/history/or/dates', async (req, res) => {
         }
       }
     }
-    res.json({ dates });
+    const cairoToday = getCairoDateTime().dateStr;
+    const annotated = dates.map((entry: any) => {
+      const dateStr = typeof entry === 'string' ? entry : entry.date;
+      const isFuture = Boolean(dateStr && dateStr > cairoToday);
+      return typeof entry === 'string'
+        ? { date: dateStr, isFuture }
+        : { ...entry, isFuture };
+    });
+    res.json({ dates: annotated });
   } catch (err: any) {
     console.error('Failed to get OR history dates:', err);
     res.status(500).json({ error: err.message });
