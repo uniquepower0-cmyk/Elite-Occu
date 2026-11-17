@@ -2532,45 +2532,35 @@ def build_or_powerbi_payload(
     end_date: Optional[datetime.date] = None,
 ) -> dict[str, Any]:
     """Constructs the executeSemanticQueryRequest payload for the Power BI OR schedule report.
-    When start_date & end_date are omitted, preserves the exact same-day DateSpan filter.
-    When provided, queries an inclusive date range and includes StartDateTime in the export."""
+    Always filters StartDateTime using explicit Cairo dates (never Power BI UTC Now(), which
+    returns yesterday's list between 00:00 and 01:59 Cairo time).
+    When start_date & end_date are provided, also includes StartDateTime in the exported columns."""
     is_range = start_date is not None and end_date is not None
-    if is_range:
-        assert start_date is not None and end_date is not None
-        start_lit = f"datetime'{start_date.isoformat()}T00:00:00'"
-        end_lit = f"datetime'{end_date.isoformat()}T23:59:59'"
-        date_filter_condition: dict[str, Any] = {
-            "Condition": {
-                "And": {
-                    "Left": {
-                        "Comparison": {
-                            "ComparisonKind": 2,
-                            "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
-                            "Right": {"Literal": {"Value": start_lit}},
-                        }
-                    },
-                    "Right": {
-                        "Comparison": {
-                            "ComparisonKind": 3,
-                            "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
-                            "Right": {"Literal": {"Value": end_lit}},
-                        }
-                    },
-                }
+    eff_start = start_date if start_date is not None else cairo_now.date()
+    eff_end = end_date if end_date is not None else cairo_now.date()
+    start_lit = f"datetime'{eff_start.isoformat()}T00:00:00'"
+    end_lit = f"datetime'{eff_end.isoformat()}T23:59:59'"
+    date_filter_condition: dict[str, Any] = {
+        "Condition": {
+            "And": {
+                "Left": {
+                    "Comparison": {
+                        "ComparisonKind": 2,
+                        "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                        "Right": {"Literal": {"Value": start_lit}},
+                    }
+                },
+                "Right": {
+                    "Comparison": {
+                        "ComparisonKind": 3,
+                        "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
+                        "Right": {"Literal": {"Value": end_lit}},
+                    }
+                },
             }
         }
-        date_label = f"{start_date.month}/{start_date.day}/{start_date.year} - {end_date.month}/{end_date.day}/{end_date.year}"
-    else:
-        date_filter_condition = {
-            "Condition": {
-                "Comparison": {
-                    "ComparisonKind": 0,
-                    "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}},
-                    "Right": {"DateSpan": {"Expression": {"Now": {}}, "TimeUnit": 0}},
-                }
-            }
-        }
-        date_label = f"{cairo_now.month}/{cairo_now.day}/{cairo_now.year} - {cairo_now.month}/{cairo_now.day}/{cairo_now.year}"
+    }
+    date_label = f"{eff_start.month}/{eff_start.day}/{eff_start.year} - {eff_end.month}/{eff_end.day}/{eff_end.year}"
 
     select_cols: list[dict[str, Any]] = [
         {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Surgeon Name"}, "Name": "OperationReservation_soussi.EnglishFullName"},

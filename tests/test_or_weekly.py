@@ -41,11 +41,15 @@ class TestORWeeklySync(unittest.TestCase):
         )
 
     def test_build_or_powerbi_payload_today_vs_range(self):
-        now = datetime.datetime(2026, 11, 17, 10, 0, tzinfo=bridge.CAIRO_TZ)
+        # 00:10 AM Cairo on Nov 18 (still Nov 17 22:10 UTC) must query 2026-11-18 explicitly, never UTC DateSpan(Now)
+        now = datetime.datetime(2026, 11, 18, 0, 10, tzinfo=bridge.CAIRO_TZ)
         today_payload = bridge.build_or_powerbi_payload("1135690937", now)
         q_today = today_payload["executeSemanticQueryRequest"]["queries"][0]["Query"]["Commands"][0]["SemanticQueryDataShapeCommand"]["Query"]
         self.assertEqual(len(q_today["Select"]), 17)
-        self.assertIn("DateSpan", json.dumps(q_today["Where"]))
+        where_today = json.dumps(q_today["Where"])
+        self.assertNotIn("DateSpan", where_today)
+        self.assertIn("datetime'2026-11-18T00:00:00'", where_today)
+        self.assertIn("datetime'2026-11-18T23:59:59'", where_today)
 
         range_payload = bridge.build_or_powerbi_payload(
             "1135690937", now, datetime.date(2026, 11, 18), datetime.date(2026, 11, 24)
