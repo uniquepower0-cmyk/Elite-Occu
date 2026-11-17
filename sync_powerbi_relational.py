@@ -118,6 +118,10 @@ POWERBI_OR_EXPORT_URL: Final[str] = os.getenv(
     "POWERBI_OR_EXPORT_URL",
     "http://10.12.0.11/powerbi/api/explore/reports/c1b018c2-bc1c-4209-9b7d-9d56e0949110/export/xlsx"
 )
+POWERBI_OPD_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_OPD_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/2f80fbba-95b8-4c55-aff1-5be0147ca894/export/xlsx"
+)
 POWERBI_USER: Final[str] = os.getenv("POWERBI_USER", "")
 POWERBI_PASS: Final[str] = os.getenv("POWERBI_PASS", "")
 POWERBI_TIMEOUT: Final[int] = int(os.getenv("POWERBI_TIMEOUT", "90"))
@@ -3483,20 +3487,390 @@ def run_or_sync_job(force: bool = False) -> None:
     publish_standalone_heartbeat()
 
 
+# --- OPD DOCTORS SCHEDULE POWER BI SYNC (STARTUP + DAILY 23:30 CAIRO) ---
+
+OPD_EXCLUDED_PHYSICIANS: Final[list[str]] = [
+    "'Hydrotherapy   Session Room'",
+    "'General Surgery specialist  clinic'",
+    "'Internal medicine Specialist  Clinic'",
+    "'Neurosurgery Specialist  Clinic'",
+    "'Obstetrics and Gynecology specialist  clinic'",
+    "'Orthopedics specialist  clinic'",
+    "'Abokir for Petroleum Checkup'",
+    "'Check up   Brimton'",
+    "'Female Checkup  Program'",
+    "'Female Checkup Program 50+'",
+    "'GIG Egypt Check up'",
+    "'Male Checkup  Program'",
+    "'Male Checkup Program 40+'",
+    "'Lab   Reservation'",
+    "'Male Checkup Program 50+'",
+    "'Online   Consultation'",
+    "'GCC   CLINIC'",
+    "'Home   Care'",
+    "'Mother''s day offer'",
+    "'Pediatrics specialist  clinic'",
+    "'Physiotherapy   Session Room 1'",
+    "'فحص   عجيبه'",
+    "'Free  Mummy  Club'",
+]
+
+_last_opd_sync_ts: float = 0.0
+_last_opd_hash: str = ""
+_last_opd_target_date: str = ""
+_last_opd_2330_done_date: str = ""
+
+
+def get_opd_powerbi_model_id(auth: Optional[Any] = None) -> str:
+    """Dynamically retrieves the active OPD report modelId from modelsAndExploration, falling back to 235524464."""
+    fallback_id = "235524464"
+    try:
+        report_base = POWERBI_OPD_EXPORT_URL.rsplit("/export/", 1)[0]
+        meta_url = f"{report_base}/modelsAndExploration"
+        resp = requests.get(meta_url, auth=auth, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = data.get("models", [])
+            if models and "id" in models[0]:
+                return str(models[0]["id"])
+    except Exception as e:
+        log(f"Notice: OPD dynamic modelId discovery fallback to {fallback_id}: {e}", level="warning")
+    return fallback_id
+
+
+def build_opd_powerbi_payload(model_id: str, target_date: datetime.date) -> dict[str, Any]:
+    """Constructs the 12-column tableEx SemanticQuery payload for the OPD Doctors Sheet for target_date."""
+    return {
+        "exportDataType": 0,
+        "executeSemanticQueryRequest": {
+            "version": "1.0.0",
+            "queries": [
+                {
+                    "Query": {
+                        "Commands": [
+                            {
+                                "SemanticQueryDataShapeCommand": {
+                                    "Query": {
+                                        "Version": 2,
+                                        "From": [
+                                            {"Name": "r", "Entity": "ResourceSchedule_Soussi", "Type": 0},
+                                            {"Name": "f1", "Entity": "FloorName_Marwan", "Type": 0},
+                                        ],
+                                        "Select": [
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "End time"}, "Name": "ResourceSchedule_Soussi.End time"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Physicians"}, "Name": "ResourceSchedule_Soussi.EnglishFullName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Specialty"}, "Name": "ResourceSchedule_Soussi.Specialty"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Specialities"}, "Name": "ResourceSchedule_Soussi.Specialities"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Physician NAme"}, "Name": "ResourceSchedule_Soussi.Physician NAme"},
+                                            {"Aggregation": {"Expression": {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "MaxOccupancy"}}, "Function": 0}, "Name": "Sum(ResourceSchedule_Soussi.MaxOccupancy)"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "FLSupervisoryLevelName"}, "Name": "ResourceSchedule_Soussi.FLSupervisoryLevelName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Start time"}, "Name": "ResourceSchedule_Soussi.Start time"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "WeekName"}, "Name": "ResourceSchedule_Soussi.WeekName"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "day"}, "Name": "Sum(ResourceSchedule_Soussi.day)"},
+                                            {"Measure": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Schedules"}, "Name": "ResourceSchedule_Soussi.Schedules"},
+                                            {"Column": {"Expression": {"SourceRef": {"Source": "f1"}}, "Property": "Floor name"}, "Name": "FloorName_Marwan.Floor name"},
+                                        ],
+                                        "Where": [
+                                            {
+                                                "Condition": {
+                                                    "In": {
+                                                        "Expressions": [
+                                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Year"}},
+                                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "month"}},
+                                                            {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "day"}},
+                                                        ],
+                                                        "Values": [[
+                                                            {"Literal": {"Value": f"{target_date.year}L"}},
+                                                            {"Literal": {"Value": f"{target_date.month}L"}},
+                                                            {"Literal": {"Value": f"{target_date.day}L"}},
+                                                        ]],
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "Condition": {
+                                                    "Not": {
+                                                        "Expression": {
+                                                            "In": {
+                                                                "Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "Physicians"}}],
+                                                                "Values": [[{"Literal": {"Value": v}}] for v in OPD_EXCLUDED_PHYSICIANS],
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        ],
+                                        "OrderBy": [
+                                            {"Direction": 1, "Expression": {"Column": {"Expression": {"SourceRef": {"Source": "r"}}, "Property": "End time"}}}
+                                        ],
+                                    },
+                                    "Binding": {
+                                        "Primary": {"Groupings": [{"Projections": list(range(12)), "Subtotal": 0}]},
+                                        "DataReduction": {"Primary": {"Top": {"Count": 1000000}}, "Secondary": {"Top": {"Count": 100}}},
+                                        "Version": 1,
+                                    },
+                                }
+                            },
+                            {
+                                "ExportDataCommand": {
+                                    "Columns": [
+                                        {"QueryName": "Sum(ResourceSchedule_Soussi.day)", "Name": "day"},
+                                        {"QueryName": "ResourceSchedule_Soussi.WeekName", "Name": "WeekName"},
+                                        {"QueryName": "ResourceSchedule_Soussi.Start time", "Name": "Start time"},
+                                        {"QueryName": "ResourceSchedule_Soussi.Specialty", "Name": "Specialty"},
+                                        {"QueryName": "ResourceSchedule_Soussi.EnglishFullName", "Name": "Physicians"},
+                                        {"QueryName": "FloorName_Marwan.Floor name", "Name": "Floor name"},
+                                        {"QueryName": "ResourceSchedule_Soussi.FLSupervisoryLevelName", "Name": "FLSupervisoryLevelName"},
+                                        {"QueryName": "Sum(ResourceSchedule_Soussi.MaxOccupancy)", "Name": "Sum of MaxOccupancy"},
+                                        {"QueryName": "ResourceSchedule_Soussi.Physician NAme", "Name": "Physician NAme"},
+                                        {"QueryName": "ResourceSchedule_Soussi.Specialities", "Name": "Specialities"},
+                                        {"QueryName": "ResourceSchedule_Soussi.End time", "Name": "End time"},
+                                        {"QueryName": "ResourceSchedule_Soussi.Schedules", "Name": "Schedules"},
+                                    ],
+                                    "Ordering": [9, 8, 7, 2, 1, 11, 6, 5, 4, 3, 0, 10],
+                                    "FiltersDescription": f"Included (1) {target_date.year} (Year) + {target_date.month} (month) + {target_date.day} (day)",
+                                }
+                            },
+                        ]
+                    }
+                }
+            ],
+            "cancelQueries": [],
+            "modelId": model_id,
+            "userPreferredLocale": "en-US",
+        },
+    }
+
+
+def parse_powerbi_opd_excel(excel_bytes: bytes, target_date_str: str) -> list[dict[str, Any]]:
+    """Parses the 12-column Power BI OPD Doctors Sheet Excel export into normalized clinic session dicts."""
+    df = pd.read_excel(io.BytesIO(excel_bytes), header=None)
+    if df.empty:
+        return []
+
+    header_row_idx = -1
+    for r_idx in range(min(10, len(df))):
+        row_strs = [
+            str(x).lower().strip()
+            for x in df.iloc[r_idx].values
+            if pd.notna(x) and "\n" not in str(x) and "applied filters" not in str(x).lower()
+        ]
+        if len(row_strs) >= 4 and any("physicians" in s or "specialty" in s or "start time" in s for s in row_strs):
+            header_row_idx = r_idx
+            break
+
+    if header_row_idx < 0:
+        return []
+
+    headers = [str(x).strip().lower() if pd.notna(x) else "" for x in df.iloc[header_row_idx].values]
+
+    def find_col(names: list[str], fallback: int = -1) -> int:
+        for n in names:
+            nl = n.lower()
+            for idx, h in enumerate(headers):
+                if h == nl:
+                    return idx
+        for n in names:
+            nl = n.lower()
+            if len(nl) <= 3:
+                continue
+            for idx, h in enumerate(headers):
+                if nl in h:
+                    return idx
+        return fallback
+
+    idx_day = find_col(["day"], 0)
+    idx_week = find_col(["weekname", "week name"], 1)
+    idx_start = find_col(["start time", "starttime"], 2)
+    idx_specialty = find_col(["specialty"], 3)
+    idx_phys_en = find_col(["physicians", "englishfullname", "physician en"], 4)
+    idx_floor = find_col(["floor name", "floor"], 5)
+    idx_level = find_col(["flsupervisorylevelname", "supervisory level", "level"], 6)
+    idx_max_occ = find_col(["sum of maxoccupancy", "maxoccupancy", "max occupancy"], 7)
+    idx_phys_ar = find_col(["physician name", "physician_name"], 8)
+    idx_specialities = find_col(["specialities", "parent specialty"], 9)
+    idx_end = find_col(["end time", "endtime"], 10)
+    idx_schedules = find_col(["schedules"], 11)
+
+    # Disambiguate "Physician NAme" (Arabic) vs "Physicians" (English)
+    for idx, h in enumerate(headers):
+        if h == "physician name":
+            idx_phys_ar = idx
+        elif h == "physicians":
+            idx_phys_en = idx
+        elif h == "specialty":
+            idx_specialty = idx
+        elif h == "specialities":
+            idx_specialities = idx
+
+    def cell_str(row_vals: Any, idx: int) -> str:
+        if idx < 0 or idx >= len(row_vals):
+            return ""
+        v = row_vals[idx]
+        if v is None or pd.isna(v):
+            return ""
+        s = re.sub(r"\s+", " ", str(v).replace("\xa0", " ")).strip()
+        if s.lower() in ("nan", "null", "none"):
+            return ""
+        return s
+
+    def cell_int(row_vals: Any, idx: int, default: int = 0) -> int:
+        if idx < 0 or idx >= len(row_vals):
+            return default
+        v = row_vals[idx]
+        if v is None or pd.isna(v):
+            return default
+        try:
+            return int(float(v))
+        except (ValueError, TypeError):
+            return default
+
+    sessions: list[dict[str, Any]] = []
+    for r_idx in range(header_row_idx + 1, len(df)):
+        row_vals = df.iloc[r_idx].values
+        phys_en = cell_str(row_vals, idx_phys_en)
+        phys_ar = cell_str(row_vals, idx_phys_ar)
+        specialty = cell_str(row_vals, idx_specialty)
+        specialities = cell_str(row_vals, idx_specialities)
+        if not phys_en and not phys_ar and not specialty:
+            continue
+        if phys_en.lower() in ("physicians", "total", "applied filters:"):
+            continue
+
+        start_raw = row_vals[idx_start] if 0 <= idx_start < len(row_vals) else ""
+        end_raw = row_vals[idx_end] if 0 <= idx_end < len(row_vals) else ""
+
+        sessions.append({
+            "serial": str(len(sessions) + 1),
+            "day": cell_int(row_vals, idx_day, 0),
+            "weekName": cell_str(row_vals, idx_week),
+            "startTime": format_time_12h(start_raw) or cell_str(row_vals, idx_start),
+            "endTime": format_time_12h(end_raw) or cell_str(row_vals, idx_end),
+            "specialty": specialty or specialities,
+            "specialities": specialities or specialty,
+            "physicianEn": phys_en,
+            "physicianAr": phys_ar,
+            "floorName": cell_str(row_vals, idx_floor),
+            "supervisoryLevel": cell_str(row_vals, idx_level),
+            "maxOccupancy": cell_int(row_vals, idx_max_occ, 0),
+            "schedules": cell_int(row_vals, idx_schedules, 1),
+            "opdDate": target_date_str,
+        })
+    return sessions
+
+
+def fetch_powerbi_opd_and_sync(
+    target_date: Optional[datetime.date] = None,
+    force: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Fetches OPD Doctors Sheet for target_date (defaults to Cairo today) and syncs to Supabase state/opd_list & history/opd/{date}."""
+    global _last_opd_sync_ts, _last_opd_hash, _last_opd_target_date
+    try:
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now_iso = now_dt.isoformat()
+        cairo_now = get_cairo_now()
+        t_date = target_date or cairo_now.date()
+        target_date_str = t_date.isoformat()
+
+        log(f"[OPD Sync] Fetching OPD Doctors Sheet from Power BI for {target_date_str}...")
+        auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+        opd_model_id = get_opd_powerbi_model_id(auth=auth)
+        opd_payload = build_opd_powerbi_payload(opd_model_id, t_date)
+
+        resp = requests.post(
+            POWERBI_OPD_EXPORT_URL,
+            json=opd_payload,
+            auth=auth,
+            timeout=(10, min(45, POWERBI_TIMEOUT)),
+        )
+        resp.raise_for_status()
+
+        opd_sessions = parse_powerbi_opd_excel(resp.content, target_date_str)
+        _last_opd_sync_ts = time.time()
+        current_hash = hashlib.sha256(
+            json.dumps(opd_sessions, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        if dry_run:
+            log(f"[OPD Dry-Run] Parsed {len(opd_sessions)} clinic sessions for {target_date_str}.")
+            return True
+
+        if not force and current_hash == _last_opd_hash and target_date_str == _last_opd_target_date:
+            log(f"[OPD Sync Dedup] OPD schedule ({len(opd_sessions)} clinics) unchanged; skipping write.")
+            return True
+
+        if not SUPABASE_KEY:
+            log(f"[OPD Sync] Parsed {len(opd_sessions)} OPD clinics. SUPABASE_KEY not set; skipping DB write.", level="warning")
+            return True
+
+        session = get_supabase_session()
+        if not force:
+            try:
+                cur_res = session.get(
+                    f"{SUPABASE_REST_URL}?path=eq.state/opd_list&select=data",
+                    timeout=10,
+                    verify=SUPABASE_SSL_VERIFY,
+                )
+                if cur_res.status_code == 200 and cur_res.json():
+                    cur_data = cur_res.json()[0].get("data") or {}
+                    if isinstance(cur_data, dict) and cur_data.get("hash") == current_hash and cur_data.get("opdDate") == target_date_str:
+                        _last_opd_hash = current_hash
+                        _last_opd_target_date = target_date_str
+                        log(f"[OPD Sync Dedup] OPD schedule ({len(opd_sessions)} clinics) matches persisted hash; skipping write.")
+                        return True
+            except Exception:
+                pass
+
+        opd_payload_node = {
+            "items": opd_sessions,
+            "opdDate": target_date_str,
+            "hash": current_hash,
+            "source": "powerbi",
+            "updatedAt": now_iso,
+        }
+        opd_nodes = [
+            {"path": "state/opd_list", "data": opd_payload_node, "updated_at": now_iso},
+            {"path": f"history/opd/{target_date_str}", "data": opd_payload_node, "updated_at": now_iso},
+        ]
+        sb_resp = session.post(SUPABASE_REST_URL, json=opd_nodes, timeout=20, verify=SUPABASE_SSL_VERIFY)
+        if sb_resp.status_code not in (200, 201, 204):
+            log(f"[OPD Sync] Supabase upsert returned {sb_resp.status_code}: {sb_resp.text}", level="warning")
+            return False
+
+        _last_opd_hash = current_hash
+        _last_opd_target_date = target_date_str
+        log(f"[OPD Sync] Successfully committed {len(opd_sessions)} OPD clinic sessions for {target_date_str}.")
+        return True
+    except Exception as e:
+        log(f"[OPD Sync] Error fetching/syncing OPD Doctors Sheet: {e}", level="error")
+        return False
+
+
 # --- SCHEDULING & TIMEZONE ROLLOVER ORCHESTRATION ---
 
 last_cairo_seen_date: str = ""
 
 
 def check_cairo_day_rollover() -> None:
-    """Detects midnight and 23:59 EOD rollovers in Cairo timezone."""
-    global last_cairo_seen_date
+    """Detects midnight, 23:30 OPD tomorrow-fetch, and 23:59 EOD rollovers in Cairo timezone."""
+    global last_cairo_seen_date, _last_opd_2330_done_date
     now_cairo = get_cairo_now()
     today_str = now_cairo.strftime("%Y-%m-%d")
 
     if not last_cairo_seen_date:
         last_cairo_seen_date = today_str
         return
+
+    # Daily 11:30 PM (23:30) Cairo trigger: fetch tomorrow's OPD Doctors Sheet
+    if now_cairo.hour == 23 and now_cairo.minute >= 30 and _last_opd_2330_done_date != today_str:
+        _last_opd_2330_done_date = today_str
+        tomorrow_date = now_cairo.date() + datetime.timedelta(days=1)
+        log(f"[OPD 23:30 Trigger] 23:30 Cairo reached ({today_str} {now_cairo.strftime('%H:%M')}). Fetching tomorrow's OPD Doctors Sheet ({tomorrow_date.isoformat()})...")
+        if not _is_paused:
+            fortinet_reconnect()
+            fetch_powerbi_opd_and_sync(target_date=tomorrow_date, force=True)
+            publish_standalone_heartbeat()
 
     clean_last_seen = last_cairo_seen_date.replace("_1159_done", "")
     if today_str != clean_last_seen:
@@ -3786,6 +4160,10 @@ def run_sync_job(force: bool = False) -> None:
     fetch_powerbi_and_sync()
     if force or _last_or_sync_ts == 0.0 or (time.time() - _last_or_sync_ts) >= 7200.0:
         run_or_full_cycle(force=force)
+    if _last_opd_sync_ts == 0.0 or force:
+        cairo_now = get_cairo_now()
+        opd_target = cairo_now.date() + datetime.timedelta(days=1) if (cairo_now.hour == 23 and cairo_now.minute >= 30) else cairo_now.date()
+        fetch_powerbi_opd_and_sync(target_date=opd_target, force=force)
     publish_standalone_heartbeat()
 
 
@@ -3802,6 +4180,15 @@ if __name__ == "__main__":
     force_now = "--force" in sys.argv or os.getenv("FORCE_SYNC_NOW", "").strip() == "1"
     run_once = "--once" in sys.argv
     or_weekly_dry_run = "--or-weekly-dry-run" in sys.argv
+    opd_dry_run = "--opd-dry-run" in sys.argv
+    opd_sync_only = "--opd-sync-only" in sys.argv
+
+    if opd_dry_run or opd_sync_only:
+        cairo_now = get_cairo_now()
+        opd_target = cairo_now.date() + datetime.timedelta(days=1) if (cairo_now.hour == 23 and cairo_now.minute >= 30) else cairo_now.date()
+        fortinet_reconnect()
+        fetch_powerbi_opd_and_sync(target_date=opd_target, force=True, dry_run=opd_dry_run)
+        sys.exit(0)
 
     if or_weekly_dry_run:
         log("[OR Future Dry-Run] Running read-only future OR weekly reconciliation check...")

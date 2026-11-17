@@ -44,6 +44,14 @@ import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
 import { SyncSupervisor } from './server/syncSupervisor.js';
+import {
+  parseOPDDoctorsExcel,
+  getOPDSpecialtyStats,
+  addRefinedOPDScheduleSheet,
+  addRefinedOPDTimelineSheet,
+  addOPDHousingSheet,
+  type OPDClinicSession,
+} from './server/opdLogic.js';
 
 process.env.DOTENV_CONFIG_QUIET = 'true';
 dotenv.config({ quiet: true });
@@ -312,6 +320,8 @@ let cumulativeMedicalPlans: any[] = [];
 let cumulativeCompanionStatus: any[] = []; 
 let cumulativeLOS: any[] = []; 
 let cumulativeORList: any[] = []; 
+let cumulativeOPDList: OPDClinicSession[] = [];
+let opdListDate: string = '';
 let cumulativeTransfers: any[] = [];
 let patientRoomRegistry: Record<string, { mrn?: string; name: string; lastRoom: string; physician?: string; contractor?: string; date?: string }> = {};
 let vipCasesText = "";
@@ -3097,6 +3107,14 @@ async function executeLoadData(force = false) {
         const orData = stateMap['state/or_list'];
         const parsedOR = parseMaybeJson(orData.items || orData);
         if (Array.isArray(parsedOR)) cumulativeORList = parsedOR;
+      }
+
+      // 11b. OPD Doctors List
+      if (stateMap['state/opd_list']) {
+        const opdData = stateMap['state/opd_list'];
+        const parsedOPD = parseMaybeJson(opdData.items || opdData);
+        if (Array.isArray(parsedOPD)) cumulativeOPDList = parsedOPD;
+        if (opdData.opdDate) opdListDate = String(opdData.opdDate);
       }
 
       // 12. Registry
@@ -8788,6 +8806,9 @@ app.get('/api/occupancy/data', async (req, res) => {
       hasORList: (cumulativeORList || []).length > 0,
       orListCount: (cumulativeORList || []).length,
       orList: enrichedOrList,
+      hasOPDList: (cumulativeOPDList || []).length > 0,
+      opdListDate,
+      opdList: cumulativeOPDList,
       overList: [],
       transfers: cleanTransfers,
       transfersCount: cleanTransfers.length,
@@ -8821,6 +8842,9 @@ app.get('/api/occupancy/data', async (req, res) => {
     hasORList: (cumulativeORList || []).length > 0,
     orListCount: (cumulativeORList || []).length,
     orList: enrichedOrList,
+    hasOPDList: (cumulativeOPDList || []).length > 0,
+    opdListDate,
+    opdList: cumulativeOPDList,
     overList: getOverListPatients(hospitalData, cumulativeORList),
     transfers: cleanTransfers,
     transfersCount: cleanTransfers.length,
@@ -15629,6 +15653,139 @@ app.get('/api/reports/or_over_list_refined', async (req, res) => {
     if (!res.writableEnded) res.end();
   } catch (error: any) {
     console.error('Refined Over List Report Error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── OPD Status Endpoints & 3 Downloadable Sheets ────────────────────────────
+
+app.get('/api/opd/data', async (_req, res) => {
+  if (!isServerHydrated) {
+    try {
+      await loadData();
+    } catch (_) {}
+  }
+  const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+  res.json({
+    opdDate: activeDate,
+    items: cumulativeOPDList,
+    specialtyStats: getOPDSpecialtyStats(cumulativeOPDList),
+    totalClinics: cumulativeOPDList.length,
+  });
+});
+
+app.post('/api/opd/sync', async (_req, res) => {
+  try {
+    await loadData(true);
+    const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+    res.json({
+      success: true,
+      opdDate: activeDate,
+      items: cumulativeOPDList,
+      specialtyStats: getOPDSpecialtyStats(cumulativeOPDList),
+      totalClinics: cumulativeOPDList.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to sync OPD data' });
+  }
+});
+
+app.post('/api/upload-opd-list', handleUploadSingle, async (req: any, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No OPD doctors Sheet file uploaded.' });
+    }
+    const cairoNow = getCairoDateTime();
+    const parsed = parseOPDDoctorsExcel(req.file.buffer, cairoNow.dateStr);
+    if (!parsed.items || parsed.items.length === 0) {
+      return res.status(400).json({ error: 'Could not find valid OPD clinic rows in the uploaded file.' });
+    }
+
+    const activeDate = parsed.opdDate || cairoNow.dateStr;
+    cumulativeOPDList = parsed.items;
+    opdListDate = activeDate;
+
+    const nowIso = new Date().toISOString();
+    const nodeData = {
+      items: parsed.items,
+      opdDate: activeDate,
+      source: 'manual',
+      updatedAt: nowIso,
+    };
+
+    inMemoryStateMap['state/opd_list'] = nodeData;
+    inMemoryNodeTimestamps['state/opd_list'] = nowIso;
+
+    if (supabaseAdmin) {
+      await supabaseAdmin.from('rtdb_nodes').upsert([
+        { path: 'state/opd_list', data: nodeData, updated_at: nowIso },
+        { path: `history/opd/${activeDate}`, data: nodeData, updated_at: nowIso },
+      ]);
+    }
+
+    res.json({
+      success: true,
+      opdDate: activeDate,
+      items: parsed.items,
+      specialtyStats: getOPDSpecialtyStats(parsed.items),
+      totalClinics: parsed.items.length,
+    });
+  } catch (err: any) {
+    console.error('[Upload OPD] Error:', err);
+    res.status(500).json({ error: err?.message || 'Failed to parse OPD doctors Sheet' });
+  }
+});
+
+app.get('/api/reports/opd_refined', async (_req, res) => {
+  if (!isServerHydrated) {
+    try { await loadData(); } catch (_) {}
+  }
+  const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await addRefinedOPDScheduleSheet(workbook, cumulativeOPDList, activeDate, applyRefinedHeader);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=OPD_Doctors_Schedule_${activeDate}.xlsx`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('Refined OPD Schedule Report Error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reports/opd_timeline', async (_req, res) => {
+  if (!isServerHydrated) {
+    try { await loadData(); } catch (_) {}
+  }
+  const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await addRefinedOPDTimelineSheet(workbook, cumulativeOPDList, activeDate, applyRefinedHeader);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=OPD_Timeline_${activeDate}.xlsx`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('Refined OPD Timeline Report Error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reports/opd_housing', async (_req, res) => {
+  if (!isServerHydrated) {
+    try { await loadData(); } catch (_) {}
+  }
+  const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+  try {
+    const workbook = new ExcelJS.Workbook();
+    addOPDHousingSheet(workbook, cumulativeOPDList, activeDate);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=OPD_Housing_${activeDate}.xlsx`);
+    await workbook.xlsx.write(res);
+    if (!res.writableEnded) res.end();
+  } catch (error: any) {
+    console.error('OPD Housing Report Error:', error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });

@@ -84,6 +84,7 @@ import {
 const PatientTransfersTable = React.lazy(() => import('./components/PatientTransfersTable').then(m => ({ default: m.PatientTransfersTable })));
 const OccupancyHistoryView = React.lazy(() => import('./components/OccupancyHistoryView').then(m => ({ default: m.OccupancyHistoryView })));
 const ORHistoryView = React.lazy(() => import('./components/ORHistoryView').then(m => ({ default: m.ORHistoryView })));
+const OPDStatusView = React.lazy(() => import('./components/OPDStatusView').then(m => ({ default: m.OPDStatusView })));
 const AuditLogsView = React.lazy(() => import('./components/AuditLogsView'));
 const MaintenanceView = React.lazy(() => import('./components/MaintenanceView'));
 const MedicalDirectorView = React.lazy(() => import('./components/MedicalDirectorView').then(m => ({ default: m.MedicalDirectorView })));
@@ -149,7 +150,7 @@ const ViewLoadingFallback = () => (
   </div>
 );
 
-type View = 'dashboard' | 'patients' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
+type View = 'dashboard' | 'patients' | 'opd' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured';
 
@@ -517,6 +518,8 @@ export default function App() {
   const [orListCount, setOrListCount] = useState(0);
   const [orList, setOrList] = useState<any[]>([]);
   const [overList, setOverList] = useState<any[]>([]);
+  const [opdList, setOpdList] = useState<any[]>([]);
+  const [opdListDate, setOpdListDate] = useState<string>('');
   const [rawOccupancyRows, setRawOccupancyRows] = useState<any[][]>([]);
   const [dashboardTab, setDashboardTab] = useState<'hospital' | 'or-list'>('hospital');
   const [hoveredPatient, setHoveredPatient] = useState<any | null>(null);
@@ -1412,6 +1415,8 @@ export default function App() {
       setOrListCount(data.orListCount || 0);
       setOrList(data.orList || []);
       setOverList(data.overList || []);
+      if (Array.isArray(data.opdList)) setOpdList(data.opdList);
+      if (data.opdListDate) setOpdListDate(String(data.opdListDate));
       if (data.vipCasesText !== undefined && !isVipFocusedRef.current) {
         const incomingVip = String(data.vipCasesText || '');
         let localSavedVip = '';
@@ -2960,6 +2965,7 @@ export default function App() {
       { id: 'nav-dm', label: 'Go to Duty Manager', category: 'Navigation', onSelect: () => setCurrentView('duty-manager') },
       { id: 'nav-mohanad', label: "Go to Mohanad's Sheets", category: 'Navigation', keywords: 'vip transfers downloads', onSelect: () => { setCurrentView('mohanad-sheets'); setMohanadSubTab('downloads'); } },
       { id: 'nav-occ-hist', label: 'Go to Occupancy History (11:59 PM)', category: 'Navigation', onSelect: () => setCurrentView('occupancy-history') },
+      { id: 'nav-opd', label: 'Go to OPD Status', category: 'Navigation', onSelect: () => setCurrentView('opd') },
       { id: 'nav-or-hist', label: 'Go to OR Dashboard History', category: 'Navigation', onSelect: () => setCurrentView('or-history') },
       { id: 'act-sync', label: 'Sync Now with Database', category: 'Action', keywords: 'refresh reload', icon: <RefreshCw className="w-4 h-4" />, onSelect: () => { fetchData({ force: true }); setOccupancyHistoryRefreshKey(k => k + 1); } },
       { id: 'act-copy-vip', label: 'Copy Formatted VIP Cases', category: 'Action', icon: <Crown className="w-4 h-4" />, onSelect: handleCopyFormattedVips },
@@ -3234,6 +3240,13 @@ export default function App() {
           <div className="pt-2 border-t border-white/10">
             <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">History & Archives</h3>
             <nav className="space-y-1.5">
+              <NavItem 
+                active={currentView === 'opd'} 
+                onClick={() => handleNav('opd')}
+                icon={<Stethoscope />}
+                label="OPD Status"
+                badge={opdList.length > 0 ? `${opdList.length}` : 'OPD'}
+              />
               <NavItem 
                 active={currentView === 'occupancy-history'} 
                 onClick={() => handleNav('occupancy-history')}
@@ -5321,7 +5334,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {(currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
+            {(currentView === 'opd' || currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
               <motion.div 
                 key="role-workflows"
                 initial={{ opacity: 0, y: 10 }}
@@ -5855,6 +5868,21 @@ export default function App() {
                   </section>
                 )}
 
+
+                {/* Section: OPD Status */}
+                {currentView === 'opd' && (
+                  <section className="space-y-6 animate-fade-in">
+                    <ErrorBoundary
+                      fallbackTitle="OPD Status Unavailable"
+                      fallbackSubtitle="Could not load OPD Status view. Check network and retry."
+                      onReset={() => setCurrentView('opd')}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <OPDStatusView initialItems={opdList} initialDate={opdListDate} />
+                      </React.Suspense>
+                    </ErrorBoundary>
+                  </section>
+                )}
 
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
