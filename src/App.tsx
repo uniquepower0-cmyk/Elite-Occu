@@ -41,7 +41,8 @@ import {
   AlertTriangle,
   TrendingUp,
   Command,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Stethoscope
 } from 'lucide-react';
 import { 
   supabase, 
