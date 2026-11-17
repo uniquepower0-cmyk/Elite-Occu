@@ -127,7 +127,11 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
         setDates(available);
         if (available.length > 0) {
           if (!selectedDate || !available.includes(selectedDate)) {
-            setSelectedDate(available[0]);
+            const todayStr = cairoStatus?.cairoDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+            const preferred = available.includes(todayStr)
+              ? todayStr
+              : (available.find(d => d <= todayStr && !fSet.has(d)) || available[0]);
+            setSelectedDate(preferred);
           }
         } else {
           setSelectedDate('');

@@ -9883,15 +9883,50 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     // 6. Persist clean state to disk and Supabase cloud database
     await saveData();
 
-    // 7. Explicitly ensure state/or_list node is updated to empty in database
+    // 7. Preserve new-day OR list if already synced by Python, or auto-promote pre-fetched future OR list for newDayDateStr
     try {
-      await supabaseAdmin.from('rtdb_nodes').upsert({
-        path: 'state/or_list',
-        data: { items: [] },
-        updated_at: new Date().toISOString()
-      });
+      let promotedOrItems: any[] | null = null;
+      if (supabaseAdmin) {
+        const { data: existingOrNode } = await supabaseAdmin
+          .from('rtdb_nodes')
+          .select('data')
+          .eq('path', 'state/or_list')
+          .maybeSingle();
+        const cloudItems = existingOrNode?.data?.items;
+        if (Array.isArray(cloudItems) && cloudItems.length > 0) {
+          const firstDate = normalizeToISODate(cloudItems[0]?.orListDate || '') || '';
+          if (firstDate === newDayDateStr || firstDate > targetDate) {
+            promotedOrItems = cloudItems;
+            console.log(`[Daily Rollover] Preserved ${cloudItems.length} already-synced OR cases for ${newDayDateStr} in state/or_list.`);
+          }
+        }
+      }
+
+      if (!promotedOrItems) {
+        const preFetchedSnap = await getORSnapshot(newDayDateStr);
+        if (preFetchedSnap && Array.isArray(preFetchedSnap.orList) && preFetchedSnap.orList.length > 0) {
+          promotedOrItems = preFetchedSnap.orList;
+          console.log(`[Daily Rollover] Auto-promoted ${promotedOrItems.length} pre-fetched OR cases from history/or/${newDayDateStr} to live OR tab.`);
+        }
+      }
+
+      if (promotedOrItems && promotedOrItems.length > 0) {
+        cumulativeORList = promotedOrItems;
+        await supabaseAdmin.from('rtdb_nodes').upsert({
+          path: 'state/or_list',
+          data: { items: promotedOrItems },
+          updated_at: new Date().toISOString()
+        });
+      } else {
+        cumulativeORList = [];
+        await supabaseAdmin.from('rtdb_nodes').upsert({
+          path: 'state/or_list',
+          data: { items: [] },
+          updated_at: new Date().toISOString()
+        });
+      }
     } catch (orClearErr) {
-      console.warn('[Daily Rollover] Notice clearing state/or_list in database:', orClearErr);
+      console.warn('[Daily Rollover] Notice updating state/or_list in database:', orClearErr);
     }
 
     // 8. New Day Initialization: Do NOT write an empty snapshot file for newDayDateStr here.

@@ -3141,8 +3141,25 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
             and current_or_hash == _last_synced_or_hash
             and cairo_date_str == _last_synced_or_cairo_date
         ):
-            log(f"[OR Sync Dedup] OR schedule ({len(or_cases)} cases) unchanged since last sync; skipping redundant upsert.")
-            return True
+            # Self-heal if state/or_list in Supabase was cleared (e.g., by a rollover) while cases exist
+            should_skip = True
+            if SUPABASE_KEY and len(or_cases) > 0:
+                try:
+                    cur_or_res = session.get(
+                        f"{SUPABASE_REST_URL}?path=eq.state/or_list&select=data",
+                        timeout=8,
+                        verify=SUPABASE_SSL_VERIFY,
+                    )
+                    if cur_or_res.status_code == 200 and cur_or_res.json():
+                        cur_items = (cur_or_res.json()[0].get("data") or {}).get("items") or []
+                        if len(cur_items) == 0:
+                            should_skip = False
+                            log("[OR Sync Self-Heal] state/or_list in Supabase is empty; restoring today's OR list.")
+                except Exception:
+                    pass
+            if should_skip:
+                log(f"[OR Sync Dedup] OR schedule ({len(or_cases)} cases) unchanged since last sync; skipping redundant upsert.")
+                return True
 
         if not SUPABASE_KEY:
             log(f"[OR Sync] Parsed {len(or_cases)} OR cases (12-hour format). SUPABASE_KEY not set; skipping DB write.", level="warning")
@@ -3467,11 +3484,12 @@ def fetch_powerbi_or_future_and_sync(force: bool = False, dry_run: bool = False)
         return False
 
 
-def run_or_full_cycle(force: bool = False) -> bool:
+def run_or_full_cycle(force: bool = False, force_future: Optional[bool] = None) -> bool:
     """Runs today's live OR sync first, then future weekly OR history reconciliation (non-fatal)."""
     today_ok = fetch_powerbi_or_and_sync(force=force)
     try:
-        fetch_powerbi_or_future_and_sync(force=force)
+        ff = force if force_future is None else force_future
+        fetch_powerbi_or_future_and_sync(force=ff)
     except Exception as e:
         log(f"[OR Future] Non-fatal cycle error: {e}", level="warning")
     return today_ok
@@ -3870,7 +3888,7 @@ def check_cairo_day_rollover() -> None:
     if today_str != clean_last_seen:
         log(f"[Calendar Rollover] Date transitioned from {clean_last_seen} to {today_str}. Triggering midnight sync & OR refresh...")
         last_cairo_seen_date = today_str
-        run_sync_job(force=True)
+        run_sync_job(force=True, force_future_or=False)
     elif now_cairo.hour == 23 and now_cairo.minute >= 58:
         if last_cairo_seen_date == today_str:
             last_cairo_seen_date = f"{today_str}_1159_done"
@@ -4139,7 +4157,7 @@ def poll_standalone_control(init_only: bool = False) -> None:
         pass
 
 
-def run_sync_job(force: bool = False) -> None:
+def run_sync_job(force: bool = False, force_future_or: Optional[bool] = None) -> None:
     """Executes a complete sync job sequence."""
     if _is_paused and not force:
         log("[Sync Paused] Skipping scheduled sync cycle while paused.")
@@ -4153,7 +4171,7 @@ def run_sync_job(force: bool = False) -> None:
     fortinet_reconnect()
     fetch_powerbi_and_sync()
     if force or _last_or_sync_ts == 0.0 or (time.time() - _last_or_sync_ts) >= 7200.0:
-        run_or_full_cycle(force=force)
+        run_or_full_cycle(force=force, force_future=force_future_or)
     if _last_opd_sync_ts == 0.0 or force:
         cairo_now = get_cairo_now()
         opd_target = cairo_now.date() + datetime.timedelta(days=1) if (cairo_now.hour == 23 and cairo_now.minute >= 30) else cairo_now.date()
