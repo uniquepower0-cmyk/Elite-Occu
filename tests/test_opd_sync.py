@@ -19,6 +19,8 @@ class TestOPDSync(unittest.TestCase):
         self.assertIn("11L", where_json)
         self.assertIn("18L", where_json)
         self.assertNotIn("Mohamed   nafaa", where_json)
+        self.assertNotIn("specialist  clinic", where_json.lower())
+        self.assertNotIn("specialist  clinic", where_json.lower())
 
     def test_parse_downloaded_tomorrow_sheet_if_present(self):
         sample_path = "/Users/mohanad/Downloads/Elite/data - 2026-11-17T184341.056.xlsx"

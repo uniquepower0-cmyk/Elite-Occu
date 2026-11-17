@@ -3491,11 +3491,6 @@ def run_or_sync_job(force: bool = False) -> None:
 
 OPD_EXCLUDED_PHYSICIANS: Final[list[str]] = [
     "'Hydrotherapy   Session Room'",
-    "'General Surgery specialist  clinic'",
-    "'Internal medicine Specialist  Clinic'",
-    "'Neurosurgery Specialist  Clinic'",
-    "'Obstetrics and Gynecology specialist  clinic'",
-    "'Orthopedics specialist  clinic'",
     "'Abokir for Petroleum Checkup'",
     "'Check up   Brimton'",
     "'Female Checkup  Program'",
@@ -3509,7 +3504,6 @@ OPD_EXCLUDED_PHYSICIANS: Final[list[str]] = [
     "'GCC   CLINIC'",
     "'Home   Care'",
     "'Mother''s day offer'",
-    "'Pediatrics specialist  clinic'",
     "'Physiotherapy   Session Room 1'",
     "'فحص   عجيبه'",
     "'Free  Mummy  Club'",
