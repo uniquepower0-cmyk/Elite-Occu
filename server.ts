@@ -17869,6 +17869,24 @@ app.get('/api/reports/refined-combined-preview', async (req, res) => {
   }
 });
 
+app.get('/api/whatsapp/status', async (_req, res) => {
+  try {
+    const configured = greenApiService.isConfigured();
+    if (!configured) {
+      return res.json({ configured: false, stateInstance: 'notConfigured', groupCount: 0 });
+    }
+    const stateInstance = await greenApiService.getStateInstance();
+    return res.json({
+      configured: true,
+      stateInstance,
+      authorized: stateInstance === 'authorized',
+      groupCount: greenApiService.getTargetGroups().length,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ configured: greenApiService.isConfigured(), error: err?.message || 'Failed to check Green API status' });
+  }
+});
+
 // Dedicated server-side trigger: generates high-fidelity JPEGs using sharp and broadcasts via Green API
 // Completely bypasses browser canvas to eliminate "Tainted canvas" restrictions.
 app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
@@ -18043,11 +18061,13 @@ app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
 
     const hasFailure = results.some(r => !r.success);
     const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+    const firstError = results.flatMap(r => r.errors || [])[0];
 
-    return res.json({
-      success: !hasFailure,
+    return res.status(hasFailure || totalSent === 0 ? 502 : 200).json({
+      success: !hasFailure && totalSent > 0,
       sentCount: totalSent,
       totalSheets: items.length,
+      error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
       results
     });
   } catch (error: any) {
@@ -18134,11 +18154,13 @@ app.post('/api/whatsapp/send-combined-excel', async (req, res) => {
 
     const hasFailure = results.some(r => !r.success);
     const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+    const firstError = results.flatMap(r => r.errors || [])[0];
 
-    return res.json({
-      success: !hasFailure,
+    return res.status(hasFailure || totalSent === 0 ? 502 : 200).json({
+      success: !hasFailure && totalSent > 0,
       sentCount: totalSent,
       fileName,
+      error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
       results
     });
   } catch (error: any) {

@@ -53,6 +53,23 @@ export class GreenApiService {
   }
 
   /**
+   * Checks whether the Green API WhatsApp instance is currently authorized and connected.
+   */
+  public async getStateInstance(): Promise<string> {
+    if (!this.instanceId || !this.apiToken) {
+      return 'notConfigured';
+    }
+    const url = `https://api.green-api.com/waInstance${this.instanceId}/getStateInstance/${this.apiToken}`;
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`Green API state check HTTP ${response.status}: ${errorText}`);
+    }
+    const data = (await response.json()) as { stateInstance?: string };
+    return String(data?.stateInstance || 'unknown');
+  }
+
+  /**
    * Upload and send a single file/image to a WhatsApp chat/group.
    */
   public async sendFileByUpload(options: SendImageOptions, retries = 2): Promise<{ idMessage: string }> {
@@ -92,8 +109,11 @@ export class GreenApiService {
           throw new Error(`Green API HTTP ${response.status}: ${errorText}`);
         }
 
-        const data = (await response.json()) as { idMessage: string };
-        return data;
+        const data = (await response.json()) as { idMessage?: string };
+        if (!data || !data.idMessage) {
+          throw new Error(`Green API did not return idMessage for ${options.fileName}: ${JSON.stringify(data)}`);
+        }
+        return { idMessage: data.idMessage };
       } catch (err: any) {
         if (attempt <= retries) {
           console.warn(`[GreenApiService] Upload attempt ${attempt} failed for ${options.fileName}: ${err.message}. Retrying in 1s...`);
@@ -154,6 +174,13 @@ export class GreenApiService {
     const groups = this.getTargetGroups();
     if (groups.length === 0) {
       throw new Error('No target WhatsApp group IDs configured in GREEN_API_GROUP_IDS.');
+    }
+
+    const state = await this.getStateInstance();
+    if (state !== 'authorized') {
+      throw new Error(
+        `WhatsApp instance is not connected (Green API state: "${state}"). Please scan the QR code in your Green API dashboard to re-authorize WhatsApp.`
+      );
     }
 
     const results: SendBatchResult[] = [];
