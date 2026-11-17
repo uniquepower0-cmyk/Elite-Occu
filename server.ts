@@ -15221,27 +15221,18 @@ function getOverListPatients(data: any[][] | null, orList: any[]): any[] {
   const overList: any[] = [];
   
   if (data && data.length > 0) {
-    // Find startIdx
-    let startIdx = 3;
-    for(let i = 0; i < Math.min(data.length, 10); i++) {
-        const r1 = String(data[i][1] || "").toLowerCase();
-        const r3 = String(data[i][3] || "").toLowerCase();
-        if ((r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r1 === "غرفة" || r3 === "name")) {
-            startIdx = i + 1;
-            break;
-        }
-    }
-    
-    if (data.length > startIdx) {
-      const rawBody = data.slice(startIdx);
+    const unfilteredRows = getOccupancyRowsUnfiltered(data);
+    if (unfilteredRows.length > 3) {
       const occRows = getOccupancyRows(data);
-      
-      rawBody.forEach((row, index) => {
-        const room = String(row[1] || "").trim();
-        const patientName = String(row[3] || "").trim();
-        const mrn = String(row[2] || "").trim();
-        const physician = String(row[22] || "").trim();
-        
+
+      unfilteredRows.slice(3).forEach((row, index) => {
+        const room = String(row[0] || "").trim();
+        const patientName = String(row[1] || "").trim();
+        const physician = String(row[2] || "").trim();
+        const contractor = String(row[3] || "").trim();
+        const admissionDate = String(row[4] || "").trim();
+        const mrn = String(row[5] || "").trim();
+
         // Check if the room is OR-x
         if (isOrXRoom(room) && patientName) {
           // Explicitly exclude "حسام الدين عبدالله عبدالقادر علي" from being considered overlist
@@ -15249,7 +15240,10 @@ function getOverListPatients(data: any[][] | null, orList: any[]): any[] {
             return;
           }
           // Check if this patient is in the uploaded OR list
-          const existsInOrList = orList.some(orPt => isNameMatch(patientName, orPt.patientName || ""));
+          const existsInOrList = orList.some(orPt =>
+            (mrn && orPt.mrn && isMRNMatch(mrn, String(orPt.mrn))) ||
+            isNameMatch(patientName, orPt.patientName || "")
+          );
           if (!existsInOrList) {
             const standardRoom = findAdmittedRoomForInPatient(patientName, occRows, mrn, physician);
             const displayPatientRoom = (standardRoom && !standardRoom.startsWith("Not Found") && !isOperatingRoom(standardRoom)) ? standardRoom : "N/A";
@@ -15260,8 +15254,8 @@ function getOverListPatients(data: any[][] | null, orList: any[]): any[] {
               patientRoom: displayPatientRoom, // Regular hospital/admitted room
               patientName: patientName,
               physician: physician,
-              contractor: String(row[12] || "").trim(),
-              admissionDate: cleanAdmissionDateStr(row[0]),
+              contractor: contractor,
+              admissionDate: admissionDate,
               mrn: mrn,
               category: getAccommodationCategory(displayPatientRoom)
             });

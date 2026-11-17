@@ -25,6 +25,7 @@ export const OFFICERS: Record<string, OfficerInfo> = {
   nadine: { name: 'نادين', phone: '+20 15 57666514' },
   ziad: { name: 'زياد', phone: '+20 12 07544537' },
   patient_accounts: { name: 'حسابات المرضى', phone: '' },
+  medical_tourism: { name: 'السياحة العلاجية', phone: '' },
 };
 
 export const CASH_OFFICER_NAME = 'حسابات المرضى';
@@ -107,9 +108,6 @@ export function isCashContractor(text: any): boolean {
     norm === 'عميل' ||
     norm === 'بدون جهة' ||
     norm === 'بدون جهه' ||
-    norm.includes('رياض') ||
-    norm.includes('الرياض') ||
-    norm.includes('el rayad') ||
     norm === 'contractorname'
   ) {
     return true;
@@ -146,6 +144,11 @@ export function getResponsibleOfficer(contractor: string | null | undefined, fin
   }
 
   // 1. High-priority exact brand disambiguations
+
+  // عقد الرياض El Rayad -> السياحة العلاجية
+  if (norm.includes('رياض') || norm.includes('الرياض') || norm.includes('el rayad')) {
+    return OFFICERS.medical_tourism.name;
+  }
 
   // EPROM (جابر) - e.g. '(EPROM) ايبروم ايلاب و مجمع', 'ايبروم ميدور'
   if (/\beprom\b|ايبروم/.test(norm)) {

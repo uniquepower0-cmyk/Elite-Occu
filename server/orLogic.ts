@@ -12,7 +12,7 @@ import {
   normalizeArabicName,
   isPrivateCreditCase
 } from './nameUtils.js';
-import { getOccupancyRows } from './occupancyLogic.js';
+import { getOccupancyRows, getOccupancyRowsUnfiltered } from './occupancyLogic.js';
 
 export function classifyInOutFallback(p: any): 'IN' | 'OUT' {
   if (!p) return 'OUT';
@@ -263,16 +263,9 @@ export function getEnrichedOrListForStats(
 
 export function getOverListPatients(data: any[][] | null, orList: any[]): any[] {
   if (!data || !Array.isArray(data)) return [];
-  
-  let startIdx = 3;
-  for (let i = 0; i < Math.min(data.length, 10); i++) {
-    const r1 = String(data[i][1] || "").toLowerCase();
-    const r3 = String(data[i][3] || "").toLowerCase();
-    if (r1.includes("room") || r1.includes("الغرفة") || r3.includes("patient") || r3.includes("المريض") || r1 === "bed" || r3 === "name" || r1 === "غرفة") {
-      startIdx = i + 1;
-      break;
-    }
-  }
+
+  const unfilteredRows = getOccupancyRowsUnfiltered(data);
+  if (unfilteredRows.length <= 3) return [];
 
   const overListPatients: any[] = [];
   const orListClean = (orList || []).map(p => ({
@@ -280,13 +273,13 @@ export function getOverListPatients(data: any[][] | null, orList: any[]): any[] 
     mrn: String(p.mrn || "").trim().replace(/^0+/, "")
   }));
 
-  data.slice(startIdx).forEach((row, idx) => {
-    const rawRoom = String(row[1] || "").trim();
-    const patientName = String(row[3] || "").trim();
-    const mrn = String(row[2] || "").trim().replace(/^0+/, "");
-    const physician = String(row[22] || "").trim();
-    const contractor = String(row[12] || "").trim();
-    const admDate = String(row[0] || "").trim();
+  unfilteredRows.slice(3).forEach((row, idx) => {
+    const rawRoom = String(row[0] || "").trim();
+    const patientName = String(row[1] || "").trim();
+    const physician = String(row[2] || "").trim();
+    const contractor = String(row[3] || "").trim();
+    const admDate = String(row[4] || "").trim();
+    const mrn = String(row[5] || "").trim().replace(/^0+/, "");
 
     if (isOrXRoom(rawRoom) && patientName) {
       const normName = normalizeArabicName(patientName);
