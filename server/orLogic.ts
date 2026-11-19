@@ -5,6 +5,9 @@ import {
   isPhysicianMatch,
   isPatientFirstNameMatch,
   isOperatingRoom,
+  isNonInpatientRoomForOR,
+  isValidRealMrn,
+  hasConflictingRealMrns,
   isOrXRoom,
   cleanRoomStr,
   normalizeRoom,
@@ -86,21 +89,20 @@ export function findOccupancyPatient(
 
   // 1. First check patientRoomRegistry if available
   if (patientRoomRegistry) {
-    if (searchMRN) {
+    if (isValidRealMrn(searchMRN)) {
       for (const key in patientRoomRegistry) {
         const item = patientRoomRegistry[key];
         const itemMrn = String(item.mrn || "").trim().replace(/^0+/, "");
-        if (itemMrn && isMRNMatch(searchMRN, itemMrn)) {
-          if (!isOperatingRoom(item.lastRoom)) {
-            return {
-              room: item.lastRoom || item.room || '',
-              patientName: item.name || searchName,
-              physician: item.physician || '',
-              contractor: item.contractor || '',
-              admissionDate: item.date || '',
-              mrn: itemMrn
-            };
-          }
+        const itemRoom = item.lastRoom || item.room || '';
+        if (isValidRealMrn(itemMrn) && isMRNMatch(searchMRN, itemMrn) && !isNonInpatientRoomForOR(itemRoom)) {
+          return {
+            room: itemRoom,
+            patientName: item.name || searchName,
+            physician: item.physician || '',
+            contractor: item.contractor || '',
+            admissionDate: item.date || '',
+            mrn: itemMrn
+          };
         }
       }
     }
@@ -108,17 +110,18 @@ export function findOccupancyPatient(
       for (const key in patientRoomRegistry) {
         const item = patientRoomRegistry[key];
         const itemName = item.name || key;
+        const itemRoom = item.lastRoom || item.room || '';
+        if (isNonInpatientRoomForOR(itemRoom)) continue;
+        if (hasConflictingRealMrns(searchMRN, item.mrn)) continue;
         if (isNameMatch(searchName, itemName) || isWholeNameMatch(searchName, itemName, isTaggedOut)) {
-          if (!isOperatingRoom(item.lastRoom)) {
-            return {
-              room: item.lastRoom || item.room || '',
-              patientName: itemName,
-              physician: item.physician || '',
-              contractor: item.contractor || '',
-              admissionDate: item.date || '',
-              mrn: item.mrn || ''
-            };
-          }
+          return {
+            room: itemRoom,
+            patientName: itemName,
+            physician: item.physician || '',
+            contractor: item.contractor || '',
+            admissionDate: item.date || '',
+            mrn: item.mrn || ''
+          };
         }
       }
     }
@@ -126,67 +129,78 @@ export function findOccupancyPatient(
 
   if (!occRows || occRows.length === 0) return null;
   const rows = occRows.slice(3);
-  
-  // 2. Check exact/strong whole-name comparison (skipping pure OR rooms)
-  if (searchName) {
-    for (const row of rows) {
-      const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue;
-      
-      const occName = String(row[1] || "").trim();
-      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut)) {
-        return {
-          room: roomStr,
-          patientName: occName,
-          physician: String(row[2] || "").trim(),
-          contractor: String(row[3] || "").trim(),
-          admissionDate: String(row[4] || "").trim(),
-          mrn: String(row[5] || "").trim()
-        };
-      }
-    }
-  }
 
-  // 3. Try matching by MRN
-  if (searchMRN) {
+  const buildMatch = (row: any[]) => ({
+    room: String(row[0] || "").trim(),
+    patientName: String(row[1] || "").trim(),
+    physician: String(row[2] || "").trim(),
+    contractor: String(row[3] || "").trim(),
+    admissionDate: String(row[4] || "").trim(),
+    mrn: String(row[5] || "").trim()
+  });
+
+  // 2. Highest priority: Exact valid real MRN match (skipping non-inpatient rooms)
+  if (isValidRealMrn(searchMRN)) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue;
-      
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
       const occMRN = String(row[5] || "").trim().replace(/^0+/, "");
       const occName = String(row[1] || "").trim();
-      if (isMRNMatch(searchMRN, occMRN)) {
-        if (!searchName || isNameMatch(searchName, occName) || isPatientFirstNameMatch(searchName, occName)) {
-          return {
-            room: roomStr,
-            patientName: occName,
-            physician: String(row[2] || "").trim(),
-            contractor: String(row[3] || "").trim(),
-            admissionDate: String(row[4] || "").trim(),
-            mrn: occMRN
-          };
+      if (isValidRealMrn(occMRN) && isMRNMatch(searchMRN, occMRN)) {
+        if (!searchName || isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut) || isPatientFirstNameMatch(searchName, occName)) {
+          return buildMatch(row);
         }
       }
     }
   }
 
-  // 4. Try matching by Physician + Patient Name Match
+  // 3. Exact normalized full-name match (skipping non-inpatient rooms and conflicting real MRNs)
+  if (searchName) {
+    const normSearchName = normalizeArabicName(searchName);
+    for (const row of rows) {
+      const roomStr = String(row[0] || "").trim();
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
+
+      const occName = String(row[1] || "").trim();
+      if (normSearchName && normSearchName === normalizeArabicName(occName)) {
+        return buildMatch(row);
+      }
+    }
+  }
+
+  // 4. Strong fuzzy / whole-name match (skipping non-inpatient rooms and conflicting real MRNs)
+  if (searchName) {
+    for (const row of rows) {
+      const roomStr = String(row[0] || "").trim();
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
+
+      const occName = String(row[1] || "").trim();
+      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut)) {
+        return buildMatch(row);
+      }
+    }
+  }
+
+  // 5. Fallback: Physician + Patient Name Match (skipping non-inpatient rooms and conflicting real MRNs)
   if (searchName && searchSurgeonName) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue;
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
 
       const occName = String(row[1] || "").trim();
       const occPhysician = String(row[2] || "").trim();
       if (isPhysicianMatch(searchSurgeonName, occPhysician) && isNameMatch(searchName, occName)) {
-        return {
-          room: roomStr,
-          patientName: occName,
-          physician: occPhysician,
-          contractor: String(row[3] || "").trim(),
-          admissionDate: String(row[4] || "").trim(),
-          mrn: String(row[5] || "").trim()
-        };
+        return buildMatch(row);
       }
     }
   }
@@ -231,11 +245,12 @@ export function getEnrichedOrListForStats(
     
     const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
     const matchingDischargedObj = (cumulativeDischarged || []).find(discPt => {
-      const discRoom = String(discPt.room || discPt.colB || "").toLowerCase();
-      if (discRoom.includes("dialysis") || discRoom.includes("غسيل") || isOperatingRoom(discRoom)) return false;
+      const discRoom = String(discPt.room || discPt.colB || "");
+      if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
       const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
-      const matchByMrn = pMrn && discMrn && isMRNMatch(pMrn, discMrn);
-      const matchByName = isWholeNameMatch(p.patientName, discPt.name || "");
+      if (hasConflictingRealMrns(pMrn, discMrn)) return false;
+      const matchByMrn = isValidRealMrn(pMrn) && isValidRealMrn(discMrn) && isMRNMatch(pMrn, discMrn);
+      const matchByName = isWholeNameMatch(p.patientName, discPt.name || "", isTaggedOut);
       return matchByMrn || matchByName;
     });
 

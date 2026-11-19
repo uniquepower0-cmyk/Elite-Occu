@@ -113,6 +113,37 @@ export function isProcedureOrTemporaryRoom(room: string): boolean {
          low.includes("recovery");
 }
 
+export function isNonInpatientRoomForOR(room: string): boolean {
+  if (!room) return false;
+  if (isProcedureOrTemporaryRoom(room)) return true;
+  const low = String(room).toLowerCase();
+  return (
+    low.includes("homecare") ||
+    low.includes("home care") ||
+    low.includes("رعاية منزلية") ||
+    low.includes("رعايه منزليه") ||
+    low.includes("wellbaby") ||
+    low.includes("well baby") ||
+    low.includes("حضانة طبيعية") ||
+    low.includes("حضانه طبيعيه")
+  );
+}
+
+export function isValidRealMrn(val: any): boolean {
+  if (val === null || val === undefined) return false;
+  const s = String(val).trim().replace(/^0+/, "");
+  if (!s || s === "65765" || s.startsWith("UNKNOWN-") || s.startsWith("transfer-")) return false;
+  const low = s.toLowerCase();
+  if (low === "n/a" || low === "null" || low === "undefined" || low === "-" || low === "—") return false;
+  if (/[\u0600-\u06FF]/.test(s)) return false;
+  return /\d/.test(s) && s.length >= 3 && s.length <= 15;
+}
+
+export function hasConflictingRealMrns(mrn1: any, mrn2: any): boolean {
+  if (!isValidRealMrn(mrn1) || !isValidRealMrn(mrn2)) return false;
+  return !isMRNMatch(String(mrn1), String(mrn2));
+}
+
 export function formatDateToUserFormat(dateObj: Date): string {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -518,31 +549,38 @@ export function isPatientMatch(
 export function isWholeNameMatch(name1: string, name2: string, isTaggedOut: boolean = false): boolean {
   if (isManualEquivalent(name1, name2)) return true;
 
-  const norm1 = normalizeArabicString(name1);
-  const norm2 = normalizeArabicString(name2);
+  const norm1 = normalizeArabicName(name1);
+  const norm2 = normalizeArabicName(name2);
 
   if (!norm1 || !norm2) return false;
   if (norm1 === norm2) return true;
 
-  const words1 = norm1.split(" ").filter(w => w.length > 2);
-  const words2 = norm2.split(" ").filter(w => w.length > 2);
+  const words1 = getNormalizedWords(name1);
+  const words2 = getNormalizedWords(name2);
 
   if (words1.length === 0 || words2.length === 0) return false;
 
-  const set1 = new Set(words1);
-  const set2 = new Set(words2);
-  const uniqueIntersection = [...set1].filter(w => set2.has(w));
-  const minUniqueSize = Math.min(set1.size, set2.size);
-  const matchRatio = uniqueIntersection.length / Math.max(set1.size, 1);
+  const babyPrefixes = ["ابن", "ابنه", "طفل", "طفله", "مولود", "مولوده", "baby", "twin"];
+  const core1 = babyPrefixes.includes(words1[0]) ? words1.slice(1) : words1;
+  const core2 = babyPrefixes.includes(words2[0]) ? words2.slice(1) : words2;
+
+  if (core1.length === 0 || core2.length === 0) return false;
+
+  // First given name MUST match to prevent cross-patient false positives
+  if (core1[0] !== core2[0]) return false;
+
+  const minLen = Math.min(core1.length, core2.length);
+  const lcsLen = getLcsLength(core1, core2);
+  const matchRatio = lcsLen / Math.max(core1.length, 1);
 
   if (isTaggedOut) {
-    return (uniqueIntersection.length >= 3 && matchRatio >= 0.75) || (norm1 === norm2);
+    return (lcsLen >= 3 && matchRatio >= 0.75) || (norm1 === norm2);
   }
 
-  if (minUniqueSize >= 3) {
-    return uniqueIntersection.length >= 2 && words1[0] === words2[0];
-  } else if (minUniqueSize >= 2) {
-    return (uniqueIntersection.length >= 2 && words1[0] === words2[0]) || (norm1 === norm2);
+  if (minLen >= 3) {
+    return lcsLen >= 3 && (minLen === 3 || (lcsLen / minLen) >= 0.7 || core1[1] === core2[1]);
+  } else if (minLen === 2) {
+    return core1[0] === core2[0] && core1[1] === core2[1];
   } else {
     return norm1 === norm2;
   }

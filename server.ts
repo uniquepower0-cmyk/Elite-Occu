@@ -44,7 +44,7 @@ import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } 
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
-import { isCompanionBed } from './server/nameUtils.js';
+import { isCompanionBed, isNonInpatientRoomForOR, hasConflictingRealMrns } from './server/nameUtils.js';
 import {
   findPatientRowInRows,
   upsertRestoredHmisOverride,
@@ -8605,10 +8605,11 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
     return orList.map(p => {
       const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
       const matchingDischargedObj = cumulativeDischarged.find(discPt => {
-        const discRoom = String(discPt.room || discPt.colB || "").toLowerCase();
-        if (discRoom.includes("dialysis") || discRoom.includes("غسيل") || isOperatingRoom(discRoom)) return false;
+        const discRoom = String(discPt.room || discPt.colB || "");
+        if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
         const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
-        const matchByMrn = pMrn && discMrn && isMRNMatch(pMrn, discMrn);
+        if (hasConflictingRealMrns(pMrn, discMrn)) return false;
+        const matchByMrn = isValidRealMrn(pMrn) && isValidRealMrn(discMrn) && isMRNMatch(pMrn, discMrn);
         const matchByName = isWholeNameMatch(p.patientName, discPt.name || "");
         return matchByMrn || matchByName;
       });
@@ -8648,11 +8649,12 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
     const occPatient = findOccupancyPatient(p.patientName, occRows, isTaggedOut, p.mrn, p.surgeonName);
     const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
     const matchingDischargedObj = cumulativeDischarged.find(discPt => {
-      const discRoom = String(discPt.room || discPt.colB || "").toLowerCase();
-      if (discRoom.includes("dialysis") || discRoom.includes("غسيل") || isOperatingRoom(discRoom)) return false;
+      const discRoom = String(discPt.room || discPt.colB || "");
+      if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
       const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
-      const matchByMrn = pMrn && discMrn && isMRNMatch(pMrn, discMrn);
-      const matchByName = isWholeNameMatch(p.patientName, discPt.name || "");
+      if (hasConflictingRealMrns(pMrn, discMrn)) return false;
+      const matchByMrn = isValidRealMrn(pMrn) && isValidRealMrn(discMrn) && isMRNMatch(pMrn, discMrn);
+      const matchByName = isWholeNameMatch(p.patientName, discPt.name || "", isTaggedOut);
       return matchByMrn || matchByName;
     });
     const isDischarged = !!matchingDischargedObj;
@@ -15571,8 +15573,12 @@ async function addRefinedORReconciliationSheet(
       displayContractor = occPatient.contractor || p.contractorName || p.contractor || '';
     } else {
       const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+        const discRoom = String(discPt.room || discPt.colB || "");
+        if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
+        const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
+        if (hasConflictingRealMrns(p.mrn, discMrn)) return false;
+        const matchByMrn = isValidRealMrn(p.mrn) && isValidRealMrn(discMrn) && isMRNMatch(String(p.mrn), discMrn);
         const matchByName = isNameMatch(p.patientName, discPt.name || "");
-        const matchByMrn = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
         return matchByName || matchByMrn;
       });
 
@@ -15954,36 +15960,41 @@ function isManualEquivalent(n1: string, n2: string): boolean {
 function isWholeNameMatch(name1: string, name2: string, isTaggedOut: boolean = false): boolean {
   if (isManualEquivalent(name1, name2)) return true;
 
-  const norm1 = normalizeArabicString(name1);
-  const norm2 = normalizeArabicString(name2);
+  const norm1 = normalizeArabicName(name1);
+  const norm2 = normalizeArabicName(name2);
 
   if (!norm1 || !norm2) return false;
   if (norm1 === norm2) return true;
 
-  const words1 = norm1.split(" ").filter(w => w.length > 2);
-  const words2 = norm2.split(" ").filter(w => w.length > 2);
+  const words1 = getNormalizedWords(name1);
+  const words2 = getNormalizedWords(name2);
 
   if (words1.length === 0 || words2.length === 0) return false;
 
-  const set1 = new Set(words1);
-  const set2 = new Set(words2);
+  const babyPrefixes = ["ابن", "ابنه", "طفل", "طفله", "مولود", "مولوده", "baby", "twin"];
+  const core1 = babyPrefixes.includes(words1[0]) ? words1.slice(1) : words1;
+  const core2 = babyPrefixes.includes(words2[0]) ? words2.slice(1) : words2;
 
-  const uniqueIntersection = [...set1].filter(w => set2.has(w));
-  const minUniqueSize = Math.min(set1.size, set2.size);
+  if (core1.length === 0 || core2.length === 0) return false;
 
-  const matchRatio = uniqueIntersection.length / Math.max(set1.size, 1);
+  // First given name MUST match to prevent cross-patient false positives
+  if (core1[0] !== core2[0]) return false;
+
+  const minLen = Math.min(core1.length, core2.length);
+  const lcsLen = getLcsLength(core1, core2);
+  const matchRatio = lcsLen / Math.max(core1.length, 1);
 
   if (isTaggedOut) {
-    // If tagged as OUT on the OR list, we require a very strict whole name match
-    // to prevent any accidental false positives.
-    return (uniqueIntersection.length >= 3 && matchRatio >= 0.75) || (norm1 === norm2);
+    // If tagged as OUT on the OR list, we require a very strict sequential whole name match
+    return (lcsLen >= 3 && matchRatio >= 0.75) || (norm1 === norm2);
   }
 
-  // Standard patient name matching
-  if (minUniqueSize >= 3) {
-    return uniqueIntersection.length >= 3;
+  // Standard patient name matching with order preservation
+  if (minLen >= 3) {
+    return lcsLen >= 3 && (minLen === 3 || (lcsLen / minLen) >= 0.7 || core1[1] === core2[1]);
+  } else if (minLen === 2) {
+    return core1[0] === core2[0] && core1[1] === core2[1];
   } else {
-    // Single or 2-word overlap must be exact match
     return norm1 === norm2;
   }
 }
@@ -16047,125 +16058,101 @@ function isMRNMatch(mrn1: string, mrn2: string): boolean {
   return clean1 === clean2;
 }
 
-// Helper to search for and find actual admitted room of an "IN" patient using whole name match, robust MRN match, or physician-correlated match
+// Helper to search for and find actual admitted room of an "IN" patient using prioritized MRN, exact name, or physician-correlated match
 function findAdmittedRoomForInPatient(pName: string, occRows: any[][], mrn?: string, surgeonName?: string): string {
   if (!occRows || occRows.length === 0) return "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال";
-  
   const searchName = String(pName || "").trim();
   const searchMRN = String(mrn || "").trim();
-  const searchSurgeonName = String(surgeonName || "").trim();
   if (!searchName && !searchMRN) return "N/A";
-
-  const rows = occRows.slice(3);
-
-  // 1. Try robust whole-name comparison first (highest accuracy)
-  if (searchName) {
-    for (const row of rows) {
-      const occName = String(row[1] || "").trim();
-      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, false)) {
-        return String(row[0] || "").trim(); // Return room number
-      }
-    }
+  const occPatient = findOccupancyPatient(searchName, occRows, false, searchMRN, surgeonName);
+  if (occPatient && occPatient.room) {
+    return occPatient.room;
   }
-
-  // 2. Try matching by MRN (verifying name compatibility)
-  if (searchMRN) {
-    for (const row of rows) {
-      const occMRN = String(row[5] || "").trim();
-      const occName = String(row[1] || "").trim();
-      if (isMRNMatch(searchMRN, occMRN)) {
-        if (!searchName || isNameMatch(searchName, occName) || isPatientFirstNameMatch(searchName, occName)) {
-          return String(row[0] || "").trim(); // Return room number
-        }
-      }
-    }
-  }
-
-  // 3. Fallback: Matching by Physician + Name Match (requiring isNameMatch, NEVER first name alone)
-  if (searchName && searchSurgeonName) {
-    for (const row of rows) {
-      const occName = String(row[1] || "").trim();
-      const occPhysician = String(row[2] || "").trim();
-      if (isPhysicianMatch(searchSurgeonName, occPhysician) && isNameMatch(searchName, occName)) {
-        return String(row[0] || "").trim(); // Return room number
-      }
-    }
-  }
-
   return "Not Found in Occupancy Sheet / غير موجود بشيت الإشغال";
 }
 
-// Helper to lookup room number and patient data from source occupancy sheet using whole name match, robust MRN, or physician-correlated match
+// Helper to lookup room number and patient data from source occupancy sheet prioritizing real MRN, exact name, and non-inpatient exclusion
 function findOccupancyPatient(pName: string, occRows: any[][], isTaggedOut: boolean = false, mrn?: string, surgeonName?: string) {
   if (!occRows || occRows.length === 0) return null;
-  
+
   const searchName = String(pName || "").trim();
-  const searchMRN = String(mrn || "").trim();
+  const searchMRN = String(mrn || "").trim().replace(/^0+/, "");
   const searchSurgeonName = String(surgeonName || "").trim();
   if (!searchName && !searchMRN) return null;
 
   const rows = occRows.slice(3);
-  
-  // 1. Check exact/strong whole-name comparison first (highest accuracy, skipping OR rooms)
-  if (searchName) {
-    for (const row of rows) {
-      const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
-      
-      const occName = String(row[1] || "").trim();
-      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut)) {
-        return {
-          room: roomStr,
-          patientName: occName,
-          physician: String(row[2] || "").trim(),
-          contractor: String(row[3] || "").trim(),
-          admissionDate: String(row[4] || "").trim(),
-          mrn: String(row[5] || "").trim()
-        };
-      }
-    }
-  }
 
-  // 2. Try matching by MRN (verifying name compatibility, skipping OR rooms)
-  if (searchMRN) {
+  const buildMatch = (row: any[]) => ({
+    room: String(row[0] || "").trim(),
+    patientName: String(row[1] || "").trim(),
+    physician: String(row[2] || "").trim(),
+    contractor: String(row[3] || "").trim(),
+    admissionDate: String(row[4] || "").trim(),
+    mrn: String(row[5] || "").trim()
+  });
+
+  // 1. Highest priority: Exact valid real MRN match (skipping non-inpatient rooms)
+  if (isValidRealMrn(searchMRN)) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
-      
-      const occMRN = String(row[5] || "").trim();
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim().replace(/^0+/, "");
       const occName = String(row[1] || "").trim();
-      if (isMRNMatch(searchMRN, occMRN)) {
-        if (!searchName || isNameMatch(searchName, occName) || isPatientFirstNameMatch(searchName, occName)) {
-          return {
-            room: roomStr,
-            patientName: occName,
-            physician: String(row[2] || "").trim(),
-            contractor: String(row[3] || "").trim(),
-            admissionDate: String(row[4] || "").trim(),
-            mrn: occMRN
-          };
+      if (isValidRealMrn(occMRN) && isMRNMatch(searchMRN, occMRN)) {
+        if (!searchName || isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut) || isPatientFirstNameMatch(searchName, occName)) {
+          return buildMatch(row);
         }
       }
     }
   }
 
-  // 3. Try matching by Physician + Patient Name Match (requiring isNameMatch, NEVER first name alone)
+  // 2. Exact normalized full-name match (skipping non-inpatient rooms and conflicting real MRNs)
+  if (searchName) {
+    const normSearchName = normalizeArabicName(searchName);
+    for (const row of rows) {
+      const roomStr = String(row[0] || "").trim();
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
+
+      const occName = String(row[1] || "").trim();
+      if (normSearchName && normSearchName === normalizeArabicName(occName)) {
+        return buildMatch(row);
+      }
+    }
+  }
+
+  // 3. Strong fuzzy / whole-name match (skipping non-inpatient rooms and conflicting real MRNs)
+  if (searchName) {
+    for (const row of rows) {
+      const roomStr = String(row[0] || "").trim();
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
+
+      const occName = String(row[1] || "").trim();
+      if (isNameMatch(searchName, occName) || isWholeNameMatch(searchName, occName, isTaggedOut)) {
+        return buildMatch(row);
+      }
+    }
+  }
+
+  // 4. Fallback: Physician + Patient Name Match (skipping non-inpatient rooms and conflicting real MRNs)
   if (searchName && searchSurgeonName) {
     for (const row of rows) {
       const roomStr = String(row[0] || "").trim();
-      if (isOperatingRoom(roomStr)) continue; // OR rooms are excluded!
+      if (isNonInpatientRoomForOR(roomStr)) continue;
+
+      const occMRN = String(row[5] || "").trim();
+      if (hasConflictingRealMrns(searchMRN, occMRN)) continue;
 
       const occName = String(row[1] || "").trim();
       const occPhysician = String(row[2] || "").trim();
       if (isPhysicianMatch(searchSurgeonName, occPhysician) && isNameMatch(searchName, occName)) {
-        return {
-          room: roomStr,
-          patientName: occName,
-          physician: occPhysician,
-          contractor: String(row[3] || "").trim(),
-          admissionDate: String(row[4] || "").trim(),
-          mrn: String(row[5] || "").trim()
-        };
+        return buildMatch(row);
       }
     }
   }
@@ -16311,8 +16298,12 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
     // Double check for the whole name in comparison to the source occupancy sheet
     const occPatient = findOccupancyPatient(p.patientName, occRows, isTaggedOut, p.mrn, p.surgeonName);
     const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+      const discRoom = String(discPt.room || discPt.colB || "");
+      if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
+      const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
+      if (hasConflictingRealMrns(p.mrn, discMrn)) return false;
+      const matchByMrn = isValidRealMrn(p.mrn) && isValidRealMrn(discMrn) && isMRNMatch(String(p.mrn), discMrn);
       const matchByName = isNameMatch(p.patientName, discPt.name || "");
-      const matchByMrn = p.mrn && discPt.id && (String(p.mrn).trim() === String(discPt.id).trim());
       return matchByName || matchByMrn;
     });
     const isDischarged = !!matchingDischargedObj;
