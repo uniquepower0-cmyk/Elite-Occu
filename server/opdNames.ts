@@ -173,6 +173,55 @@ export const KNOWN_EN_SHORT_NAMES: Record<string, string> = {
   'عمرو محمد صبري': 'Amr Sabry',
   'بيشوى ناجى فرج جرجس': 'Beshoy',
   'شريف زيدان': 'Sherif Zeidan',
+  // Thursday & additional hospital physicians
+  'احمد سمير محمد محمود زعربان': 'Ahmed Zaaraban',
+  'فهمي عزت فهمي سعد': 'Fahmy Ezzat',
+  'ميرا ياسر محمد السمنى': 'Mira Yasser',
+  'مهند مجدي': 'Mohannad Magdy',
+  'والى محفوظ': 'Waly Mahfouz',
+  'أحمد ربيع': 'Ahmed Rabea',
+  'احمد علاء الدين عبد الكريم مرعي': 'Ahmed Marei',
+  'ايمان عبدالبديع': 'Eman Abdelbadea',
+  'هنادي محمد حجازي محمد': 'Hanady Hegazy',
+  'هبه عبداللطيف': 'Heba Abdellatief',
+  'مي محمد مرسي حسين': 'Mai Hussein',
+  'مياده عبد السلام الشريف': 'Mayada El Sheref',
+  'ميرفت ابوالمعاطي': 'Mervat AboElmaty',
+  'محمد المهدى': 'Mohamed El Mahdy',
+  'شيماء محمد محمد شعبان': 'Shimaa Mohammed',
+  'احمد حنفي محمد المصري': 'Ahmed El Masry',
+  'احمد رمضان محسب ابوبكر': 'Ahmed Ramadan',
+  'جمال الدين الغريانى': 'Gamal ElGheriany',
+  'هند خميس محمد العكر': 'Hend Khamis',
+  'مؤمن محمد مرسي حسين': "Mo'men Morsy",
+  'نسرين علي': 'Nisreen Ali',
+  'عمر رضا عبد الحميد رضا': 'Omar Reda',
+  'اشرف الامين': 'Ashraf ElAmin',
+  'نسمة محمد سعد جنيدي': 'Nesma Genedy',
+  'اسامة محمود عبدالباقي المراغي': 'Osama ElMaraghi',
+  'سوسن عادل عوض ابراهيم': 'Sawsan Adel',
+  'منار عزت': 'Manar Ezzat',
+  'محمد هلال': 'M. Halal',
+  'بسنت سمير عبدالعظيم عبدالحميد': 'Passant Samir',
+  'احمد رأفت محمود عبد العزيز النجار': 'Ahmed Rafaat',
+  'اسلام محمد عبدالحمبد ماضي': 'Eslam Mady',
+  'محمد سمير': 'Mohamed Samir',
+  'وسام زكريا مسعود عمراوي': 'Wissam ElAmrawy',
+  'احمد علاء محمد عبدالعزيز حسن صالح': 'Ahmed Alaa',
+  'عبدالرحمن محمد احمد الجوهري': 'Abdelrahman ElGohary',
+  'محمد جمال الجزار': 'Mohamed ElGazzar',
+  'مصطفى حافظ محمد حافظ': 'Mostafa Hafez',
+  'عبد الرحمن ثابت': 'Abdelrahman Thabet',
+  'اماني منصور السيد منصور محمد': 'Amany Mansour',
+  'احمد محمد ابو كيلة': 'Ahmed AboKela',
+  'حسام محمد صلاح الدين الصباغ': 'Hossam ElSabbagh',
+  'محمود درباله': 'Mahmoud Derbala',
+  'محمد خالد محمد خالد': 'Mohamed Khaled',
+  'شريف حجازى': 'Sherif Hegazy',
+  'الهام ابو بكر الكردى': 'Elham ElKordy',
+  'حسام ابو الخير': 'Hossam AboElKher',
+  'محمد مدحت السبكي': 'ElSobky',
+  'سالي عادل': 'Sally Adel',
 };
 
 function normAr(s: string): string {
@@ -246,6 +295,68 @@ export function getShortArabicDoctorName(item: { physicianAr?: string; physician
   return `${first} ${second}`;
 }
 
+const GENERIC_EN_PATRONYMICS = new Set([
+  'mohamed',
+  'mohammed',
+  'ahmed',
+  'mahmoud',
+  'hussein',
+  'hussien',
+  'hassan',
+  'ebrahim',
+  'ibrahim',
+  'ali',
+  'saad',
+  'salah',
+  'abdelhamed',
+  'abdelhamid',
+  'aboubakr',
+  'abobakr',
+  'elsayed',
+  'sayed',
+  'mansour',
+  'mostafa',
+  'moustafa',
+]);
+
+function tokenizeEnglishName(fullEn: string): string[] {
+  // Strip stray trailing/standalone punctuation (e.g. "Mohamed Gamal Elgazzar .")
+  const cleaned = String(fullEn || '')
+    .replace(/[.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return [];
+
+  const words = cleaned.split(' ').filter(Boolean);
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i];
+    const wl = w.toLowerCase();
+    if (
+      (wl === 'el' || wl === 'al' || wl === 'abo' || wl === 'abou' || wl === 'abd' || wl === 'abdel') &&
+      i + 1 < words.length
+    ) {
+      const next = words[i + 1];
+      const nextL = next.toLowerCase();
+      if ((wl === 'abo' || wl === 'abou' || wl === 'abd' || wl === 'abdel') && (nextL === 'el' || nextL === 'al') && i + 2 < words.length) {
+        tokens.push(`${w}${next}${words[i + 2]}`);
+        i += 3;
+      } else {
+        tokens.push(`${w}${next}`);
+        i += 2;
+      }
+    } else if (i + 1 < words.length && words[i + 1].toLowerCase() === 'eldin') {
+      tokens.push(w);
+      i += 2;
+    } else {
+      tokens.push(w);
+      i += 1;
+    }
+  }
+  return tokens;
+}
+
 export function getShortEnglishDoctorName(item: { physicianAr?: string; physicianEn?: string }): string {
   const ar = String(item.physicianAr || '').trim().replace(/\s+/g, ' ');
   const en = String(item.physicianEn || '').trim().replace(/\s+/g, ' ');
@@ -256,7 +367,13 @@ export function getShortEnglishDoctorName(item: { physicianAr?: string; physicia
   if (mapped) return mapped;
 
   if (!en) return getShortArabicDoctorName(item);
-  const words = en.split(' ');
-  if (words.length <= 2) return words.join(' ');
-  return `${words[0]} ${words[words.length - 1]}`;
+  const tokens = tokenizeEnglishName(en);
+  if (tokens.length <= 2) return tokens.join(' ');
+  const first = tokens[0];
+  const second = tokens[1];
+  const last = tokens[tokens.length - 1];
+  if (GENERIC_EN_PATRONYMICS.has(last.toLowerCase())) {
+    return `${first} ${second}`;
+  }
+  return `${first} ${last}`;
 }

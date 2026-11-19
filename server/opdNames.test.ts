@@ -57,5 +57,27 @@ describe('opdNames', () => {
         physicianEn: 'Tarek Mahmoud Hassan Elshafey',
       })
     ).toBe('Tarek Elshafey');
+
+    // Trailing punctuation and compound prefixes / generic patronymics
+    expect(
+      getShortEnglishDoctorName({
+        physicianAr: 'غير مسجل',
+        physicianEn: 'Mohamed Gamal Elgazzar .',
+      })
+    ).toBe('Mohamed Elgazzar');
+
+    expect(
+      getShortEnglishDoctorName({
+        physicianAr: 'غير مسجل',
+        physicianEn: 'Hossam Abo el Kher',
+      })
+    ).toBe('Hossam AboelKher');
+
+    expect(
+      getShortEnglishDoctorName({
+        physicianAr: 'غير مسجل',
+        physicianEn: 'Amany Mansour Elsayed Mohamed',
+      })
+    ).toBe('Amany Mansour');
   });
 });

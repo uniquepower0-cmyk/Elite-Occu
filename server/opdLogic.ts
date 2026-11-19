@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import fs from 'fs';
 import path from 'path';
-import { filterOPDSessions } from './opdFilters.js';
+import { filterOPDSessions, filterOPDSessionsForHousing } from './opdFilters.js';
 import { getShortArabicDoctorName, getShortEnglishDoctorName } from './opdNames.js';
 import { OPD_SPECIALTY_ROWS } from './opdSpecialties.js';
 
@@ -230,28 +230,28 @@ export function getOPDSpecialtyStats(items: OPDClinicSession[]): OPDSpecialtySta
   return Array.from(map.values()).sort((a, b) => b.count - a.count || a.specialty.localeCompare(b.specialty));
 }
 
-// --- OPD HOUSING GRID ALLOCATOR (Matches /Users/mohanad/Downloads/OPD Housing) ---
+// --- OPD HOUSING GRID ALLOCATOR (Matches /Users/mohanad/Downloads/Elite/housing thursday 19 nov.xlsx) ---
 
 export const OPD_HOUSING_COLUMNS: HousingClinicColumn[] = [
-  // General OPD (6)
-  { id: 'gen_peds', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 4 (pediatrics)' },
-  { id: 'gen_c5', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 5' },
-  { id: 'gen_opth', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 6 (Opth)' },
-  { id: 'gen_ent', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 7 (ENT)' },
-  { id: 'gen_31', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 31' },
-  { id: 'gen_audio', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Audiology Clinic' },
+  // General OPD (6) — Audiology Clinic precedes Clinic 31
+  { id: 'gen_peds', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Clinic 4 (pediatrics)' },
+  { id: 'gen_c5', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Clinic 5' },
+  { id: 'gen_opth', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Clinic 6 (Opth)' },
+  { id: 'gen_ent', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Clinic 7 (ENT)' },
+  { id: 'gen_audio', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Audiology Clinic' },
+  { id: 'gen_31', center: 'General OPD', centerColor: 'FFA9D18E', centerTextColor: 'FF000000', label: 'Clinic 31' },
   // Woman Health Center (5)
-  { id: 'whc_gyna', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 1 (Gyna)' },
-  { id: 'whc_gs', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 2 (GS)' },
-  { id: 'whc_uro', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 3 (Urology)' },
-  { id: 'whc_plast', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 4 (Plastic and Derma)' },
-  { id: 'whc_proc', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 5 (procedure room)' },
+  { id: 'whc_gyna', center: 'Woman Health Center', centerColor: 'FFF4B183', centerTextColor: 'FF000000', label: 'Clinic 1 (Gyna)' },
+  { id: 'whc_gs', center: 'Woman Health Center', centerColor: 'FFF4B183', centerTextColor: 'FF000000', label: 'Clinic 2 (GS)' },
+  { id: 'whc_uro', center: 'Woman Health Center', centerColor: 'FFF4B183', centerTextColor: 'FF000000', label: 'Clinic 3 (Urology)' },
+  { id: 'whc_plast', center: 'Woman Health Center', centerColor: 'FFF4B183', centerTextColor: 'FF000000', label: 'Clinic 4 (Plastic and Derma)' },
+  { id: 'whc_proc', center: 'Woman Health Center', centerColor: 'FFF4B183', centerTextColor: 'FF000000', label: 'Clinic 5 (procedure room)' },
   // Cardiology Center (4)
   { id: 'card_1', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 1' },
-  { id: 'card_vasc', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Vascular Clinic' },
+  { id: 'card_vasc', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Vascular\nClinic' },
   { id: 'card_2', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 2' },
   { id: 'card_echo', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: '(ECHO)' },
-  // Neurosurgery Center (4)
+  // Neurosurgery Center (3 on Sat-Tue/Thu; 4 on Wednesday)
   { id: 'neuro_1', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 1' },
   { id: 'neuro_2', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 2' },
   { id: 'neuro_3', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 3' },
@@ -273,6 +273,12 @@ export const OPD_HOUSING_COLUMNS: HousingClinicColumn[] = [
   // Physiotherapy Center (1)
   { id: 'phys_1', center: 'Physiotherapy Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1' },
 ];
+
+export function getHousingColumnsForDay(weekdayLabel: string): HousingClinicColumn[] {
+  const isWednesday = String(weekdayLabel || '').toLowerCase().includes('wednesday');
+  if (isWednesday) return OPD_HOUSING_COLUMNS;
+  return OPD_HOUSING_COLUMNS.filter(c => c.id !== 'neuro_4');
+}
 
 export const OPD_HOUSING_SLOTS: { startMins: number; endMins: number; label: string }[] = Array.from(
   { length: 26 },
@@ -296,6 +302,7 @@ export const OPD_HOUSING_SLOTS: { startMins: number; endMins: number; label: str
 
 function getCandidateClinicIds(session: OPDClinicSession): string[] {
   const sp = `${session.specialty} ${session.specialities}`.toLowerCase();
+  const primarySp = String(session.specialty || '').toLowerCase();
   const shortAr = getShortArabicDoctorName(session);
 
   if (shortAr.includes('كامل البطاط') || sp.includes('pulmonology')) {
@@ -304,9 +311,14 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
   if (shortAr.includes('محمد جمال توفيق') || shortAr.includes('مصطفى دعبيس')) {
     return ['gen_31', 'odec_3', 'odec_4', 'gen_c5'];
   }
-  if (sp.includes('audiometry') || sp.includes('speech') || sp.includes('swallowing')) {
-    return ['gen_audio', 'gen_ent', 'ortho_3', 'gen_31'];
+  // Audiometry stays in Audiology Clinic; Speech & Swallowing prefers Clinic 31
+  if (sp.includes('audiometry')) {
+    return ['gen_audio', 'gen_ent', 'gen_31'];
   }
+  if (sp.includes('speech') || sp.includes('swallowing')) {
+    return ['gen_31', 'gen_audio', 'gen_ent'];
+  }
+  // Pediatric sub-specialties BEFORE generic GIT / Cardiology / Surgery
   if (sp.includes('pediatric cardiology')) {
     return ['card_echo', 'card_1', 'card_2', 'gen_peds'];
   }
@@ -316,13 +328,16 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
   if (sp.includes('pediatric oncology surgery')) {
     return ['card_2', 'whc_gs', 'whc_proc'];
   }
-  if (sp.includes('pediatrics')) {
-    return ['gen_peds', 'ortho_3', 'gen_c5', 'gen_31'];
+  if (sp.includes('pediatric dentistry') || sp.includes('pediatric dental')) {
+    return ['dent_2', 'dent_1'];
+  }
+  if (sp.includes('pediatric')) {
+    return ['gen_peds', 'gen_31', 'gen_c5'];
   }
   if (sp.includes('ophthalmology')) {
     return ['gen_opth', 'gen_c5', 'gen_31'];
   }
-  if (sp.includes('ent ') || sp === 'ent' || sp.includes('ent clinic')) {
+  if (primarySp.includes('ent ') || primarySp === 'ent' || primarySp.includes('ent clinic')) {
     return ['gen_ent', 'gen_audio', 'gen_31'];
   }
   if (sp.includes('obstetrics') || sp.includes('gynecology') || sp.includes('gyna')) {
@@ -331,9 +346,12 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
   if (sp.includes('urology') && !sp.includes('neurology')) {
     return ['whc_uro', 'whc_proc', 'whc_plast'];
   }
-  if (sp.includes('plastic') || sp.includes('dermatology')) {
+  if (sp.includes('dermatology')) {
+    return ['whc_plast', 'whc_proc', 'whc_uro'];
+  }
+  if (sp.includes('plastic')) {
     if (shortAr.includes('نبيل شحاتة')) return ['whc_proc', 'whc_gs', 'whc_plast'];
-    return ['whc_uro', 'whc_plast', 'whc_proc'];
+    return ['whc_proc', 'whc_plast', 'whc_uro'];
   }
   if (sp.includes('bariatric')) {
     return ['odec_3', 'odec_surg', 'whc_gs'];
@@ -342,7 +360,7 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
     return ['whc_proc', 'whc_gs', 'odec_surg'];
   }
   if (sp.includes('colorectal') || sp.includes('breast') || sp.includes('general surgery')) {
-    return ['whc_gs', 'whc_plast', 'whc_uro', 'whc_proc', 'card_2'];
+    return ['whc_gs', 'whc_uro', 'whc_plast', 'whc_proc', 'card_2'];
   }
   if (sp.includes('vascular')) {
     return ['card_vasc', 'card_1', 'card_2'];
@@ -353,6 +371,9 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
   if (sp.includes('cardiology') || sp.includes('echo')) {
     return ['card_1', 'card_echo', 'card_2', 'card_vasc'];
   }
+  if (sp.includes('anesthesia') || sp.includes('pain')) {
+    return ['neuro_3', 'neuro_2', 'neuro_1'];
+  }
   if (
     sp.includes('nerve conduction') ||
     sp.includes('emg') ||
@@ -361,14 +382,17 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
     sp.includes('neuropsychiatry') ||
     sp.includes('eeg')
   ) {
-    return ['neuro_3', 'neuro_4', 'neuro_2', 'neuro_1'];
+    return ['neuro_1', 'neuro_2', 'neuro_3', 'neuro_4'];
+  }
+  // GIT / Gastroenterology / Hepatology MUST run BEFORE Internal Medicine
+  if (primarySp.includes('git') || primarySp.includes('hepatology') || primarySp.includes('gastro')) {
+    return ['git_1', 'odec_3', 'odec_4'];
   }
   if (sp.includes('nutrition')) {
     return ['odec_nutr', 'odec_3', 'odec_4'];
   }
   if (sp.includes('oncology')) {
-    if (shortAr.includes('هشام الغزالي')) return ['odec_surg', 'odec_3', 'odec_4'];
-    return ['odec_4', 'neuro_4', 'odec_surg', 'odec_3'];
+    return ['odec_surg', 'odec_4', 'card_vasc', 'odec_3'];
   }
   if (
     sp.includes('hematology') ||
@@ -379,13 +403,10 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
     sp.includes('diabetes') ||
     sp.includes('endocrinology')
   ) {
-    return ['odec_3', 'odec_4', 'odec_surg', 'odec_nutr', 'neuro_1', 'gen_31', 'gen_c5'];
+    return ['odec_3', 'odec_4', 'odec_surg', 'odec_nutr', 'gen_31', 'gen_c5'];
   }
   if (sp.includes('orthopedic') || sp.includes('bone tumor')) {
-    return ['ortho_2', 'ortho_3', 'ortho_1'];
-  }
-  if (sp.includes('git') || sp.includes('hepatology') || sp.includes('gastro')) {
-    return ['git_1', 'whc_plast', 'odec_3'];
+    return ['ortho_1', 'ortho_2', 'ortho_3'];
   }
   if (sp.includes('dental') || sp.includes('oral')) {
     return ['dent_1', 'dent_2'];
@@ -396,17 +417,20 @@ function getCandidateClinicIds(session: OPDClinicSession): string[] {
   return ['gen_c5', 'gen_31', 'whc_proc', 'odec_3', 'odec_4'];
 }
 
-export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
+export function allocateOPDHousingGrid(
+  items: OPDClinicSession[],
+  columns: HousingClinicColumn[] = OPD_HOUSING_COLUMNS
+): {
   assignments: HousingAssignment[];
   unassigned: OPDClinicSession[];
 } {
-  const numCols = OPD_HOUSING_COLUMNS.length;
+  const numCols = columns.length;
   const numSlots = OPD_HOUSING_SLOTS.length;
   const occupied: boolean[][] = Array.from({ length: numCols }, () => Array(numSlots).fill(false));
-  const colIdxById = new Map<string, number>(OPD_HOUSING_COLUMNS.map((c, idx) => [c.id, idx]));
+  const colIdxById = new Map<string, number>(columns.map((c, idx) => [c.id, idx]));
 
-  // Remove non-doctor placeholders; keep duplicates as-is
-  const validItems = filterOPDSessions(items || []);
+  // Remove non-doctor & non-housing diagnostic sessions; keep duplicates and exact fetched durations as-is
+  const validItems = filterOPDSessionsForHousing(items || []);
 
   const sorted = [...validItems].sort((a, b) => {
     const sa = parseTimeToMinutes(a.startTime) ?? 9999;
@@ -419,17 +443,13 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
 
   for (const session of sorted) {
     const sMin = parseTimeToMinutes(session.startTime);
-    let eMin = parseTimeToMinutes(session.endTime);
+    const eMin = parseTimeToMinutes(session.endTime);
     if (sMin === null || eMin === null || eMin <= sMin) {
       unassigned.push(session);
       continue;
     }
 
-    // Cap all-day clinic spans (> 3 hours) to a 2-hour block in Housing so they don't occupy a room all day
-    if (eMin - sMin > 180) {
-      eMin = sMin + 120;
-    }
-
+    // Use exact fetched startTime..endTime clamped to the 9:00 AM - 10:00 PM sheet grid
     const startSlot = Math.max(0, Math.floor((sMin - 9 * 60) / 30));
     const endSlot = Math.min(numSlots - 1, Math.ceil((eMin - 9 * 60) / 30) - 1);
     if (endSlot < startSlot || startSlot >= numSlots) {
@@ -439,7 +459,7 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
 
     const candidates = [
       ...getCandidateClinicIds(session),
-      ...OPD_HOUSING_COLUMNS.map(c => c.id),
+      ...columns.map(c => c.id),
     ];
 
     let chosenCol = -1;
@@ -468,12 +488,16 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
       occupied[chosenCol][slot] = true;
     }
 
+    const baseName = getShortEnglishDoctorName(session);
+    const isNutrition = `${session.specialty} ${session.specialities}`.toLowerCase().includes('nutrition');
+    const displayLabel = isNutrition ? `${baseName}\n(Nutrition)` : baseName;
+
     assignments.push({
       session,
       colIndex: chosenCol,
       startSlot,
       endSlot,
-      displayLabel: getShortEnglishDoctorName(session),
+      displayLabel,
     });
   }
 
@@ -512,14 +536,54 @@ export function getArabicOPDDayName(dateStr: string, items: OPDClinicSession[]):
   return 'جدول العيادات';
 }
 
+const ARABIC_MONTHS = [
+  'يناير',
+  'فبراير',
+  'مارس',
+  'أبريل',
+  'مايو',
+  'يونيو',
+  'يوليو',
+  'أغسطس',
+  'سبتمبر',
+  'أكتوبر',
+  'نوفمبر',
+  'ديسمبر',
+];
+
+function toArabicIndicDigits(input: string | number): string {
+  const digits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  return String(input).replace(/\d/g, d => digits[Number(d)]);
+}
+
 /**
- * Sheet 1: Refined Arabic OPD Schedule (Exact match to عيادات ايليت الاربعاء 18-11.pdf.pdf)
+ * Formats an Arabic schedule title like:
+ * "جدول العيادات الخارجية ليوم الخميس ١٩ نوفمبر ٢٠٢٦"
+ */
+export function formatArabicOPDFullDateTitle(dateStr: string, items: OPDClinicSession[]): string {
+  const dayName = getArabicOPDDayName(dateStr, items || []);
+  const m = String(dateStr || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) {
+    return dayName === 'جدول العيادات'
+      ? 'جدول العيادات الخارجية'
+      : `جدول العيادات الخارجية ليوم ${dayName}`;
+  }
+  const year = toArabicIndicDigits(m[1]);
+  const monthIdx = parseInt(m[2], 10) - 1;
+  const dayNum = toArabicIndicDigits(parseInt(m[3], 10));
+  const monthName = ARABIC_MONTHS[monthIdx] || toArabicIndicDigits(m[2]);
+  return `جدول العيادات الخارجية ليوم ${dayName} ${dayNum} ${monthName} ${year}`;
+}
+
+/**
+ * Sheet 1: Refined Arabic OPD Schedule (Row 1 uses Mohanad's refined occupancy SVG header;
+ * Row 2+ preserves the exact 22-specialty Elite Arabic matrix logic untouched)
  */
 export async function addRefinedOPDScheduleSheet(
   workbook: ExcelJS.Workbook,
   items: OPDClinicSession[],
   opdDate: string,
-  _applyRefinedHeaderFn?: ApplyRefinedHeaderFn
+  applyRefinedHeaderFn?: ApplyRefinedHeaderFn
 ) {
   const sheet = workbook.addWorksheet('عيادات ايليت', {
     views: [{ rightToLeft: false }],
@@ -539,38 +603,20 @@ export async function addRefinedOPDScheduleSheet(
   }
   sheet.getColumn(8).width = 24;
 
-  // Row 1: Top Header Banner
-  const row1 = sheet.getRow(1);
-  row1.height = 38;
-  sheet.mergeCells('D1:F1');
-  const dayBanner = sheet.getCell('D1');
-  dayBanner.value = getArabicOPDDayName(opdDate, items || []);
-  dayBanner.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
-  dayBanner.font = { name: 'Calibri', size: 22, bold: true, color: { argb: 'FF000000' } };
-  dayBanner.alignment = { horizontal: 'center', vertical: 'middle' };
-  for (const col of ['D', 'E', 'F']) {
-    sheet.getCell(`${col}1`).border = {
-      top: { style: 'medium', color: { argb: 'FF000000' } },
-      bottom: { style: 'medium', color: { argb: 'FF000000' } },
-      left: { style: 'medium', color: { argb: 'FF000000' } },
-      right: { style: 'medium', color: { argb: 'FF000000' } },
-    };
-  }
+  // Row 1: Refined Occupancy SVG Header (Mohanad's header_bg.png + dynamic Arabic date title)
+  const titleText = formatArabicOPDFullDateTitle(opdDate, items || []);
+  sheet.mergeCells('A1:H1');
+  sheet.getCell('A1').value = '';
+  sheet.getRow(1).height = 90;
 
-  // Embed Elite Hospital Logo on top-left (Cols A:B)
-  const logoCandidates = [
-    path.resolve(process.cwd(), 'public/logo.png'),
-    path.resolve(process.cwd(), 'dist/logo.png'),
-  ];
-  const logoPath = logoCandidates.find(p => fs.existsSync(p));
-  if (logoPath) {
-    try {
-      const logoId = workbook.addImage({ filename: logoPath, extension: 'png' });
-      sheet.addImage(logoId, {
-        tl: { col: 0.15, row: 0.08 },
-        ext: { width: 170, height: 46 },
-      });
-    } catch (_) {}
+  if (applyRefinedHeaderFn) {
+    await applyRefinedHeaderFn(workbook, sheet, titleText, 8);
+  } else {
+    const fallbackCell = sheet.getCell('A1');
+    fallbackCell.value = titleText;
+    fallbackCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
+    fallbackCell.font = { name: 'Calibri', size: 20, bold: true, color: { argb: 'FF000000' } };
+    fallbackCell.alignment = { horizontal: 'center', vertical: 'middle' };
   }
 
   // Filter out placeholders; keep duplicate doctors as-is
@@ -832,42 +878,61 @@ export async function addRefinedOPDTimelineSheet(
 }
 
 /**
- * Sheet 3: OPD Housing Grid (Exact format of /Users/mohanad/Downloads/OPD Housing)
+ * Sheet 3: OPD Housing Grid (Exact match to /Users/mohanad/Downloads/Elite/housing thursday 19 nov.xlsx)
  */
 export function addOPDHousingSheet(
   workbook: ExcelJS.Workbook,
   items: OPDClinicSession[],
   opdDate: string
 ) {
-  const sheet = workbook.addWorksheet('OPD Housing', {
-    views: [{ rightToLeft: false }],
-    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 1 },
-  });
-
   const weekdayLabel =
     items.find(i => i.weekName)?.weekName ||
     (opdDate
       ? new Date(`${opdDate}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
       : 'Schedule');
 
-  // Row 1: Weekday + 9 Color-coded Center Banners
-  const totalCols = OPD_HOUSING_COLUMNS.length + 1;
+  const housingColumns = getHousingColumnsForDay(weekdayLabel);
+
+  const sheet = workbook.addWorksheet('OPD Housing', {
+    views: [{ rightToLeft: false, zoomScale: 42 }],
+    pageSetup: {
+      orientation: 'landscape',
+      paperSize: 9,
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 1,
+      margins: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+    },
+  });
+
+  const thinBlackBorder: Partial<ExcelJS.Borders> = {
+    top: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+
+  // Row 1: Weekday + 9 Color-coded Center Banners (Uniform Calibri 18pt Bold, height 80.1)
+  const totalCols = housingColumns.length + 1;
   const row1 = sheet.getRow(1);
-  row1.height = 24;
+  row1.height = 80.1;
   const dayCell = sheet.getCell(1, 1);
   dayCell.value = weekdayLabel;
-  dayCell.font = { bold: true, size: 11, name: 'Calibri' };
+  dayCell.font = { bold: true, size: 18, name: 'Calibri', color: { argb: 'FF000000' } };
   dayCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  dayCell.border = {
-    top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' },
-  };
+  dayCell.border = { ...thinBlackBorder };
 
   let colStart = 2;
   while (colStart <= totalCols) {
-    const cfg = OPD_HOUSING_COLUMNS[colStart - 2];
+    const cfg = housingColumns[colStart - 2];
     let colEnd = colStart;
-    while (colEnd < totalCols && OPD_HOUSING_COLUMNS[colEnd - 1].center === cfg.center) {
+    while (colEnd < totalCols && housingColumns[colEnd - 1].center === cfg.center) {
       colEnd++;
+    }
+    for (let c = colStart; c <= colEnd; c++) {
+      const cCell = sheet.getCell(1, c);
+      cCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: cfg.centerColor } };
+      cCell.border = { ...thinBlackBorder };
     }
     if (colEnd > colStart) {
       sheet.mergeCells(1, colStart, 1, colEnd);
@@ -875,88 +940,78 @@ export function addOPDHousingSheet(
     const bannerCell = sheet.getCell(1, colStart);
     bannerCell.value = cfg.center;
     bannerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: cfg.centerColor } };
-    bannerCell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: cfg.centerTextColor } };
+    bannerCell.font = { bold: true, size: 18, name: 'Calibri', color: { argb: cfg.centerTextColor } };
     bannerCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    for (let c = colStart; c <= colEnd; c++) {
-      sheet.getCell(1, c).border = {
-        top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' },
-      };
-    }
     colStart = colEnd + 1;
   }
 
-  // Row 2: Time + Sub-Clinic Headers
+  // Row 2: Time + Sub-Clinic Headers (Calibri 18pt Bold, height 80.1)
   const row2 = sheet.getRow(2);
-  row2.height = 34;
+  row2.height = 80.1;
   const timeHdr = sheet.getCell(2, 1);
   timeHdr.value = 'Time';
-  timeHdr.font = { bold: true, size: 10, name: 'Calibri' };
+  timeHdr.font = { bold: true, size: 18, name: 'Calibri', color: { argb: 'FF000000' } };
   timeHdr.alignment = { horizontal: 'center', vertical: 'middle' };
-  timeHdr.border = {
-    top: { style: 'thin' }, bottom: { style: 'medium' }, left: { style: 'thin' }, right: { style: 'thin' },
-  };
+  timeHdr.border = { ...thinBlackBorder };
 
-  OPD_HOUSING_COLUMNS.forEach((colCfg, idx) => {
+  housingColumns.forEach((colCfg, idx) => {
     const cell = sheet.getCell(2, idx + 2);
     cell.value = colCfg.label;
-    cell.font = { bold: true, size: 9, name: 'Calibri' };
+    cell.font = { bold: true, size: 18, name: 'Calibri', color: { argb: 'FF000000' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    cell.border = {
-      top: { style: 'thin' }, bottom: { style: 'medium' }, left: { style: 'thin' }, right: { style: 'thin' },
-    };
+    cell.border = { ...thinBlackBorder };
   });
 
-  // Rows 3..28: 26 half-hour time slots (9:00 AM - 10:00 PM)
+  // Rows 3..28: 26 half-hour time slots (9:00 AM - 10:00 PM), uniform height 80.1 & thin black grid
   OPD_HOUSING_SLOTS.forEach((slot, sIdx) => {
     const rNum = sIdx + 3;
-    sheet.getRow(rNum).height = 20;
+    sheet.getRow(rNum).height = 80.1;
     const tCell = sheet.getCell(rNum, 1);
     tCell.value = slot.label;
-    tCell.font = { bold: true, size: 9, name: 'Calibri' };
+    tCell.font = { bold: true, size: 18, name: 'Calibri', color: { argb: 'FF000000' } };
     tCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    tCell.border = {
-      top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' },
-    };
+    tCell.border = { ...thinBlackBorder };
 
     for (let c = 2; c <= totalCols; c++) {
       const cell = sheet.getCell(rNum, c);
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-        bottom: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-        left: { style: 'thin', color: { argb: 'FF808080' } },
-        right: { style: 'thin', color: { argb: 'FF808080' } },
-      };
+      cell.border = { ...thinBlackBorder };
     }
   });
 
-  // Allocate & merge doctor blocks
-  const { assignments } = allocateOPDHousingGrid(items);
+  // Allocate & merge doctor blocks with exact outer box borders (preserving TOP border!)
+  const { assignments } = allocateOPDHousingGrid(items, housingColumns);
   for (const a of assignments) {
     const startRow = a.startSlot + 3;
     const endRow = a.endSlot + 3;
     const col = a.colIndex + 2;
+
+    // Set per-cell box borders BEFORE merging so ExcelJS preserves top on startRow & bottom on endRow
+    for (let r = startRow; r <= endRow; r++) {
+      const cCell = sheet.getCell(r, col);
+      cCell.border = {
+        top: r === startRow ? { style: 'thin', color: { argb: 'FF000000' } } : undefined,
+        bottom: r === endRow ? { style: 'thin', color: { argb: 'FF000000' } } : undefined,
+        left: { style: 'thin', color: { argb: 'FF000000' } },
+        right: { style: 'thin', color: { argb: 'FF000000' } },
+      };
+    }
+
     if (endRow > startRow) {
       try {
         sheet.mergeCells(startRow, col, endRow, col);
       } catch (_) {}
     }
+
     const cell = sheet.getCell(startRow, col);
     cell.value = a.displayLabel;
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
-    cell.font = { bold: true, size: 8, name: 'Calibri', color: { argb: 'FF000000' } };
+    cell.font = { bold: true, size: 18, name: 'Calibri', color: { argb: 'FF000000' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    for (let r = startRow; r <= endRow; r++) {
-      sheet.getCell(r, col).border = {
-        top: { style: r === startRow ? 'thin' : undefined, color: { argb: 'FF000000' } },
-        bottom: { style: r === endRow ? 'thin' : undefined, color: { argb: 'FF000000' } },
-        left: { style: 'thin', color: { argb: 'FF000000' } },
-        right: { style: 'thin', color: { argb: 'FF000000' } },
-      };
-    }
+    // Ensure outer box border on master cell (for single-slot or ExcelJS merged master)
+    cell.border = { ...thinBlackBorder };
   }
 
-  sheet.getColumn(1).width = 18;
+  sheet.getColumn(1).width = 37.57;
   for (let c = 2; c <= totalCols; c++) {
-    sheet.getColumn(c).width = 13;
+    sheet.getColumn(c).width = 20.71;
   }
 }

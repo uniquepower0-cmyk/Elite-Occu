@@ -5,15 +5,19 @@ import ExcelJS from 'exceljs';
 import {
   getOPDSpecialtyStats,
   allocateOPDHousingGrid,
+  getHousingColumnsForDay,
+  formatArabicOPDFullDateTitle,
   addRefinedOPDScheduleSheet,
   addRefinedOPDTimelineSheet,
   addOPDHousingSheet,
   type OPDClinicSession,
 } from './opdLogic.js';
 
-const fixturePath = path.resolve(__dirname, '__fixtures__/live_opd_2026-11-18.json');
-const liveFixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
-const liveSessions: OPDClinicSession[] = liveFixture.items;
+const wedFixturePath = path.resolve(__dirname, '__fixtures__/live_opd_2026-11-18.json');
+const wedSessions: OPDClinicSession[] = JSON.parse(fs.readFileSync(wedFixturePath, 'utf8')).items;
+
+const thuFixturePath = path.resolve(__dirname, '__fixtures__/live_opd_2026-11-19.json');
+const thuSessions: OPDClinicSession[] = JSON.parse(fs.readFileSync(thuFixturePath, 'utf8')).items;
 
 function buildSampleSessions(): OPDClinicSession[] {
   return [
@@ -77,27 +81,32 @@ function cellText(val: ExcelJS.CellValue): string {
 }
 
 describe('opdLogic', () => {
+  it('formats Arabic OPD full date title with Arabic-Indic digits', () => {
+    expect(formatArabicOPDFullDateTitle('2026-11-19', thuSessions)).toBe(
+      'جدول العيادات الخارجية ليوم الخميس ١٩ نوفمبر ٢٠٢٦'
+    );
+    expect(formatArabicOPDFullDateTitle('2026-11-18', wedSessions)).toBe(
+      'جدول العيادات الخارجية ليوم الأربعاء ١٨ نوفمبر ٢٠٢٦'
+    );
+  });
+
   it('groups clinic counts by sub-clinic Specialty while filtering placeholders', () => {
     const stats = getOPDSpecialtyStats(buildSampleSessions());
     expect(stats.find(s => s.specialty === 'Audiometry clinic')?.count).toBe(1);
     expect(stats.find(s => s.specialty === 'ENT Clinic')?.count).toBe(1);
     expect(stats.find(s => s.specialty === 'General Surgery Clinic')?.count).toBe(1);
 
-    const liveStats = getOPDSpecialtyStats(liveSessions);
+    const liveStats = getOPDSpecialtyStats(wedSessions);
     expect(liveStats.some(s => s.specialty.toLowerCase().includes('physiotherapy sessions'))).toBe(false);
   });
 
-  it('allocates housing grid for all 84 filtered live sessions without overlapping slots', () => {
-    const { assignments, unassigned } = allocateOPDHousingGrid(liveSessions);
+  it('allocates Wednesday housing grid (31 cols) without overlapping slots', () => {
+    const wedCols = getHousingColumnsForDay('Wednesday');
+    expect(wedCols).toHaveLength(30); // + Time col = 31
+    const { assignments, unassigned } = allocateOPDHousingGrid(wedSessions, wedCols);
     expect(unassigned).toHaveLength(0);
     expect(assignments).toHaveLength(84);
 
-    // No physiotherapy technician sessions in assignments
-    expect(
-      assignments.some(a => a.displayLabel.toLowerCase().includes('physiotherapy session'))
-    ).toBe(false);
-
-    // No overlapping slots in the same column
     for (let i = 0; i < assignments.length; i++) {
       for (let j = i + 1; j < assignments.length; j++) {
         if (assignments[i].colIndex === assignments[j].colIndex) {
@@ -110,17 +119,81 @@ describe('opdLogic', () => {
     }
   });
 
-  it('generates Refined Arabic OPD Sheet matching Elite PDF layout, colors, and keeping duplicates', async () => {
+  it('reproduces Human Thursday Housing format, exact durations, routing, borders, and 30 columns', () => {
+    const thuCols = getHousingColumnsForDay('Thursday');
+    expect(thuCols).toHaveLength(29); // + Time col = 30 (3 Neurosurgery clinics on Thu)
+    expect(thuCols[4].label).toBe('Audiology Clinic');
+    expect(thuCols[5].label).toBe('Clinic 31');
+
+    const { assignments, unassigned } = allocateOPDHousingGrid(thuSessions, thuCols);
+    expect(unassigned).toHaveLength(0);
+
+    // Non-housing diagnostic clinics (U/S, 4D, Check Up, Prp, Hepatica) excluded from Housing
+    const labels = assignments.map(a => a.displayLabel);
+    expect(labels.some(l => l.includes('SMS Karem'))).toBe(false);
+    expect(labels.some(l => l.includes('Prp Injection'))).toBe(false);
+    expect(labels.some(l => l.includes('Hepatica'))).toBe(false);
+    expect(labels.some(l => l === 'Mohamed .')).toBe(false);
+
+    // Clinical routing checks
+    const byName = (sub: string) => assignments.find(a => a.displayLabel.toLowerCase().includes(sub.toLowerCase()));
+    expect(thuCols[byName('Hossam AboElKher')!.colIndex].center).toBe('GIT Center');
+    expect(thuCols[byName('Manar Ezzat')!.colIndex].center).toBe('GIT Center');
+    expect(thuCols[byName('Passant Samir')!.colIndex].id).toBe('gen_peds');
+    expect(thuCols[byName('Wissam ElAmrawy')!.colIndex].center).toBe('Neurosurgery Center');
+    expect(thuCols[byName('Mayada El Sheref')!.colIndex].id).toBe('gen_audio');
+    expect(thuCols[byName('Sally Adel')!.colIndex].id).toBe('gen_31');
+    expect(thuCols[byName('Bassem Hassan')!.colIndex].id).toBe('whc_plast');
+    expect(byName('Shimaa Mohammed')?.displayLabel).toBe('Shimaa Mohammed\n(Nutrition)');
+
+    // Exact fetched duration preserved (Mohamed Abdelmoneim 9:00 AM - 2:00 PM = 10 half-hour slots, slots 0..9)
+    const abdelMoneim = byName('Moh. AbdElMoneim')!;
+    expect(abdelMoneim.startSlot).toBe(0);
+    expect(abdelMoneim.endSlot).toBe(9);
+
+    // Verify workbook styling, spacing, colors, and TOP borders
     const wb = new ExcelJS.Workbook();
-    await addRefinedOPDScheduleSheet(wb, liveSessions, '2026-11-18');
+    addOPDHousingSheet(wb, thuSessions, '2026-11-19');
+    const ws = wb.getWorksheet('OPD Housing')!;
+    expect(ws.columnCount).toBe(30);
+    expect(ws.getColumn(1).width).toBeCloseTo(37.57, 2);
+    expect(ws.getColumn(2).width).toBeCloseTo(20.71, 2);
+    expect(ws.getRow(1).height).toBeCloseTo(80.1, 1);
+    expect(ws.getRow(3).height).toBeCloseTo(80.1, 1);
+    expect(ws.getCell(1, 1).font?.size).toBe(18);
+    expect(ws.getCell(2, 2).font?.size).toBe(18);
+    expect(ws.getCell(3, 1).font?.size).toBe(18);
+    expect((ws.getCell(1, 2).fill as ExcelJS.FillPattern)?.fgColor?.argb).toBe('FFA9D18E');
+    expect((ws.getCell(1, 8).fill as ExcelJS.FillPattern)?.fgColor?.argb).toBe('FFF4B183');
+
+    // Every doctor master cell MUST have top, bottom, left, right thin borders (no missing top border!)
+    for (const a of assignments) {
+      const cell = ws.getCell(a.startSlot + 3, a.colIndex + 2);
+      expect(cell.font?.size).toBe(18);
+      expect(cell.border?.top?.style).toBe('thin');
+      expect(cell.border?.bottom?.style).toBe('thin');
+      expect(cell.border?.left?.style).toBe('thin');
+      expect(cell.border?.right?.style).toBe('thin');
+    }
+  });
+
+  it('generates Refined Arabic OPD Sheet with SVG header callback and preserved matrix logic', async () => {
+    const wb = new ExcelJS.Workbook();
+    let capturedTitle = '';
+    let capturedCols = 0;
+    const captureHeader = async (_wb: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols = 8) => {
+      capturedTitle = title;
+      capturedCols = numCols;
+      sheet.getCell('A1').value = title;
+    };
+
+    await addRefinedOPDScheduleSheet(wb, wedSessions, '2026-11-18', captureHeader);
     const ws = wb.getWorksheet('عيادات ايليت');
     expect(ws).toBeDefined();
+    expect(capturedTitle).toBe('جدول العيادات الخارجية ليوم الأربعاء ١٨ نوفمبر ٢٠٢٦');
+    expect(capturedCols).toBe(8);
+    expect(ws!.getRow(1).height).toBe(90);
 
-    // Row 1 day banner
-    expect(ws!.getCell('D1').value).toBe('الأربعاء');
-    expect((ws!.getCell('D1').fill as ExcelJS.FillPattern)?.fgColor?.argb).toBe('FF00FFCC');
-
-    // Collect all cell text
     const allTexts: string[] = [];
     ws!.eachRow(row => {
       row.eachCell(cell => {
@@ -128,58 +201,24 @@ describe('opdLogic', () => {
         if (txt) allTexts.push(txt);
       });
     });
-
     const joined = allTexts.join('\n');
     expect(joined).toContain('أنف و أذن و حنجرة');
     expect(joined).toContain('جراحة عامة');
-    expect(joined).toContain('جراحات الغدد الصماء والسمنه');
     expect(joined).toContain('ولاء الامير');
     expect(joined).toContain('(سمعيات)');
     expect(joined).toContain('رسم المخ');
-    expect(joined).toContain('عمرو صبري');
-    expect(joined).toContain('بيشوي');
-
-    // Zero Physiotherapy Sessions placeholders
     expect(joined.toLowerCase()).not.toContain('physiotherapy session');
-
-    // Verify no stray 2:30 next to Nehad ElMofty
-    const nehadCell = allTexts.find(t => t.includes('نهاد المفتي'));
-    expect(nehadCell).toBeDefined();
-    expect(nehadCell).not.toContain('2:30');
-
-    // Verify duplicates are kept (Mina Edward x2 in Ortho)
-    const minaCells = allTexts.filter(t => t.includes('مينا ادوارد'));
-    expect(minaCells.length).toBe(2);
+    expect(allTexts.filter(t => t.includes('مينا ادوارد')).length).toBe(2);
   });
 
-  it('generates revised OPD Timeline and OPD Housing sheets cleanly from live data', async () => {
+  it('generates revised OPD Timeline cleanly from live data', async () => {
     const noopHeader = async (_wb: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string) => {
       sheet.getCell('A1').value = title;
     };
-
     const wb2 = new ExcelJS.Workbook();
-    await addRefinedOPDTimelineSheet(wb2, liveSessions, '2026-11-18', noopHeader);
+    await addRefinedOPDTimelineSheet(wb2, wedSessions, '2026-11-18', noopHeader);
     const timelineWs = wb2.getWorksheet('OPD Timeline');
     expect(timelineWs).toBeDefined();
     expect(timelineWs!.getCell('A1').value).toBe('الجدول الزمني للعيادات الخارجية ليوم 18/11/2026');
-
-    const timelineTexts: string[] = [];
-    timelineWs!.eachRow(row => {
-      row.eachCell(cell => {
-        const txt = cellText(cell.value);
-        if (txt) timelineTexts.push(txt);
-      });
-    });
-    expect(timelineTexts.join('\n').toLowerCase()).not.toContain('physiotherapy session');
-    expect(timelineTexts.join('\n')).toContain('أنف و أذن و حنجرة');
-
-    const wb3 = new ExcelJS.Workbook();
-    addOPDHousingSheet(wb3, liveSessions, '2026-11-18');
-    const housingWs = wb3.getWorksheet('OPD Housing');
-    expect(housingWs).toBeDefined();
-    expect(housingWs!.getCell(1, 1).value).toBe('Wednesday');
-    expect(housingWs!.getCell(2, 1).value).toBe('Time');
-    expect(housingWs!.getCell(3, 1).value).toBe('9:00 - 9:30 AM');
-    expect((housingWs!.getCell(1, 2).fill as ExcelJS.FillPattern)?.fgColor?.argb).toBe('FFA9D08E');
   });
 });

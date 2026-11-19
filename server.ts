@@ -6182,10 +6182,14 @@ async function getCompositedHeaderBuffer(
 async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, title: string, numCols: number = 6) {
   const safeTitle = safeEscapeXml(title);
   const customBg = getCustomHeaderBgInfo();
+  const isLongTitle = title.length > 34;
+  const fontSize = isLongTitle ? 34 : 40;
+  const pillX = isLongTitle ? 220 : 420;
+  const pillW = isLongTitle ? 760 : 360;
   const svgText = `
     <svg width="1200" height="180" viewBox="0 0 1200 180">
-      <rect x="420" y="45" width="360" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-      <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+      <rect x="${pillX}" y="45" width="${pillW}" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
+      <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="${fontSize}" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
     </svg>
   `;
 
