@@ -196,16 +196,17 @@ BEGIN
     notes = COALESCE(EXCLUDED.notes, admissions.notes),
     updated_at = NOW();
 
-  -- 6. High-Performance Set-Based Auto-Discharge
-  -- Only active PowerBI-sourced admissions not present in this sync are marked Discharged
-  -- Guard: Only proceed if staging table contains resolved admissions to prevent catastrophic wipe
+  -- 6. High-Performance Set-Based Auto-Discharge & Manual-Upload Reconciliation
+  -- Once a valid non-empty Power BI sync arrives, any active admission (powerbi OR stale manual upload)
+  -- not present in this sync is marked Discharged so public.admissions stays 100% in parity with state/occupancy.
+  -- Guard: Only proceed if staging table contains resolved admissions to prevent catastrophic wipe.
   IF (SELECT count(*) FROM tmp_sync_admissions_staging WHERE patient_id IS NOT NULL) > 0 THEN
     UPDATE public.admissions a
     SET status = 'Discharged', 
         discharge_date = GREATEST(NOW(), a.admission_date), 
         updated_at = NOW()
     WHERE a.status = 'Admitted' 
-      AND (a.source IS NULL OR a.source = 'powerbi')
+      AND (a.source IS NULL OR a.source IN ('powerbi', 'manual'))
       AND NOT EXISTS (
         SELECT 1 FROM tmp_sync_admissions_staging s
         WHERE s.patient_id = a.patient_id

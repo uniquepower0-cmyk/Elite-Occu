@@ -3,6 +3,7 @@ import {
   cleanRoomStr,
   isOperatingRoom,
   isDialysisRoom,
+  isCompanionBed,
   isProcedureOrTemporaryRoom,
   cleanAdmissionDateStr,
   isToday,
@@ -180,6 +181,7 @@ export function getOccupancyRows(
     const room = row[0];
     const name = row[1];
     if (isOperatingRoom(room)) return false;
+    if (isCompanionBed(room)) return false;
     if (isManuallyDischargedFn(name)) return false;
     return true;
   });
@@ -294,7 +296,9 @@ export function getOccupancyRowsUnfiltered(
       mrnStr,
     ];
   }).filter(row => {
+    const room = row[0];
     const name = row[1];
+    if (isCompanionBed(room)) return false;
     if (isManuallyDischargedFn(name)) return false;
     return true;
   });

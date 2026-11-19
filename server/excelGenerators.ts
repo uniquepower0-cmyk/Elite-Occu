@@ -7,6 +7,7 @@ import {
   normalizeRoom,
   isOperatingRoom,
   isDialysisRoom,
+  isCompanionBed,
   isOrXRoom,
   cleanAdmissionDateStr,
   getAccommodationCategory,
@@ -299,7 +300,8 @@ export function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isComp;
     });
 
   processedData.sort((a, b) => {
@@ -509,7 +511,11 @@ export async function addRefinedExitSheet(workbook: ExcelJS.Workbook, discharged
   });
 
   let serial = 1;
-  (dischargedPatients || []).forEach((p) => {
+  (dischargedPatients || []).filter((p) => {
+    if (!p) return false;
+    if (p.isCompanion || isCompanionBed(p.room || '')) return false;
+    return true;
+  }).forEach((p) => {
     const contractorVal = p.contractor || '';
     const cleanedContractor = cleanContractorForDisplay(contractorVal);
     const rowValues = [

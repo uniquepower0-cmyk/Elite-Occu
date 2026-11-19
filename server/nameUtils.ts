@@ -85,6 +85,17 @@ export function isOrXRoom(roomStr: string): boolean {
          /\bor\s*-\s*\d+/i.test(bLower);
 }
 
+export function isCompanionBed(roomStr: string): boolean {
+  if (!roomStr) return false;
+  const s = String(roomStr).trim();
+  if (!s) return false;
+  return (
+    /(?:companion|مرافق)/i.test(s) ||
+    /^(?:bed|room|الغرفة|غرفة)?\s*\d{3}\s*[ab]?\s*(?:-\s*[12]\s*|-\s*)?c(?:\s*(?:\d+|i{1,3}))?$/i.test(s) ||
+    /^(?:bed|room|الغرفة|غرفة)?\s*(?:405\s*d|421\s*b)$/i.test(s)
+  );
+}
+
 export function isProcedureOrTemporaryRoom(room: string): boolean {
   if (!room) return false;
   const low = String(room).toLowerCase();

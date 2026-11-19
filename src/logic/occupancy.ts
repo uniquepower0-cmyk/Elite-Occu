@@ -31,6 +31,17 @@ export function isOperatingRoom(roomStr: string): boolean {
          REGEX_OR_DASH.test(bLower);
 }
 
+export function isCompanionBed(roomStr: string): boolean {
+  if (!roomStr) return false;
+  const s = String(roomStr).trim();
+  if (!s) return false;
+  return (
+    /(?:companion|مرافق)/i.test(s) ||
+    /^(?:bed|room|الغرفة|غرفة)?\s*\d{3}\s*[ab]?\s*(?:-\s*[12]\s*|-\s*)?c(?:\s*(?:\d+|i{1,3}))?$/i.test(s) ||
+    /^(?:bed|room|الغرفة|غرفة)?\s*(?:405\s*d|421\s*b)$/i.test(s)
+  );
+}
+
 export interface PatientRow {
   room: string;
   id: string;
@@ -273,7 +284,8 @@ export function filterPatientData(rawData: any): PatientRow[] {
         lowName === "name" ||
         p.name === "اسم المريض";
       const isOR = isOperatingRoom(p.room);
-      return !isExcluded && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !isExcluded && !isHeader && !isOR && !isComp;
     });
 }
 

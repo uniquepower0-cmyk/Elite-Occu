@@ -184,6 +184,21 @@ RE_DATE_SEP: Final = re.compile(r"^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$")
 RE_DC_KW: Final = re.compile(r"\b(dc|d\.c\.|d\.c)\b")
 # Matches "ER" as a standalone word in a bed name (e.g. "ER V-BED"), not inside words like "intermediate".
 RE_ER_ROOM: Final = re.compile(r"\bER\b", re.IGNORECASE)
+# Matches all Cybernetics HMIS companion bed labels (e.g. "Bed 405 C", "Bed 405 D", "Bed 421 B", "Bed 408 C I", "Bed 320c", "Bed 402A - C", "Companion", "مرافق").
+RE_COMPANION_BED: Final = re.compile(
+    r"(?:companion|مرافق)"
+    r"|(?:^(?:bed|room|الغرفة|غرفة)?\s*\d{3}\s*[ab]?\s*(?:-\s*[12]\s*|-\s*)?c(?:\s*(?:\d+|i{1,3}))?$)"
+    r"|(?:^(?:bed|room|الغرفة|غرفة)?\s*(?:405\s*d|421\s*b)$)",
+    re.IGNORECASE,
+)
+
+
+def is_companion_bed(bed_str: Any) -> bool:
+    """Returns True when a bed/room label identifies a companion bed (never an inpatient bed)."""
+    if not bed_str:
+        return False
+    s = str(bed_str).strip()
+    return bool(s and RE_COMPANION_BED.search(s))
 
 ARABIC_DIGITS_TRANS: Final = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
@@ -837,6 +852,11 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
         else 0
     )
 
+    raw_restored_overrides = meta.get("restoredHmisOverrides") or []
+    if not isinstance(raw_restored_overrides, list) or is_new_day or is_system_reset:
+        raw_restored_overrides = []
+    restored_hmis_overrides = [ov for ov in raw_restored_overrides if isinstance(ov, dict)]
+
     return {
         "previous": occ.get("previous") or dataset.get("current"),
         "occupancy_current": occ_current,
@@ -850,6 +870,7 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
         "manually_discharged_names": list(manual_names_set),
         "manually_discharged_mrns": list(manual_mrns_set),
         "manual_discharges": manual_discharges,
+        "restored_hmis_overrides": restored_hmis_overrides,
         "occupancy_index": state_map.get("history/occupancy_index") or [],
         "existing_metadata": meta,
         "is_new_day": is_new_day,
@@ -904,17 +925,264 @@ def fetch_hmis_pending_discharges() -> list[dict[str, str]]:
     for b in beds if isinstance(beds, list) else []:
         if not isinstance(b, dict) or b.get("AdmissionStatus") != HMIS_PENDING_STATUS:
             continue
+        bed_name = str(b.get("BedName_EN") or "").strip()
+        p_name_ar = str(b.get("EnglishFullName") or b.get("ArabicFullName") or "").strip()
+        p_mrn = clean_mrn_str(b.get("PatientBarcode") or b.get("PatientID") or "")
+        if b.get("IsForCompanion") is True or b.get("CompanionGUID") or is_companion_bed(bed_name):
+            log(f"[HMIS Pending] Skipped companion bed: {p_name_ar or bed_name} ({bed_name})")
+            continue
         out.append({
-            "mrn": clean_mrn_str(b.get("PatientBarcode") or b.get("PatientID") or ""),
+            "mrn": p_mrn,
             # NOTE: the HMIS stores the Arabic name in "EnglishFullName" and the English one in "ArabicFullName".
-            "name": str(b.get("EnglishFullName") or b.get("ArabicFullName") or "").strip(),
+            "name": p_name_ar,
             "name_en": str(b.get("ArabicFullName") or "").strip(),
-            "bed": str(b.get("BedName_EN") or "").strip(),
+            "bed": bed_name,
             # Portal label is "<bed> - <structure>", e.g. "Observation 1 - ER"; the ER part lives in the structure name.
             "structure": str(b.get("FloorStructureName_EN") or "").strip(),
+            "admission_date": str(b.get("AdmissionDate") or "").strip(),
         })
     log(f"[HMIS Pending] {len(out)} case(s) currently in Nurse Portal 'Pending Discharge'.")
     return out
+
+
+def build_raw_row_from_record(rec: Optional[NormalizedPatientRecord]) -> Optional[list[Any]]:
+    """Builds a 41-column legacy array from a NormalizedPatientRecord so manual restore preserves all clinical/financial fields."""
+    if not rec:
+        return None
+    row: list[Any] = [""] * 41
+    row[0] = rec.admission_date or ""
+    row[1] = rec.bed or ""
+    row[2] = rec.mrn or rec.clean_mrn or ""
+    row[3] = rec.name or ""
+    row[4] = rec.mobile or ""
+    row[5] = rec.financial_status or ""
+    row[7] = rec.floor or ""
+    row[8] = rec.notes or ""
+    row[9] = rec.visit_type or ""
+    row[10] = rec.payment_by or ""
+    row[12] = rec.contractor or ""
+    row[16] = rec.los or ""
+    row[20] = rec.diagnosis or ""
+    row[22] = rec.physician or ""
+    row[23] = rec.specialty or ""
+    row[25] = f"{rec.total_invoice:.2f}"
+    row[27] = f"{rec.remaining_debt:.2f}"
+    row[31] = rec.expected_discharge or ""
+    row[33] = rec.handover or ""
+    row[36] = rec.alos or ""
+    row[38] = rec.medications or ""
+    row[39] = rec.initial_assessment or ""
+    row[40] = rec.vte_summary or ""
+    return row
+
+
+def compute_sync_content_hash(
+    raw_records: list[dict[str, Any]],
+    pending_cases: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    """Hashes Power BI raw rows together with the sorted HMIS pending-discharge signature."""
+    def _norm(v: Any) -> str:
+        if v is None:
+            return "None"
+        try:
+            if pd.isna(v):
+                return "None"
+        except Exception:
+            pass
+        if isinstance(v, (datetime.date, datetime.datetime, pd.Timestamp)):
+            return v.isoformat()
+        return str(v)
+
+    pbi_sig = [[_norm(v) for v in r.values()] for r in (raw_records or [])]
+    hmis_sig = sorted(
+        (
+            str(pc.get("mrn") or ""),
+            str(pc.get("bed") or ""),
+            str(pc.get("name") or ""),
+        )
+        for pc in (pending_cases or [])
+        if isinstance(pc, dict)
+    )
+    payload = json.dumps({"pbi": pbi_sig, "hmis": hmis_sig}, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _matches_restored_override(
+    name: str,
+    mrn: str,
+    admission_date: Optional[str],
+    restored_overrides: list[dict[str, Any]],
+) -> bool:
+    c_mrn = clean_mrn_str(mrn)
+    for ov in restored_overrides or []:
+        if not isinstance(ov, dict):
+            continue
+        ov_mrn = clean_mrn_str(ov.get("mrn") or "")
+        ov_name = str(ov.get("name") or "").strip()
+        if (c_mrn and ov_mrn and c_mrn == ov_mrn) or (name and ov_name and is_name_match(name, ov_name)):
+            ov_adm = ov.get("admissionDate") or ov.get("date")
+            if admission_date and ov_adm:
+                if is_readmission_after_discharge(admission_date, str(ov_adm)):
+                    # Newer admission than the overridden one; do not suppress future discharge checks
+                    continue
+            return True
+    return False
+
+
+def reconcile_hmis_pending_discharges(
+    pending_cases: list[dict[str, str]],
+    records: list[NormalizedPatientRecord],
+    already_disc: list[dict[str, Any]],
+    manual_names: list[str],
+    manual_mrns: set[str],
+    manual_discharges: list[dict[str, str]],
+    restored_overrides: list[dict[str, Any]],
+    cairo_time_str: str,
+    dry_run: bool = False,
+) -> int:
+    """
+    Reconciles HMIS Nurse Portal 'Pending Discharge' (FinancialDischarge) cases in-place:
+    1. Scrubs any companion beds that previously leaked into discharged/manual lists.
+    2. Auto-reverses stale `hmis_pending_discharge` entries when HMIS no longer marks them
+       FinancialDischarge and the patient is still active in Power BI (never touches staff manual discharges).
+    3. Adds active non-companion, non-ER, non-dialysis, non-overridden pending cases with full rawRow.
+    Returns count of newly added (or would-add in dry_run) cases.
+    """
+    # Step A: Scrub any companion bed entries from discharged & manual lists
+    scrubbed_names: list[str] = []
+    scrubbed_mrns: set[str] = set()
+    kept_disc: list[dict[str, Any]] = []
+    for dp in already_disc:
+        if isinstance(dp, dict) and (dp.get("isCompanion") or is_companion_bed(dp.get("room") or "")):
+            nm = str(dp.get("name") or "").strip()
+            m = clean_mrn_str(dp.get("mrn") or "")
+            if nm:
+                scrubbed_names.append(nm)
+            if m:
+                scrubbed_mrns.add(m)
+            log(f"[HMIS Pending] Scrubbed companion bed from discharged list: {nm} ({dp.get('room')})")
+            continue
+        kept_disc.append(dp)
+    already_disc[:] = kept_disc
+
+    # Step B: Auto-reverse hmis_pending_discharge entries when HMIS cleared FinancialDischarge and patient is active in Power BI
+    def _is_still_pending(dp_name: str, dp_mrn: str) -> bool:
+        for pc in pending_cases:
+            pc_m = clean_mrn_str(pc.get("mrn") or "")
+            if (dp_mrn and pc_m and dp_mrn == pc_m) or (dp_name and is_name_match(dp_name, pc.get("name") or pc.get("name_en") or "")):
+                return True
+        return False
+
+    reversed_disc: list[dict[str, Any]] = []
+    for dp in already_disc:
+        if isinstance(dp, dict) and dp.get("source") == "hmis_pending_discharge":
+            dp_name = str(dp.get("name") or "").strip()
+            dp_mrn = clean_mrn_str(dp.get("mrn") or "")
+            still_in_pbi = any(
+                (dp_mrn and r.clean_mrn and dp_mrn == r.clean_mrn) or (dp_name and is_name_match(dp_name, r.name))
+                for r in records
+            )
+            if still_in_pbi and not _is_still_pending(dp_name, dp_mrn):
+                if dp_name:
+                    scrubbed_names.append(dp_name)
+                if dp_mrn:
+                    scrubbed_mrns.add(dp_mrn)
+                log(f"[HMIS Pending] Auto-reversed cleared FinancialDischarge back to active: {dp_name} (MRN {dp_mrn})")
+                continue
+        reversed_disc.append(dp)
+    already_disc[:] = reversed_disc
+
+    if scrubbed_names or scrubbed_mrns:
+        manual_names[:] = [
+            mn for mn in manual_names
+            if not any(is_name_match(mn, sn) for sn in scrubbed_names)
+        ]
+        for sm in scrubbed_mrns:
+            manual_mrns.discard(sm)
+        manual_discharges[:] = [
+            md for md in manual_discharges
+            if not (
+                (md.get("mrn") and clean_mrn_str(md.get("mrn")) in scrubbed_mrns)
+                or (md.get("name") and any(is_name_match(md.get("name"), sn) for sn in scrubbed_names))
+                or is_companion_bed(md.get("room") or "")
+            )
+        ]
+
+    # Step C: Process current HMIS FinancialDischarge cases
+    new_count = 0
+    for pc in pending_cases:
+        label = f"{pc['name'] or pc['name_en']} (MRN {pc['mrn']}, {pc['bed']})"
+        if is_companion_bed(pc["bed"]):
+            log(f"[HMIS Pending] Skipped companion bed: {label}")
+            continue
+        if is_dialysis_room(pc["bed"]):
+            log(f"[HMIS Pending] Skipped dialysis case: {label}")
+            continue
+        if RE_ER_ROOM.search(f"{pc['bed']} - {pc.get('structure', '')}"):
+            log(f"[HMIS Pending] Skipped ER case: {label}")
+            continue
+        match_rec = next((r for r in records if pc["mrn"] and r.clean_mrn == pc["mrn"]), None)
+        if not match_rec and pc.get("name"):
+            match_rec = next((r for r in records if is_name_match(r.name, pc["name"])), None)
+        p_name = (match_rec.name if match_rec else pc["name"]) or pc["name_en"]
+        eff_mrn = (match_rec.clean_mrn if match_rec else pc["mrn"]) or pc["mrn"]
+        eff_adm = match_rec.admission_date if match_rec else pc.get("admission_date")
+
+        if _matches_restored_override(p_name, eff_mrn, eff_adm, restored_overrides):
+            log(f"[HMIS Pending] Skipped user-restored override: {label}")
+            continue
+
+        if is_patient_manually_discharged(
+            pc["name"], pc["mrn"], manual_names, manual_mrns,
+            admission_date=(match_rec.admission_date if match_rec else None),
+            manual_discharges=manual_discharges,
+        ):
+            log(f"[HMIS Pending] Already discharged, skipping: {label}")
+            continue
+        if any(
+            isinstance(dp, dict) and (
+                (pc["mrn"] and clean_mrn_str(dp.get("mrn") or "") == pc["mrn"])
+                or is_name_match(dp.get("name"), p_name)
+            ) and not (
+                match_rec and is_readmission_after_discharge(
+                    match_rec.admission_date, dp.get("dischargeDate") or dp.get("date")
+                )
+            )
+            for dp in already_disc
+        ):
+            log(f"[HMIS Pending] Already in cumulative discharged, skipping: {label}")
+            continue
+        new_count += 1
+        if dry_run:
+            log(f"[HMIS Pending][DRY-RUN] Would add to cumulative discharged: {label}")
+            continue
+        disc_room = clean_room_str(match_rec.bed if match_rec else pc["bed"])
+        disc_mrn = eff_mrn
+        already_disc.append({
+            "room": disc_room,
+            "mrn": disc_mrn,
+            "name": p_name,
+            "physician": match_rec.physician if match_rec else "",
+            "contractor": match_rec.contractor if match_rec else "",
+            "date": (match_rec.admission_date if match_rec else "") or "",
+            "dischargeDate": cairo_time_str,
+            "dischargeType": "manual",
+            "source": "hmis_pending_discharge",
+            "rawRow": build_raw_row_from_record(match_rec),
+        })
+        manual_names.append(p_name)
+        if disc_mrn:
+            manual_mrns.add(disc_mrn)
+        manual_discharges.append({
+            "name": p_name,
+            "mrn": disc_mrn,
+            "discharge_date": cairo_time_str,
+            "room": disc_room,
+        })
+        log(f"[HMIS Pending] Added to cumulative discharged: {label}")
+    if new_count:
+        log(f"[HMIS Pending] {new_count} new case(s) {'detected (dry-run, nothing written)' if dry_run else 'added'}.")
+    return new_count
 
 
 # --- CLASSIFICATION HELPERS ---
@@ -1022,8 +1290,8 @@ def is_excluded_from_inpatient_census(
     financial_status: str = "",
     name: str = ""
 ) -> bool:
-    """Matches server.ts KEYWORDS_TO_EXCLUDE + isOperatingRoom for 100% census & subsheet parity."""
-    if is_operating_room_bed(bed):
+    """Matches server.ts KEYWORDS_TO_EXCLUDE + isOperatingRoom + isCompanionBed for 100% census & subsheet parity."""
+    if is_operating_room_bed(bed) or is_companion_bed(bed):
         return True
     combined = f"{bed} {floor} {contractor} {financial_status} {name}".lower()
     return any(kw in combined for kw in GLOBAL_EXCLUSION_KWS)
@@ -1418,13 +1686,12 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 return val
 
             raw_records = df.iloc[header_row_idx + 1:].to_dict(orient="records")
+            pending_cases = fetch_hmis_pending_discharges() if HMIS_PENDING_ENABLED else []
 
             # Same-day content hash deduplication (P1 Egress Optimization):
-            # If Power BI exported the exact same records on the same Cairo date, and no external dashboard edit
-            # occurred in Supabase since our last commit, skip downloading ~550KB state and skip re-upserting.
-            current_df_hash = hashlib.sha256(
-                json.dumps([[str(clean_val(v)) for v in r.values()] for r in raw_records], ensure_ascii=False).encode("utf-8")
-            ).hexdigest()
+            # If Power BI AND HMIS Pending Discharge exported the exact same records on the same Cairo date,
+            # and no external dashboard edit occurred in Supabase since our last commit, skip redundant upsert.
+            current_df_hash = compute_sync_content_hash(raw_records, pending_cases)
             is_forced_now = os.getenv("FORCE_SYNC_NOW", "").strip() == "1" or "--force" in sys.argv
             if (
                 not is_forced_now
@@ -1479,8 +1746,8 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
             for row in raw_records:
                 raw_bed = str(get_val(row, ["Bed#", "BedName_EN", "Bed", "Room", "Bed No", "الغرفة", "غرفة", "السرير", "سرير", "Unnamed: 1"])).strip()
                 bed_str = clean_room_str(raw_bed)
-                # Skip header row or empty beds
-                if not bed_str or bed_str.lower() in ("bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1") or "no filters" in bed_str.lower():
+                # Skip header row, empty beds, or companion beds
+                if not bed_str or bed_str.lower() in ("bed#", "bed", "room", "الغرفة", "غرفة", "السرير", "سرير", "unnamed: 1") or "no filters" in bed_str.lower() or is_companion_bed(bed_str):
                     continue
 
                 raw_mrn = str(get_val(row, ["MRN", "PatientBarcode", "Patient ID", "ID", "Patient MRN", "رقم المريض", "الملف", "رقم الملف"])).strip()
@@ -1576,71 +1843,20 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
 
             _last_known_mrns_by_name = dict(known_mrns_by_name)
 
-            # 2b. Add HMIS Nurse Portal "Pending Discharge" cases to the cumulative discharged list
+            # 2b. Reconcile HMIS Nurse Portal "Pending Discharge" cases (with companion scrub, override respect & auto-reversal)
+            restored_hmis_overrides = existing.get("restored_hmis_overrides") or []
             if HMIS_PENDING_ENABLED:
-                pending_cases = fetch_hmis_pending_discharges()
-                already_disc = existing.get("discharged", [])
-                new_count = 0
-                for pc in pending_cases:
-                    label = f"{pc['name'] or pc['name_en']} (MRN {pc['mrn']}, {pc['bed']})"
-                    if is_dialysis_room(pc["bed"]):
-                        log(f"[HMIS Pending] Skipped dialysis case: {label}")
-                        continue
-                    if RE_ER_ROOM.search(f"{pc['bed']} - {pc.get('structure', '')}"):
-                        log(f"[HMIS Pending] Skipped ER case: {label}")
-                        continue
-                    match_rec = next((r for r in records if pc["mrn"] and r.clean_mrn == pc["mrn"]), None)
-                    p_name = (match_rec.name if match_rec else pc["name"]) or pc["name_en"]
-                    if is_patient_manually_discharged(
-                        pc["name"], pc["mrn"], manual_names, manual_mrns,
-                        admission_date=(match_rec.admission_date if match_rec else None),
-                        manual_discharges=manual_discharges,
-                    ):
-                        log(f"[HMIS Pending] Already discharged, skipping: {label}")
-                        continue
-                    if any(
-                        isinstance(dp, dict) and (
-                            (pc["mrn"] and clean_mrn_str(dp.get("mrn") or "") == pc["mrn"])
-                            or is_name_match(dp.get("name"), p_name)
-                        ) and not (
-                            match_rec and is_readmission_after_discharge(
-                                match_rec.admission_date, dp.get("dischargeDate") or dp.get("date")
-                            )
-                        )
-                        for dp in already_disc
-                    ):
-                        log(f"[HMIS Pending] Already in cumulative discharged, skipping: {label}")
-                        continue
-                    new_count += 1
-                    if HMIS_PENDING_DRY_RUN:
-                        log(f"[HMIS Pending][DRY-RUN] Would add to cumulative discharged: {label}")
-                        continue
-                    disc_room = clean_room_str(match_rec.bed if match_rec else pc["bed"])
-                    disc_mrn = (match_rec.clean_mrn if match_rec else pc["mrn"]) or pc["mrn"]
-                    already_disc.append({
-                        "room": disc_room,
-                        "mrn": disc_mrn,
-                        "name": p_name,
-                        "physician": match_rec.physician if match_rec else "",
-                        "contractor": match_rec.contractor if match_rec else "",
-                        "date": (match_rec.admission_date if match_rec else "") or "",
-                        "dischargeDate": cairo_time_str,
-                        "dischargeType": "manual",
-                        "source": "hmis_pending_discharge",
-                        "rawRow": None,
-                    })
-                    manual_names.append(p_name)
-                    if pc["mrn"]:
-                        manual_mrns.add(pc["mrn"])
-                    manual_discharges.append({
-                        "name": p_name,
-                        "mrn": disc_mrn,
-                        "discharge_date": cairo_time_str,
-                        "room": disc_room,
-                    })
-                    log(f"[HMIS Pending] Added to cumulative discharged: {label}")
-                if new_count:
-                    log(f"[HMIS Pending] {new_count} new case(s) {'detected (dry-run, nothing written)' if HMIS_PENDING_DRY_RUN else 'added'}.")
+                reconcile_hmis_pending_discharges(
+                    pending_cases=pending_cases,
+                    records=records,
+                    already_disc=existing.get("discharged", []),
+                    manual_names=manual_names,
+                    manual_mrns=manual_mrns,
+                    manual_discharges=manual_discharges,
+                    restored_overrides=restored_hmis_overrides,
+                    cairo_time_str=cairo_time_str,
+                    dry_run=HMIS_PENDING_DRY_RUN,
+                )
 
             # 3. Partition Data Streams (Admissions, Debts, Dialysis, Entries, Medical Plans, Companion, LOS)
             rpc_payload: list[dict[str, Any]] = []
@@ -2001,7 +2217,10 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                         }
 
             # 4a. Auto-Discharge Detection & Cleanup (100% Parity with server.ts handleUnifiedUpload)
-            discharged_list: list[dict[str, Any]] = list(existing.get("discharged") or [])
+            discharged_list: list[dict[str, Any]] = [
+                dp for dp in (existing.get("discharged") or [])
+                if not (isinstance(dp, dict) and (dp.get("isCompanion") or is_companion_bed(dp.get("room") or "")))
+            ]
             if deduplicated_records:
                 # Remove auto-discharged patients who are still present in the current sheet (never drop manual discharges)
                 discharged_list = [
@@ -2241,6 +2460,30 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     log(f"Notice: Patient fallback upsert failed: {pt_err}", level="warning")
             else:
                 log("Relational database admissions successfully synchronized via RPC!")
+                # Reconcile stale manual-upload admissions superseded by this live Power BI batch
+                if len(rpc_payload) > 0:
+                    try:
+                        stale_res = session.get(
+                            f"{SUPABASE_URL}/rest/v1/admissions?status=eq.Admitted&source=eq.manual&select=id,admission_date",
+                            timeout=15,
+                            verify=SUPABASE_SSL_VERIFY,
+                        )
+                        if stale_res.status_code == 200:
+                            stale_rows = stale_res.json() or []
+                            if stale_rows:
+                                stale_ids = [r["id"] for r in stale_rows if isinstance(r, dict) and r.get("id")]
+                                if stale_ids:
+                                    id_filter = ",".join(stale_ids)
+                                    session.patch(
+                                        f"{SUPABASE_URL}/rest/v1/admissions?id=in.({id_filter})",
+                                        headers={"Prefer": "return=minimal"},
+                                        json={"status": "Discharged", "discharge_date": now_iso, "updated_at": now_iso},
+                                        timeout=15,
+                                        verify=SUPABASE_SSL_VERIFY,
+                                    )
+                                    log(f"[Relational Parity] Reconciled {len(stale_ids)} stale manual-upload admission(s) superseded by Power BI.")
+                    except Exception as parity_err:
+                        log(f"[Relational Parity] Notice: stale manual reconciliation skipped: {parity_err}", level="warning")
 
             # 6. Reconstruct Rigid Legacy Matrix for Backward Compatibility
             fake_header = {
@@ -2437,6 +2680,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                         "lastDatabaseUpdatedAt": now_iso,
                         "lastActiveDate": cairo_date_str,
                         "manuallyDischargedNames": manual_names,
+                        "restoredHmisOverrides": [] if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset")) else restored_hmis_overrides,
                         "counts": {
                             "occupiedBeds": occupied_beds_count,
                             "debts": len(cash_debts),

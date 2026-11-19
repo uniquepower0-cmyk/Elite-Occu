@@ -44,6 +44,13 @@ import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } 
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
+import { isCompanionBed } from './server/nameUtils.js';
+import {
+  findPatientRowInRows,
+  upsertRestoredHmisOverride,
+  isCompanionDischargedEntry,
+  type RestoredHmisOverride,
+} from './server/restoreHelpers.js';
 import { SyncSupervisor } from './server/syncSupervisor.js';
 import {
   parseOPDDoctorsExcel,
@@ -336,6 +343,7 @@ let lastActiveDate = "";
 let lastTransfersDate = "";
 let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
+let restoredHmisOverrides: RestoredHmisOverride[] = [];
 
 /**
  * Permanent VIP Cases Safeguard:
@@ -1082,8 +1090,10 @@ function getOccupancyRows(data: any[][] | null): any[][] {
   }).filter(row => {
     const room = row[0];
     const name = row[1];
+    const admDate = row[4];
     if (isOperatingRoom(room)) return false;
-    if (isManuallyDischarged(name)) return false;
+    if (isCompanionBed(room)) return false;
+    if (isManuallyDischarged(name, admDate)) return false;
     return true;
   });
   
@@ -1206,8 +1216,11 @@ function getOccupancyRowsUnfiltered(data: any[][] | null): any[][] {
       mrnStr,
     ];
   }).filter(row => {
+    const room = row[0];
     const name = row[1];
-    if (isManuallyDischarged(name)) return false;
+    const admDate = row[4];
+    if (isCompanionBed(room)) return false;
+    if (isManuallyDischarged(name, admDate)) return false;
     return true;
   });
   
@@ -2908,6 +2921,7 @@ async function executeLoadData(force = false) {
         uploadedAt = parsed.uploadedAt || null;
         if (parsed.lastDatabaseUpdatedAt) lastKnownDatabaseUpdatedAt = String(parsed.lastDatabaseUpdatedAt);
         manuallyDischargedNames = parsed.manuallyDischargedNames || [];
+        restoredHmisOverrides = Array.isArray(parsed.restoredHmisOverrides) ? parsed.restoredHmisOverrides : [];
         cumulativeTransfers = parsed.transfers || [];
         patientRoomRegistry = parsed.patientRoomRegistry || {};
         if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
@@ -3134,6 +3148,7 @@ async function executeLoadData(force = false) {
         if (meta.lastActiveDate) lastActiveDate = String(meta.lastActiveDate);
         if (meta.lastTransfersDate) lastTransfersDate = String(meta.lastTransfersDate);
         if (Array.isArray(meta.manuallyDischargedNames)) manuallyDischargedNames = meta.manuallyDischargedNames;
+        if (Array.isArray(meta.restoredHmisOverrides)) restoredHmisOverrides = meta.restoredHmisOverrides;
       }
     } else if (stateMap['state/dataset']) {
       // Fallback for legacy state/dataset single row if present
@@ -3346,6 +3361,8 @@ async function executeLoadData(force = false) {
     }
     return { ...p, name, physician, contractor };
   });
+
+  cumulativeDischarged = (cumulativeDischarged || []).filter(p => p && !isCompanionDischargedEntry(p));
 
   const activeManualFromDischarged = (cumulativeDischarged || [])
     .filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name))
@@ -4072,6 +4089,7 @@ async function saveData() {
       uploadedAt: uploadedAt,
       lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       manuallyDischargedNames: manuallyDischargedNames,
+      restoredHmisOverrides: restoredHmisOverrides,
       transfers: cumulativeTransfers,
       patientRoomRegistry: patientRoomRegistry,
       lastResetDate: lastEgyptianAutoResetDate,
@@ -4222,6 +4240,7 @@ async function saveData() {
         cachedMetaData.lastActiveDate !== lastActiveDate ||
         cachedMetaData.lastTransfersDate !== lastTransfersDate ||
         !arePayloadsEqual(cachedMetaData.manuallyDischargedNames, manuallyDischargedNames || []) ||
+        !arePayloadsEqual(cachedMetaData.restoredHmisOverrides, restoredHmisOverrides || []) ||
         !arePayloadsEqual(cachedMetaData.counts, currentMetaCounts);
 
       if (!metaChanged && dirtyContentNodes.length === 0) {
@@ -4242,6 +4261,7 @@ async function saveData() {
             lastActiveDate: lastActiveDate,
             lastTransfersDate: lastTransfersDate,
             manuallyDischargedNames: manuallyDischargedNames || [],
+            restoredHmisOverrides: restoredHmisOverrides || [],
             counts: currentMetaCounts
           },
           updated_at: nowIso
@@ -5980,7 +6000,8 @@ function addOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) {
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isComp;
     });
 
   processedData.sort((a, b) => {
@@ -6354,6 +6375,7 @@ async function addRefinedExitSheet(workbook: ExcelJS.Workbook, dischargedPatient
   });
 
   const filteredDischarged = dischargedPatients.filter(p => {
+    if (!p || isCompanionDischargedEntry(p)) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
@@ -7572,7 +7594,8 @@ async function addGridOccupancySheet(workbook: ExcelJS.Workbook, data: any[][]) 
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isComp;
     });
 
   processedData.sort((a, b) => {
@@ -7865,6 +7888,7 @@ function addExitSheet(workbook: ExcelJS.Workbook, dischargedPatients: any[]) {
 
   // Filter out any that were incorrectly marked or moved to excluded rooms (though fixed in upload logic)
   const filteredDischarged = dischargedPatients.filter(p => {
+    if (!p || isCompanionDischargedEntry(p)) return false;
     const rowAsString = Object.values(p).join(" ").toLowerCase();
     return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw));
   });
@@ -8308,7 +8332,8 @@ async function updateHospitalState(rows: any[][]) {
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isComp;
     });
   };
 
@@ -9174,21 +9199,9 @@ app.post('/api/pending-discharge', async (req, res) => {
 });
 
 function findPatientRowInHistoricalData(name: string, mrn?: string): any[] | null {
-  const cleanMrn = mrn ? String(mrn).trim().replace(/^0+/, "") : "";
-
-  // 1. Check previousHospitalData
-  if (previousHospitalData && Array.isArray(previousHospitalData)) {
-    for (let i = 0; i < previousHospitalData.length; i++) {
-      const row = previousHospitalData[i];
-      if (!row || !Array.isArray(row)) continue;
-      const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
-      const pName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
-      const pMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
-      if (isNameMatch(pName, name) || (cleanMrn && pMrn && pMrn === cleanMrn)) {
-        return [...row];
-      }
-    }
-  }
+  // 1. Check previousHospitalData (handles both 40-col Power BI and 30-col manual upload layouts)
+  const fromPrev = findPatientRowInRows(previousHospitalData, name, mrn);
+  if (fromPrev) return fromPrev;
 
   // 2. Check snapshot files on disk in history/occupancy/
   try {
@@ -9200,18 +9213,8 @@ function findPatientRowInHistoricalData(name: string, mrn?: string): any[] | nul
           const content = JSON.parse(fs.readFileSync(path.join(snapDir, file), 'utf-8'));
           const candidateLists = [content.hospitalData, content.previousHospitalData];
           for (const rows of candidateLists) {
-            if (rows && Array.isArray(rows)) {
-              for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                if (!row || !Array.isArray(row)) continue;
-                const isUnified = row.length >= 10 || (String(row[0] || "").includes("T") || (/\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(String(row[0] || ""))));
-                const pName = isUnified ? String(row[3] || "").trim() : String(row[1] || "").trim();
-                const pMrn = isUnified ? String(row[2] || "").trim().replace(/^0+/, "") : String(row[5] || "").trim().replace(/^0+/, "");
-                if (isNameMatch(pName, name) || (cleanMrn && pMrn && pMrn === cleanMrn)) {
-                  return [...row];
-                }
-              }
-            }
+            const found = findPatientRowInRows(rows, name, mrn);
+            if (found) return found;
           }
         } catch (e) {
           // ignore single file parse error
@@ -9279,6 +9282,24 @@ app.post('/api/restore-patient', async (req, res) => {
       return isNameMatch(reg?.name, name) || (cleanInputMrn && reg?.mrn && reg.mrn.replace(/^0+/, "") === cleanInputMrn);
     });
     const regPatient = registryKey ? patientRoomRegistry[registryKey] : null;
+
+    // 1b. Never restore companion beds into active occupancy; scrub them from discharged/manual lists only
+    if (isCompanionDischargedEntry(targetDischarged) || isCompanionBed(regPatient?.lastRoom || '')) {
+      manuallyDischargedNames = (manuallyDischargedNames || []).filter(mName => !isNameMatch(mName, name));
+      cumulativeDischarged = (cumulativeDischarged || []).filter(item => {
+        const itemName = item.name || item.colD || '';
+        return !isNameMatch(itemName, name) && !isCompanionDischargedEntry(item);
+      });
+      setSaveChangeType('restore');
+      await saveData();
+      return res.json({
+        success: true,
+        message: `Companion entry "${name}" removed from discharged list (companions are excluded from occupancy).`,
+        manuallyDischargedNames,
+        dischargedCount: cumulativeDischarged.length,
+        patientCount: hospitalData ? Math.max(0, hospitalData.length - 3) : 0,
+      });
+    }
 
     // 2. Resolve row to restore into hospitalData
     let restoredRow: any[] | null = null;
@@ -9380,6 +9401,15 @@ app.post('/api/restore-patient', async (req, res) => {
       contractor: restoredCont,
       date: restoredDate
     };
+
+    // 7b. Persist HMIS restore override so sync_powerbi_relational.py does not re-evict while HMIS still shows FinancialDischarge
+    restoredHmisOverrides = upsertRestoredHmisOverride(restoredHmisOverrides, {
+      name: restoredPtName,
+      mrn: restoredMrn,
+      room: restoredRoom,
+      admissionDate: restoredDate,
+      restoredAt: new Date().toISOString(),
+    });
 
     // 8. Re-extract derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
     extractSubsheetsFromHospitalData(hospitalData);
@@ -9842,6 +9872,7 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     // 3. Reset daily datasets (discharges, dialysis, transfers, OR list, entries, and transient text)
     cumulativeDischarged = [];
     manuallyDischargedNames = [];
+    restoredHmisOverrides = [];
     cumulativeDialysis = [];
     cumulativeTransfers = [];
     cumulativeORList = [];
@@ -10134,6 +10165,7 @@ app.post('/api/reset', async (req, res) => {
     cumulativeTransfers = [];
     cumulativeDischarged = [];
     manuallyDischargedNames = [];
+    restoredHmisOverrides = [];
     patientRoomRegistry = {};
     uploadedAt = null;
     pendingDischargePatientsText = "";
@@ -10887,7 +10919,7 @@ app.get('/api/reports/unified', async (req, res) => {
         }
         
         const rowString = [room, patient, physician, contractor, date].join(" ").toLowerCase();
-        if (KEYWORDS_TO_EXCLUDE.some(kw => rowString.includes(kw))) {
+        if (KEYWORDS_TO_EXCLUDE.some(kw => rowString.includes(kw)) || isCompanionBed(room)) {
           return;
         }
 
@@ -11885,10 +11917,11 @@ async function addGridOccupancyWithAccommodationSheet(workbook: ExcelJS.Workbook
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
       
-      // Exclude closed units
+      // Exclude closed units & companion beds
       const isClosedUnit = COMPANION_EXCLUDED_DEPTS.some(dept => roomUpper.includes(dept));
+      const isComp = isCompanionBed(p.room);
 
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isClosedUnit;
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isClosedUnit && !isComp;
     });
 
   processedData.sort((a, b) => {
@@ -13252,7 +13285,8 @@ app.get('/api/reports/occupancy_charts_dashboard', async (req, res) => {
       const rowAsString = Object.values(p).join(" ").toLowerCase();
       const isHeader = p.room.toLowerCase() === "bed" || p.room.toLowerCase() === "room" || p.room === "الغرفة" || p.name.toLowerCase() === "patient" || p.name === "المريض";
       const isOR = isOperatingRoom(p.room);
-      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR;
+      const isComp = isCompanionBed(p.room);
+      return !KEYWORDS_TO_EXCLUDE.some(kw => rowAsString.includes(kw)) && !isHeader && !isOR && !isComp;
     }) as any[];
 
     // 1. Bed Occupancy counts
@@ -17726,6 +17760,7 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
     const activePatients = extractRawPatientsFromRows(hospitalData);
     const cairoExitTodayStr = getCairoDateTime().dateStr;
     const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
+      if (isCompanionDischargedEntry(discPt)) return false;
       const isStillPresent = activePatients.some(activePt => 
         isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
       );
@@ -17774,6 +17809,7 @@ async function generateCombinedReportBuffer(
   // Clean exits
   const cairoCombTodayStr = getCairoDateTime().dateStr;
   const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+    if (isCompanionDischargedEntry(discPt)) return false;
     const isStillPresent = activePatients.some(activePt =>
       isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
     );
@@ -17970,6 +18006,7 @@ async function executeSendRefinedCombinedImagesToWhatsApp(reqDate: string | null
   const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
   const cairoCombTodayStr = getCairoDateTime().dateStr;
   const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+    if (isCompanionDischargedEntry(discPt)) return false;
     const isStillPresent = activePatients.some(activePt =>
       isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
     );
