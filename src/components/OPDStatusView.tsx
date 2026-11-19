@@ -63,6 +63,7 @@ export const OPDStatusView: React.FC<OPDStatusViewProps> = ({
   const toast = useToast();
   const [items, setItems] = useState<OPDClinicSession[]>(initialItems);
   const [opdDate, setOpdDate] = useState<string>(initialDate);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(initialItems.length === 0);
   const [uploading, setUploading] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -77,6 +78,7 @@ export const OPDStatusView: React.FC<OPDStatusViewProps> = ({
         const data = await res.json();
         setItems(Array.isArray(data.items) ? data.items : []);
         if (data.opdDate) setOpdDate(data.opdDate);
+        setSyncError(data.syncError || null);
       }
     } catch (err) {
       console.error('Failed to load OPD data:', err);
@@ -283,8 +285,13 @@ export const OPDStatusView: React.FC<OPDStatusViewProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Auto-fetched on script startup &amp; daily at 11:30 PM Cairo time, or upload &ldquo;OPD doctors Sheet&rdquo; manually.
+              Auto-fetched day by day: purged daily at 10:00 PM Cairo time and replaced with next day&rsquo;s clinics (no OPD history kept), or upload &ldquo;OPD doctors Sheet&rdquo; manually.
             </p>
+            {syncError && (
+              <div className="mt-2 px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-200 text-xs font-medium">
+                Last 10:00 PM OPD sync failed ({syncError}). Retrying automatically or click Refresh.
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

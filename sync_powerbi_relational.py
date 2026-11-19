@@ -3495,7 +3495,7 @@ def run_or_sync_job(force: bool = False) -> None:
     publish_standalone_heartbeat()
 
 
-# --- OPD DOCTORS SCHEDULE POWER BI SYNC (STARTUP + DAILY 23:30 CAIRO) ---
+# --- OPD DOCTORS SCHEDULE POWER BI SYNC (STARTUP + DAILY 22:00 CAIRO PURGE & NEXT-DAY FETCH) ---
 
 OPD_EXCLUDED_PHYSICIANS: Final[list[str]] = [
     "'Hydrotherapy   Session Room'",
@@ -3520,7 +3520,17 @@ OPD_EXCLUDED_PHYSICIANS: Final[list[str]] = [
 _last_opd_sync_ts: float = 0.0
 _last_opd_hash: str = ""
 _last_opd_target_date: str = ""
-_last_opd_2330_done_date: str = ""
+_last_opd_2200_done_date: str = ""
+_last_opd_2200_attempt_ts: float = 0.0
+_opd_2200_retry_needed: bool = False
+
+
+def get_opd_target_date(now_cairo: Optional[datetime.datetime] = None) -> datetime.date:
+    """Returns Cairo today before 22:00, and Cairo tomorrow at/after 22:00."""
+    dt = now_cairo or get_cairo_now()
+    if dt.hour >= 22:
+        return dt.date() + datetime.timedelta(days=1)
+    return dt.date()
 
 
 def get_opd_powerbi_model_id(auth: Optional[Any] = None) -> str:
@@ -3761,19 +3771,58 @@ def parse_powerbi_opd_excel(excel_bytes: bytes, target_date_str: str) -> list[di
     return sessions
 
 
+def purge_opd_state(target_date_str: str, error_msg: Optional[str] = None) -> bool:
+    """Clears state/opd_list for a new target date (never writes history/opd/*)."""
+    global _last_opd_hash, _last_opd_target_date
+    if not SUPABASE_KEY:
+        return True
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        payload: dict[str, Any] = {
+            "items": [],
+            "opdDate": target_date_str,
+            "hash": "",
+            "source": "powerbi",
+            "updatedAt": now_iso,
+        }
+        if error_msg:
+            payload["error"] = error_msg
+        session = get_supabase_session()
+        sb_resp = session.post(
+            SUPABASE_REST_URL,
+            json=[{"path": "state/opd_list", "data": payload, "updated_at": now_iso}],
+            timeout=20,
+            verify=SUPABASE_SSL_VERIFY,
+        )
+        if sb_resp.status_code not in (200, 201, 204):
+            log(f"[OPD Purge] Supabase clear returned {sb_resp.status_code}: {sb_resp.text}", level="warning")
+            return False
+        _last_opd_hash = ""
+        _last_opd_target_date = target_date_str
+        return True
+    except Exception as e:
+        log(f"[OPD Purge] Error clearing state/opd_list: {e}", level="error")
+        return False
+
+
 def fetch_powerbi_opd_and_sync(
     target_date: Optional[datetime.date] = None,
     force: bool = False,
     dry_run: bool = False,
+    purge_before_fetch: bool = False,
 ) -> bool:
-    """Fetches OPD Doctors Sheet for target_date (defaults to Cairo today) and syncs to Supabase state/opd_list & history/opd/{date}."""
+    """Fetches OPD Doctors Sheet for target_date (defaults to Cairo target date) and syncs ONLY to Supabase state/opd_list (no OPD history)."""
     global _last_opd_sync_ts, _last_opd_hash, _last_opd_target_date
+    cairo_now = get_cairo_now()
+    t_date = target_date or get_opd_target_date(cairo_now)
+    target_date_str = t_date.isoformat()
     try:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
         now_iso = now_dt.isoformat()
-        cairo_now = get_cairo_now()
-        t_date = target_date or cairo_now.date()
-        target_date_str = t_date.isoformat()
+
+        if purge_before_fetch and not dry_run:
+            log(f"[OPD Rollover] Purging previous OPD list before fetching {target_date_str}...")
+            purge_opd_state(target_date_str)
 
         log(f"[OPD Sync] Fetching OPD Doctors Sheet from Power BI for {target_date_str}...")
         auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
@@ -3831,9 +3880,9 @@ def fetch_powerbi_opd_and_sync(
             "source": "powerbi",
             "updatedAt": now_iso,
         }
+        # Only live state/opd_list is persisted (no OPD history)
         opd_nodes = [
             {"path": "state/opd_list", "data": opd_payload_node, "updated_at": now_iso},
-            {"path": f"history/opd/{target_date_str}", "data": opd_payload_node, "updated_at": now_iso},
         ]
         sb_resp = session.post(SUPABASE_REST_URL, json=opd_nodes, timeout=20, verify=SUPABASE_SSL_VERIFY)
         if sb_resp.status_code not in (200, 201, 204):
@@ -3846,6 +3895,8 @@ def fetch_powerbi_opd_and_sync(
         return True
     except Exception as e:
         log(f"[OPD Sync] Error fetching/syncing OPD Doctors Sheet: {e}", level="error")
+        if purge_before_fetch and not dry_run:
+            purge_opd_state(target_date_str, error_msg=str(e))
         return False
 
 
@@ -3855,8 +3906,8 @@ last_cairo_seen_date: str = ""
 
 
 def check_cairo_day_rollover() -> None:
-    """Detects midnight, 23:30 OPD tomorrow-fetch, and 23:59 EOD rollovers in Cairo timezone."""
-    global last_cairo_seen_date, _last_opd_2330_done_date
+    """Detects midnight, 22:00 OPD purge+tomorrow-fetch, and 23:59 EOD rollovers in Cairo timezone."""
+    global last_cairo_seen_date, _last_opd_2200_done_date, _last_opd_2200_attempt_ts, _opd_2200_retry_needed
     now_cairo = get_cairo_now()
     today_str = now_cairo.strftime("%Y-%m-%d")
 
@@ -3864,15 +3915,33 @@ def check_cairo_day_rollover() -> None:
         last_cairo_seen_date = today_str
         return
 
-    # Daily 11:30 PM (23:30) Cairo trigger: fetch tomorrow's OPD Doctors Sheet
-    if now_cairo.hour == 23 and now_cairo.minute >= 30 and _last_opd_2330_done_date != today_str:
-        _last_opd_2330_done_date = today_str
+    # Daily 10:00 PM (22:00) Cairo trigger: purge current OPD list and fetch tomorrow's OPD Doctors Sheet
+    # Retries every 5 minutes until 22:30 if the initial 22:00 fetch failed.
+    if now_cairo.hour == 22:
         tomorrow_date = now_cairo.date() + datetime.timedelta(days=1)
-        log(f"[OPD 23:30 Trigger] 23:30 Cairo reached ({today_str} {now_cairo.strftime('%H:%M')}). Fetching tomorrow's OPD Doctors Sheet ({tomorrow_date.isoformat()})...")
-        if not _is_paused:
-            fortinet_reconnect()
-            fetch_powerbi_opd_and_sync(target_date=tomorrow_date, force=True)
-            publish_standalone_heartbeat()
+        should_initial = _last_opd_2200_done_date != today_str
+        should_retry = (
+            _opd_2200_retry_needed
+            and now_cairo.minute <= 30
+            and (time.time() - _last_opd_2200_attempt_ts) >= 300.0
+        )
+        if should_initial or should_retry:
+            _last_opd_2200_done_date = today_str
+            _last_opd_2200_attempt_ts = time.time()
+            action_label = "Retry" if should_retry and not should_initial else "Trigger"
+            log(
+                f"[OPD 22:00 {action_label}] 22:00 Cairo reached ({today_str} {now_cairo.strftime('%H:%M')}). "
+                f"Purging current OPD list and fetching tomorrow's OPD Doctors Sheet ({tomorrow_date.isoformat()})..."
+            )
+            if not _is_paused:
+                fortinet_reconnect()
+                ok = fetch_powerbi_opd_and_sync(
+                    target_date=tomorrow_date,
+                    force=True,
+                    purge_before_fetch=True,
+                )
+                _opd_2200_retry_needed = not ok
+                publish_standalone_heartbeat()
 
     clean_last_seen = last_cairo_seen_date.replace("_1159_done", "")
     if today_str != clean_last_seen:
@@ -4164,7 +4233,7 @@ def run_sync_job(force: bool = False, force_future_or: Optional[bool] = None) ->
         run_or_full_cycle(force=force, force_future=force_future_or)
     if _last_opd_sync_ts == 0.0 or force:
         cairo_now = get_cairo_now()
-        opd_target = cairo_now.date() + datetime.timedelta(days=1) if (cairo_now.hour == 23 and cairo_now.minute >= 30) else cairo_now.date()
+        opd_target = get_opd_target_date(cairo_now)
         fetch_powerbi_opd_and_sync(target_date=opd_target, force=force)
     publish_standalone_heartbeat()
 

@@ -1,5 +1,10 @@
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
+import fs from 'fs';
+import path from 'path';
+import { filterOPDSessions } from './opdFilters.js';
+import { getShortArabicDoctorName, getShortEnglishDoctorName } from './opdNames.js';
+import { OPD_SPECIALTY_ROWS } from './opdSpecialties.js';
 
 export interface OPDClinicSession {
   serial: string;
@@ -206,7 +211,7 @@ export function parseOPDDoctorsExcel(
  */
 export function getOPDSpecialtyStats(items: OPDClinicSession[]): OPDSpecialtyStat[] {
   const map = new Map<string, OPDSpecialtyStat>();
-  for (const item of items || []) {
+  for (const item of filterOPDSessions(items || [])) {
     const key = (item.specialty || item.specialities || 'Other').trim();
     const existing = map.get(key) || {
       specialty: key,
@@ -236,37 +241,37 @@ export const OPD_HOUSING_COLUMNS: HousingClinicColumn[] = [
   { id: 'gen_31', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Clinic 31' },
   { id: 'gen_audio', center: 'General OPD', centerColor: 'FFA9D08E', centerTextColor: 'FF000000', label: 'Audiology Clinic' },
   // Woman Health Center (5)
-  { id: 'whc_gyna', center: 'Woman Health Center', centerColor: 'FFF8CBAD', centerTextColor: 'FF000000', label: 'Clinic 1 (Gyna)' },
-  { id: 'whc_gs', center: 'Woman Health Center', centerColor: 'FFF8CBAD', centerTextColor: 'FF000000', label: 'Clinic 2 (GS)' },
-  { id: 'whc_uro', center: 'Woman Health Center', centerColor: 'FFF8CBAD', centerTextColor: 'FF000000', label: 'Clinic 3 (Urology)' },
-  { id: 'whc_plast', center: 'Woman Health Center', centerColor: 'FFF8CBAD', centerTextColor: 'FF000000', label: 'Clinic 4 (Plastic and Derma)' },
-  { id: 'whc_proc', center: 'Woman Health Center', centerColor: 'FFF8CBAD', centerTextColor: 'FF000000', label: 'Clinic 5 (procedure room)' },
+  { id: 'whc_gyna', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 1 (Gyna)' },
+  { id: 'whc_gs', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 2 (GS)' },
+  { id: 'whc_uro', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 3 (Urology)' },
+  { id: 'whc_plast', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 4 (Plastic and Derma)' },
+  { id: 'whc_proc', center: 'Woman Health Center', centerColor: 'FFF4B084', centerTextColor: 'FF000000', label: 'Clinic 5 (procedure room)' },
   // Cardiology Center (4)
-  { id: 'card_1', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
-  { id: 'card_vasc', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Vascular Clinic' },
-  { id: 'card_2', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 2' },
-  { id: 'card_echo', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: '(ECHO)' },
+  { id: 'card_1', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 1' },
+  { id: 'card_vasc', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Vascular Clinic' },
+  { id: 'card_2', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 2' },
+  { id: 'card_echo', center: 'Cardiology Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: '(ECHO)' },
   // Neurosurgery Center (4)
-  { id: 'neuro_1', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
-  { id: 'neuro_2', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 2' },
-  { id: 'neuro_3', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 3' },
-  { id: 'neuro_4', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FFFFFFFF', label: 'Clinic 4' },
+  { id: 'neuro_1', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 1' },
+  { id: 'neuro_2', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 2' },
+  { id: 'neuro_3', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 3' },
+  { id: 'neuro_4', center: 'Neurosurgery Center', centerColor: 'FFC00000', centerTextColor: 'FF000000', label: 'Clinic 4' },
   // ODEC Center (4)
-  { id: 'odec_nutr', center: 'ODEC Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 1 (Nutrition)' },
-  { id: 'odec_surg', center: 'ODEC Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 2 (Surgery)' },
-  { id: 'odec_3', center: 'ODEC Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 3' },
-  { id: 'odec_4', center: 'ODEC Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 4' },
+  { id: 'odec_nutr', center: 'ODEC Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1 (Nutrition)' },
+  { id: 'odec_surg', center: 'ODEC Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 2 (Surgery)' },
+  { id: 'odec_3', center: 'ODEC Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 3' },
+  { id: 'odec_4', center: 'ODEC Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 4' },
   // Orthopedics center (3)
-  { id: 'ortho_1', center: 'Orthopedics center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
-  { id: 'ortho_2', center: 'Orthopedics center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 2' },
-  { id: 'ortho_3', center: 'Orthopedics center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 3' },
+  { id: 'ortho_1', center: 'Orthopedics center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1' },
+  { id: 'ortho_2', center: 'Orthopedics center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 2' },
+  { id: 'ortho_3', center: 'Orthopedics center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 3' },
   // GIT Center (1)
-  { id: 'git_1', center: 'GIT Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
+  { id: 'git_1', center: 'GIT Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1' },
   // Dental Center (2)
-  { id: 'dent_1', center: 'Dental Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
-  { id: 'dent_2', center: 'Dental Center', centerColor: 'FF70AD47', centerTextColor: 'FFFFFFFF', label: 'Clinic 2' },
+  { id: 'dent_1', center: 'Dental Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1' },
+  { id: 'dent_2', center: 'Dental Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 2' },
   // Physiotherapy Center (1)
-  { id: 'phys_1', center: 'Physiotherapy Center', centerColor: 'FF548235', centerTextColor: 'FFFFFFFF', label: 'Clinic 1' },
+  { id: 'phys_1', center: 'Physiotherapy Center', centerColor: 'FF548235', centerTextColor: 'FF000000', label: 'Clinic 1' },
 ];
 
 export const OPD_HOUSING_SLOTS: { startMins: number; endMins: number; label: string }[] = Array.from(
@@ -277,7 +282,6 @@ export const OPD_HOUSING_SLOTS: { startMins: number; endMins: number; label: str
     const fmt = (m: number) => {
       const h24 = Math.floor(m / 60);
       const min = m % 60;
-      const ampm = h24 >= 12 ? 'PM' : 'AM';
       const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
       return `${h12}:${String(min).padStart(2, '0')}`;
     };
@@ -292,65 +296,102 @@ export const OPD_HOUSING_SLOTS: { startMins: number; endMins: number; label: str
 
 function getCandidateClinicIds(session: OPDClinicSession): string[] {
   const sp = `${session.specialty} ${session.specialities}`.toLowerCase();
+  const shortAr = getShortArabicDoctorName(session);
+
+  if (shortAr.includes('كامل البطاط') || sp.includes('pulmonology')) {
+    return ['gen_c5', 'gen_31', 'odec_3', 'odec_4'];
+  }
+  if (shortAr.includes('محمد جمال توفيق') || shortAr.includes('مصطفى دعبيس')) {
+    return ['gen_31', 'odec_3', 'odec_4', 'gen_c5'];
+  }
   if (sp.includes('audiometry') || sp.includes('speech') || sp.includes('swallowing')) {
-    return ['gen_audio', 'gen_ent', 'gen_31'];
+    return ['gen_audio', 'gen_ent', 'ortho_3', 'gen_31'];
   }
   if (sp.includes('pediatric cardiology')) {
-    return ['card_1', 'card_2', 'gen_peds'];
+    return ['card_echo', 'card_1', 'card_2', 'gen_peds'];
   }
   if (sp.includes('pediatric surgery')) {
-    return ['whc_gs', 'gen_peds', 'whc_proc'];
+    return ['whc_gs', 'whc_proc', 'gen_peds'];
   }
-  if (sp.includes('pediatric oncology')) {
-    return ['odec_3', 'odec_4', 'gen_peds'];
+  if (sp.includes('pediatric oncology surgery')) {
+    return ['card_2', 'whc_gs', 'whc_proc'];
   }
   if (sp.includes('pediatrics')) {
-    return ['gen_peds', 'gen_c5', 'gen_31'];
+    return ['gen_peds', 'ortho_3', 'gen_c5', 'gen_31'];
   }
   if (sp.includes('ophthalmology')) {
     return ['gen_opth', 'gen_c5', 'gen_31'];
   }
-  if (sp.includes('ent')) {
+  if (sp.includes('ent ') || sp === 'ent' || sp.includes('ent clinic')) {
     return ['gen_ent', 'gen_audio', 'gen_31'];
   }
   if (sp.includes('obstetrics') || sp.includes('gynecology') || sp.includes('gyna')) {
     return ['whc_gyna', 'whc_proc', 'gen_c5'];
   }
-  if (sp.includes('urology')) {
-    return ['whc_uro', 'whc_proc', 'gen_31'];
+  if (sp.includes('urology') && !sp.includes('neurology')) {
+    return ['whc_uro', 'whc_proc', 'whc_plast'];
   }
   if (sp.includes('plastic') || sp.includes('dermatology')) {
-    return ['whc_plast', 'whc_proc', 'gen_c5'];
+    if (shortAr.includes('نبيل شحاتة')) return ['whc_proc', 'whc_gs', 'whc_plast'];
+    return ['whc_uro', 'whc_plast', 'whc_proc'];
   }
-  if (sp.includes('bariatric') || sp.includes('endocrine surgery') || sp.includes('colorectal') || sp.includes('general surgery')) {
-    return ['whc_gs', 'odec_surg', 'whc_proc'];
+  if (sp.includes('bariatric')) {
+    return ['odec_3', 'odec_surg', 'whc_gs'];
   }
-  if (sp.includes('vascular') || sp.includes('ivein')) {
+  if (sp.includes('endocrine surgery')) {
+    return ['whc_proc', 'whc_gs', 'odec_surg'];
+  }
+  if (sp.includes('colorectal') || sp.includes('breast') || sp.includes('general surgery')) {
+    return ['whc_gs', 'whc_plast', 'whc_uro', 'whc_proc', 'card_2'];
+  }
+  if (sp.includes('vascular')) {
     return ['card_vasc', 'card_1', 'card_2'];
   }
-  if (sp.includes('cardiothoracic') || sp.includes('cardiology')) {
-    return ['card_1', 'card_2', 'card_echo', 'card_vasc'];
+  if (sp.includes('cardiothoracic')) {
+    return ['card_2', 'card_echo', 'card_1'];
   }
-  if (sp.includes('nerve conduction') || sp.includes('emg') || sp.includes('neurosurgery') || sp.includes('neurology') || sp.includes('neuropsychiatry')) {
-    return ['neuro_1', 'neuro_2', 'neuro_3', 'neuro_4'];
+  if (sp.includes('cardiology') || sp.includes('echo')) {
+    return ['card_1', 'card_echo', 'card_2', 'card_vasc'];
+  }
+  if (
+    sp.includes('nerve conduction') ||
+    sp.includes('emg') ||
+    sp.includes('neurosurgery') ||
+    sp.includes('neurology') ||
+    sp.includes('neuropsychiatry') ||
+    sp.includes('eeg')
+  ) {
+    return ['neuro_3', 'neuro_4', 'neuro_2', 'neuro_1'];
   }
   if (sp.includes('nutrition')) {
     return ['odec_nutr', 'odec_3', 'odec_4'];
   }
-  if (sp.includes('oncology') || sp.includes('hematology') || sp.includes('internal medicine') || sp.includes('nephrology') || sp.includes('pulmonology')) {
-    return ['odec_3', 'odec_4', 'odec_nutr', 'gen_c5', 'gen_31'];
+  if (sp.includes('oncology')) {
+    if (shortAr.includes('هشام الغزالي')) return ['odec_surg', 'odec_3', 'odec_4'];
+    return ['odec_4', 'neuro_4', 'odec_surg', 'odec_3'];
+  }
+  if (
+    sp.includes('hematology') ||
+    sp.includes('internal medicine') ||
+    sp.includes('nephrology') ||
+    sp.includes('geriatrics') ||
+    sp.includes('rheumatology') ||
+    sp.includes('diabetes') ||
+    sp.includes('endocrinology')
+  ) {
+    return ['odec_3', 'odec_4', 'odec_surg', 'odec_nutr', 'neuro_1', 'gen_31', 'gen_c5'];
   }
   if (sp.includes('orthopedic') || sp.includes('bone tumor')) {
-    return ['ortho_1', 'ortho_2', 'ortho_3'];
+    return ['ortho_2', 'ortho_3', 'ortho_1'];
   }
   if (sp.includes('git') || sp.includes('hepatology') || sp.includes('gastro')) {
-    return ['git_1', 'odec_3', 'gen_31'];
+    return ['git_1', 'whc_plast', 'odec_3'];
   }
-  if (sp.includes('dental')) {
+  if (sp.includes('dental') || sp.includes('oral')) {
     return ['dent_1', 'dent_2'];
   }
   if (sp.includes('physiother')) {
-    return ['phys_1', 'ortho_3'];
+    return ['phys_1'];
   }
   return ['gen_c5', 'gen_31', 'whc_proc', 'odec_3', 'odec_4'];
 }
@@ -364,7 +405,10 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
   const occupied: boolean[][] = Array.from({ length: numCols }, () => Array(numSlots).fill(false));
   const colIdxById = new Map<string, number>(OPD_HOUSING_COLUMNS.map((c, idx) => [c.id, idx]));
 
-  const sorted = [...(items || [])].sort((a, b) => {
+  // Remove non-doctor placeholders; keep duplicates as-is
+  const validItems = filterOPDSessions(items || []);
+
+  const sorted = [...validItems].sort((a, b) => {
     const sa = parseTimeToMinutes(a.startTime) ?? 9999;
     const sb = parseTimeToMinutes(b.startTime) ?? 9999;
     return sa - sb;
@@ -375,10 +419,15 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
 
   for (const session of sorted) {
     const sMin = parseTimeToMinutes(session.startTime);
-    const eMin = parseTimeToMinutes(session.endTime);
+    let eMin = parseTimeToMinutes(session.endTime);
     if (sMin === null || eMin === null || eMin <= sMin) {
       unassigned.push(session);
       continue;
+    }
+
+    // Cap all-day clinic spans (> 3 hours) to a 2-hour block in Housing so they don't occupy a room all day
+    if (eMin - sMin > 180) {
+      eMin = sMin + 120;
     }
 
     const startSlot = Math.max(0, Math.floor((sMin - 9 * 60) / 30));
@@ -419,137 +468,195 @@ export function allocateOPDHousingGrid(items: OPDClinicSession[]): {
       occupied[chosenCol][slot] = true;
     }
 
-    const docLabel = session.physicianEn || session.physicianAr || session.specialty;
     assignments.push({
       session,
       colIndex: chosenCol,
       startSlot,
       endSlot,
-      displayLabel: docLabel,
+      displayLabel: getShortEnglishDoctorName(session),
     });
   }
 
   return { assignments, unassigned };
 }
 
+function formatArabicShortTime(timeStr: string, addMorningSuffix: boolean = false): string {
+  const mins = parseTimeToMinutes(timeStr);
+  if (mins === null) return String(timeStr || '').trim();
+  const h24 = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const base = `${h12}:${String(m).padStart(2, '0')}`;
+  if (addMorningSuffix && h24 < 12) return `${base} صباحا`;
+  return base;
+}
+
+export function getArabicOPDDayName(dateStr: string, items: OPDClinicSession[]): string {
+  const wk = (items.find(i => i.weekName)?.weekName || '').toLowerCase();
+  const map: Record<string, string> = {
+    saturday: 'السبت',
+    sunday: 'الأحد',
+    monday: 'الإثنين',
+    tuesday: 'الثلاثاء',
+    wednesday: 'الأربعاء',
+    thursday: 'الخميس',
+    friday: 'الجمعة',
+  };
+  if (map[wk]) return map[wk];
+  if (dateStr) {
+    const d = new Date(`${dateStr}T12:00:00Z`)
+      .toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+      .toLowerCase();
+    if (map[d]) return map[d];
+  }
+  return 'جدول العيادات';
+}
+
 /**
- * Sheet 1: Refined OPD Schedule (same style as Refined Occupancy Sheet)
+ * Sheet 1: Refined Arabic OPD Schedule (Exact match to عيادات ايليت الاربعاء 18-11.pdf.pdf)
  */
 export async function addRefinedOPDScheduleSheet(
   workbook: ExcelJS.Workbook,
   items: OPDClinicSession[],
   opdDate: string,
-  applyRefinedHeaderFn: ApplyRefinedHeaderFn
+  _applyRefinedHeaderFn?: ApplyRefinedHeaderFn
 ) {
-  const sheet = workbook.addWorksheet('OPD Schedule', {
+  const sheet = workbook.addWorksheet('عيادات ايليت', {
     views: [{ rightToLeft: false }],
+    pageSetup: {
+      orientation: 'landscape',
+      paperSize: 9,
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 1,
+      margins: { left: 0.25, right: 0.25, top: 0.25, bottom: 0.25, header: 0.1, footer: 0.1 },
+    },
   });
 
-  const displayDate = formatOPDDisplayDate(opdDate);
-  const titleText = displayDate
-    ? `جدول العيادات الخارجية ليوم ${displayDate}`
-    : 'جدول العيادات الخارجية';
+  // Columns A..G (7 doctor slots right-to-left: G is 1st doctor, A is 7th) + Col H (Specialty + Center)
+  for (let c = 1; c <= 7; c++) {
+    sheet.getColumn(c).width = 18.5;
+  }
+  sheet.getColumn(8).width = 24;
 
-  sheet.mergeCells('A1:I1');
-  sheet.getCell('A1').value = '';
-  sheet.getRow(1).height = 90;
-  await applyRefinedHeaderFn(workbook, sheet, titleText, 9);
-
-  const headerRow = sheet.addRow([
-    '#',
-    'التخصص / Specialty',
-    'العيادة / Parent Dept',
-    'اسم الطبيب / Physician (AR)',
-    'Physician Name (EN)',
-    'الدرجة العلمية / Level',
-    'الدور / Floor',
-    'الموعد / Time',
-    'أقصى سعة / Max Cap',
-  ]);
-  headerRow.height = 24;
-  headerRow.eachCell(cell => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
-    cell.font = { bold: true, size: 10, name: 'Calibri' };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-    cell.border = {
-      top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-      bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-      left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-      right: { style: 'thin', color: { argb: 'FFB2B2B2' } },
+  // Row 1: Top Header Banner
+  const row1 = sheet.getRow(1);
+  row1.height = 38;
+  sheet.mergeCells('D1:F1');
+  const dayBanner = sheet.getCell('D1');
+  dayBanner.value = getArabicOPDDayName(opdDate, items || []);
+  dayBanner.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
+  dayBanner.font = { name: 'Calibri', size: 22, bold: true, color: { argb: 'FF000000' } };
+  dayBanner.alignment = { horizontal: 'center', vertical: 'middle' };
+  for (const col of ['D', 'E', 'F']) {
+    sheet.getCell(`${col}1`).border = {
+      top: { style: 'medium', color: { argb: 'FF000000' } },
+      bottom: { style: 'medium', color: { argb: 'FF000000' } },
+      left: { style: 'medium', color: { argb: 'FF000000' } },
+      right: { style: 'medium', color: { argb: 'FF000000' } },
     };
-  });
-
-  sheet.autoFilter = 'A2:I2';
-
-  const sorted = [...(items || [])].sort((a, b) => {
-    const spCmp = (a.specialty || '').localeCompare(b.specialty || '');
-    if (spCmp !== 0) return spCmp;
-    return (parseTimeToMinutes(a.startTime) ?? 0) - (parseTimeToMinutes(b.startTime) ?? 0);
-  });
-
-  let currentSpec: string | null = null;
-  let serial = 1;
-
-  for (const item of sorted) {
-    const spec = item.specialty || item.specialities || 'Other';
-    if (currentSpec !== null && spec !== currentSpec) {
-      const sepRow = sheet.addRow(Array(9).fill(''));
-      sepRow.eachCell({ includeEmpty: true }, cell => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } };
-        cell.border = {
-          top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-          bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-          left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-          right: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        };
-      });
-    }
-
-    const floorDisplay =
-      item.floorName === '1'
-        ? '1st Floor'
-        : item.floorName.toLowerCase() === 'm'
-          ? 'Mezzanine (M)'
-          : item.floorName || '—';
-
-    const row = sheet.addRow([
-      serial++,
-      spec,
-      item.specialities || spec,
-      item.physicianAr || item.physicianEn,
-      item.physicianEn || item.physicianAr,
-      item.supervisoryLevel || '—',
-      floorDisplay,
-      `${item.startTime} - ${item.endTime}`,
-      item.maxOccupancy,
-    ]);
-    row.height = 22;
-    row.eachCell((cell, colNumber) => {
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        left: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-        right: { style: 'thin', color: { argb: 'FFB2B2B2' } },
-      };
-      cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.font = { name: 'Calibri', size: 11, bold: colNumber >= 2 && colNumber <= 8 };
-    });
-    currentSpec = spec;
   }
 
-  sheet.getColumn(1).width = 6;
-  sheet.getColumn(2).width = 32;
-  sheet.getColumn(3).width = 26;
-  sheet.getColumn(4).width = 30;
-  sheet.getColumn(5).width = 30;
-  sheet.getColumn(6).width = 18;
-  sheet.getColumn(7).width = 16;
-  sheet.getColumn(8).width = 22;
-  sheet.getColumn(9).width = 16;
+  // Embed Elite Hospital Logo on top-left (Cols A:B)
+  const logoCandidates = [
+    path.resolve(process.cwd(), 'public/logo.png'),
+    path.resolve(process.cwd(), 'dist/logo.png'),
+  ];
+  const logoPath = logoCandidates.find(p => fs.existsSync(p));
+  if (logoPath) {
+    try {
+      const logoId = workbook.addImage({ filename: logoPath, extension: 'png' });
+      sheet.addImage(logoId, {
+        tl: { col: 0.15, row: 0.08 },
+        ext: { width: 170, height: 46 },
+      });
+    } catch (_) {}
+  }
+
+  // Filter out placeholders; keep duplicate doctors as-is
+  const validSessions = filterOPDSessions(items || []);
+  let currentRow = 2;
+
+  for (const cfg of OPD_SPECIALTY_ROWS) {
+    const matched = validSessions
+      .filter(cfg.match)
+      .sort((a, b) => (parseTimeToMinutes(a.startTime) ?? 9999) - (parseTimeToMinutes(b.startTime) ?? 9999));
+
+    if (matched.length === 0) continue;
+
+    const chunks: OPDClinicSession[][] = [];
+    const chunkSize = cfg.maxPerRow || 7;
+    for (let i = 0; i < matched.length; i += chunkSize) {
+      chunks.push(matched.slice(i, i + chunkSize));
+    }
+
+    const startGroupRow = currentRow;
+    const endGroupRow = currentRow + chunks.length - 1;
+
+    chunks.forEach((chunk, chunkIdx) => {
+      const rNum = currentRow + chunkIdx;
+      sheet.getRow(rNum).height = 38;
+
+      for (let c = 1; c <= 8; c++) {
+        const cell = sheet.getCell(rNum, c);
+        cell.border = {
+          top: { style: chunkIdx === 0 ? 'medium' : 'thin', color: { argb: 'FF000000' } },
+          bottom: { style: chunkIdx === chunks.length - 1 ? 'medium' : 'thin', color: { argb: 'FF000000' } },
+          left: { style: c === 1 || c === 8 ? 'medium' : 'thin', color: { argb: 'FF000000' } },
+          right: { style: c === 7 || c === 8 ? 'medium' : 'thin', color: { argb: 'FF000000' } },
+        };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      }
+
+      // Fill doctors right-to-left: Col 7 (G) is 1st doctor -> Col 1 (A) is 7th
+      chunk.forEach((s, idx) => {
+        const colIdx = 7 - idx;
+        if (colIdx < 1) return;
+        const cell = sheet.getCell(rNum, colIdx);
+        const shortAr = getShortArabicDoctorName(s);
+        const note = cfg.subNote ? cfg.subNote(s) : '';
+        const timeText = formatArabicShortTime(s.startTime, shortAr.includes('كامل البطاط'));
+
+        const isBlackText =
+          Number(s.maxOccupancy || 0) === 0 ||
+          String(s.supervisoryLevel || '').toLowerCase() === 'specialist';
+        const nameColor = isBlackText ? 'FF000000' : 'FF305496';
+        const noteColor = note.includes('سنتر الرئيسي') ? 'FF305496' : 'FFC00000';
+        const timeColor = 'FFD99600';
+
+        const richParts: ExcelJS.RichText[] = [
+          { text: shortAr, font: { name: 'Calibri', size: 10, bold: true, color: { argb: nameColor } } },
+        ];
+        if (note) {
+          richParts.push({
+            text: `\n${note}`,
+            font: { name: 'Calibri', size: 9, bold: true, color: { argb: noteColor } },
+          });
+        }
+        richParts.push({
+          text: `\n${timeText}`,
+          font: { name: 'Calibri', size: 10, bold: true, color: { argb: timeColor } },
+        });
+
+        cell.value = { richText: richParts };
+      });
+
+      const specCell = sheet.getCell(rNum, 8);
+      specCell.value = cfg.labelAr;
+      specCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
+      specCell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF000000' } };
+      specCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    });
+
+    if (endGroupRow > startGroupRow) {
+      sheet.mergeCells(startGroupRow, 8, endGroupRow, 8);
+    }
+    currentRow += chunks.length;
+  }
 }
 
 /**
- * Sheet 2: OPD Timeline (same format as OR Timeline Sheet)
+ * Sheet 2: OPD Timeline (Grouped by Hospital Specialties, placeholders filtered, duplicates kept)
  */
 export async function addRefinedOPDTimelineSheet(
   workbook: ExcelJS.Workbook,
@@ -559,13 +666,15 @@ export async function addRefinedOPDTimelineSheet(
 ) {
   const sheet = workbook.addWorksheet('OPD Timeline', {
     views: [{ rightToLeft: false }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 1 },
   });
 
+  const filteredItems = filterOPDSessions(items || []);
   let minMins = 24 * 60;
   let maxMins = 0;
   let validCount = 0;
 
-  const parsed = (items || []).map(p => {
+  const parsed = filteredItems.map(p => {
     const startMins = parseTimeToMinutes(p.startTime);
     const endMins = parseTimeToMinutes(p.endTime);
     if (startMins !== null && endMins !== null && endMins > startMins) {
@@ -587,8 +696,14 @@ export async function addRefinedOPDTimelineSheet(
 
   const slots: { start: number; end: number; label: string }[] = [];
   for (let m = minMins; m < maxMins; m += 30) {
-    const fmt = (val: number) => `${String(Math.floor(val / 60)).padStart(2, '0')}:${String(val % 60).padStart(2, '0')}`;
-    slots.push({ start: m, end: m + 30, label: `${fmt(m)} - ${fmt(m + 30)}` });
+    const fmt = (val: number) => {
+      const h24 = Math.floor(val / 60);
+      const min = val % 60;
+      const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+      return `${h12}:${String(min).padStart(2, '0')}`;
+    };
+    const ampm = Math.floor((m + 30) / 60) >= 12 ? 'PM' : 'AM';
+    slots.push({ start: m, end: m + 30, label: `${fmt(m)} - ${fmt(m + 30)} ${ampm}` });
   }
 
   const numSlots = slots.length;
@@ -603,59 +718,30 @@ export async function addRefinedOPDTimelineSheet(
   await applyRefinedHeaderFn(workbook, sheet, titleText, numSlots + 1);
 
   sheet.addRow(Array(numSlots + 1).fill(''));
-  sheet.getRow(2).height = 15;
+  sheet.getRow(2).height = 12;
 
   const headerRow = sheet.addRow(['التخصص / Specialty', ...slots.map(s => s.label)]);
   headerRow.height = 28;
   headerRow.eachCell({ includeEmpty: true }, cell => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C34' } };
-    cell.font = { bold: true, name: 'Calibri', size: 10, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
+    cell.font = { bold: true, name: 'Calibri', size: 9, color: { argb: 'FF000000' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     cell.border = {
       top: { style: 'medium', color: { argb: 'FF000000' } },
       bottom: { style: 'medium', color: { argb: 'FF000000' } },
-      left: { style: 'thin', color: { argb: 'FFFFFFFF' } },
-      right: { style: 'thin', color: { argb: 'FFFFFFFF' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     };
   });
 
-  const writeTimeGuideRow = (rowNum: number) => {
-    const gCell = sheet.getCell(rowNum, 1);
-    gCell.value = 'Time Guide / دليل الوقت';
-    gCell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
-    gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C34' } };
-    gCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    for (let sIdx = 0; sIdx < numSlots; sIdx++) {
-      const c = sheet.getCell(rowNum, sIdx + 2);
-      c.value = slots[sIdx].label;
-      c.font = { bold: true, size: 9, name: 'Calibri', color: { argb: 'FF1E293B' } };
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
-      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      c.border = {
-        top: { style: 'medium', color: { argb: 'FF0B3C34' } },
-        bottom: { style: 'medium', color: { argb: 'FF0B3C34' } },
-        left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-        right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-      };
-    }
-    sheet.getRow(rowNum).height = 28;
-  };
-
   let currentRowNum = 4;
-  writeTimeGuideRow(currentRowNum++);
 
-  const specMap = new Map<string, typeof parsed>();
-  for (const p of parsed) {
-    const sp = p.specialty || p.specialities || 'Other';
-    const arr = specMap.get(sp) || [];
-    arr.push(p);
-    specMap.set(sp, arr);
-  }
-
-  for (const specName of Array.from(specMap.keys()).sort()) {
-    const valid = (specMap.get(specName) || []).filter(
+  // Group by Hospital Specialties (exclude the dual endo_bari_surg summary row on Timeline)
+  for (const cfg of OPD_SPECIALTY_ROWS) {
+    if (cfg.id === 'endo_bari_surg') continue;
+    const valid = parsed.filter(
       (p): p is typeof p & { startMins: number; endMins: number } =>
-        p.startMins !== null && p.endMins !== null && p.endMins > p.startMins
+        cfg.match(p) && p.startMins !== null && p.endMins !== null && p.endMins > p.startMins
     );
     if (valid.length === 0) continue;
 
@@ -678,25 +764,25 @@ export async function addRefinedOPDTimelineSheet(
     lanes.forEach((laneItems, laneIdx) => {
       const rowNum = currentRowNum + laneIdx;
       const specCell = sheet.getCell(rowNum, 1);
-      specCell.value = specName;
-      specCell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF0B3C34' } };
-      specCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3F5' } };
+      specCell.value = cfg.labelAr.replace('\n', ' ');
+      specCell.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF000000' } };
+      specCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFCC' } };
       specCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       specCell.border = {
-        top: { style: 'thin', color: { argb: 'FFB0BEC5' } },
-        bottom: { style: 'thin', color: { argb: 'FFB0BEC5' } },
-        left: { style: 'medium', color: { argb: 'FF0B3C34' } },
-        right: { style: 'thin', color: { argb: 'FFB0BEC5' } },
+        top: { style: 'thin', color: { argb: 'FF000000' } },
+        bottom: { style: 'thin', color: { argb: 'FF000000' } },
+        left: { style: 'medium', color: { argb: 'FF000000' } },
+        right: { style: 'medium', color: { argb: 'FF000000' } },
       };
 
       for (let sIdx = 0; sIdx < numSlots; sIdx++) {
         const cell = sheet.getCell(rowNum, sIdx + 2);
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
         cell.border = {
-          top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
-          bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
-          left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
-          right: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+          top: { style: 'thin', color: { argb: 'FFD0D7DE' } },
+          bottom: { style: 'thin', color: { argb: 'FFD0D7DE' } },
+          left: { style: 'thin', color: { argb: 'FFD0D7DE' } },
+          right: { style: 'thin', color: { argb: 'FFD0D7DE' } },
         };
       }
 
@@ -712,20 +798,23 @@ export async function addRefinedOPDTimelineSheet(
           } catch (_) {}
         }
         const cell = sheet.getCell(rowNum, startCol);
-        const docName = p.physicianAr || p.physicianEn;
-        cell.value = `${docName}\n[${p.startTime} - ${p.endTime}]`;
+        const docName = getShortArabicDoctorName(p);
+        const note = cfg.subNote ? cfg.subNote(p) : '';
+        cell.value = `${docName}${note ? ' ' + note : ''}\n(${formatArabicShortTime(p.startTime)} - ${formatArabicShortTime(p.endTime)})`;
         const isFloorM = String(p.floorName || '').toLowerCase() === 'm';
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isFloorM ? 'FFE8F5E9' : 'FFE3F2FD' } };
         cell.font = { bold: true, size: 9, name: 'Calibri', color: { argb: isFloorM ? 'FF1B5E20' : 'FF0D47A1' } };
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        cell.border = {
-          top: { style: 'thin', color: { argb: isFloorM ? 'FFA5D6A7' : 'FF90CAF9' } },
-          bottom: { style: 'thin', color: { argb: isFloorM ? 'FFA5D6A7' : 'FF90CAF9' } },
-          left: { style: 'thin', color: { argb: isFloorM ? 'FFA5D6A7' : 'FF90CAF9' } },
-          right: { style: 'thin', color: { argb: isFloorM ? 'FFA5D6A7' : 'FF90CAF9' } },
-        };
+        for (let cIdx = startCol; cIdx <= endCol; cIdx++) {
+          sheet.getCell(rowNum, cIdx).border = {
+            top: { style: 'thin', color: { argb: 'FF305496' } },
+            bottom: { style: 'thin', color: { argb: 'FF305496' } },
+            left: { style: 'thin', color: { argb: 'FF305496' } },
+            right: { style: 'thin', color: { argb: 'FF305496' } },
+          };
+        }
       }
-      sheet.getRow(rowNum).height = 42;
+      sheet.getRow(rowNum).height = 36;
     });
 
     if (endSpecRow > startSpecRow) {
@@ -736,11 +825,9 @@ export async function addRefinedOPDTimelineSheet(
     currentRowNum += lanes.length;
   }
 
-  writeTimeGuideRow(currentRowNum);
-
-  sheet.getColumn(1).width = 28;
+  sheet.getColumn(1).width = 26;
   for (let c = 2; c <= numSlots + 1; c++) {
-    sheet.getColumn(c).width = 16;
+    sheet.getColumn(c).width = 14;
   }
 }
 
@@ -855,12 +942,13 @@ export function addOPDHousingSheet(
     }
     const cell = sheet.getCell(startRow, col);
     cell.value = a.displayLabel;
-    cell.font = { bold: true, size: 9, name: 'Calibri', color: { argb: 'FF000000' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+    cell.font = { bold: true, size: 8, name: 'Calibri', color: { argb: 'FF000000' } };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     for (let r = startRow; r <= endRow; r++) {
       sheet.getCell(r, col).border = {
-        top: { style: r === startRow ? 'medium' : 'thin', color: { argb: 'FF000000' } },
-        bottom: { style: r === endRow ? 'medium' : 'thin', color: { argb: 'FF000000' } },
+        top: { style: r === startRow ? 'thin' : undefined, color: { argb: 'FF000000' } },
+        bottom: { style: r === endRow ? 'thin' : undefined, color: { argb: 'FF000000' } },
         left: { style: 'thin', color: { argb: 'FF000000' } },
         right: { style: 'thin', color: { argb: 'FF000000' } },
       };

@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import sharp from 'sharp';
 import { greenApiService } from './server/services/greenApiService.js';
+import { telegramBotService, type TelegramBotHandlers } from './server/services/telegramBotService.js';
 import * as sheetGen from './server/services/sheetImageGenerator.js';
 import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
@@ -15701,11 +15702,13 @@ app.get('/api/opd/data', async (_req, res) => {
     } catch (_) {}
   }
   const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+  const opdNode = inMemoryStateMap['state/opd_list'];
   res.json({
     opdDate: activeDate,
     items: cumulativeOPDList,
     specialtyStats: getOPDSpecialtyStats(cumulativeOPDList),
     totalClinics: cumulativeOPDList.length,
+    syncError: opdNode?.error || null,
   });
 });
 
@@ -15713,12 +15716,14 @@ app.post('/api/opd/sync', async (_req, res) => {
   try {
     await loadData(true);
     const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
+    const opdNode = inMemoryStateMap['state/opd_list'];
     res.json({
       success: true,
       opdDate: activeDate,
       items: cumulativeOPDList,
       specialtyStats: getOPDSpecialtyStats(cumulativeOPDList),
       totalClinics: cumulativeOPDList.length,
+      syncError: opdNode?.error || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to sync OPD data' });
@@ -15754,7 +15759,6 @@ app.post('/api/upload-opd-list', handleUploadSingle, async (req: any, res) => {
     if (supabaseAdmin) {
       await supabaseAdmin.from('rtdb_nodes').upsert([
         { path: 'state/opd_list', data: nodeData, updated_at: nowIso },
-        { path: `history/opd/${activeDate}`, data: nodeData, updated_at: nowIso },
       ]);
     }
 
@@ -17754,93 +17758,107 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
   }
 });
 
-app.get('/api/reports/combined', async (req, res) => {
-  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+async function generateCombinedReportBuffer(
+  reqDate: string | null,
+  isRefined: boolean
+): Promise<{ buffer: Buffer; fileName: string; dateLabel: string }> {
   const ds = await resolveOccupancyDataset(reqDate);
   if (!ds.hospitalData || ds.hospitalData.length === 0) {
-    return res.status(400).json({ error: `No occupancy data available for date: ${reqDate || 'current'}.` });
+    const err: any = new Error(`No occupancy data available for date: ${reqDate || 'current'}.`);
+    err.statusCode = 400;
+    throw err;
   }
-  try {
-    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
-    
-    // Clean exits
-    const cairoCombTodayStr = getCairoDateTime().dateStr;
-    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
-      const isStillPresent = activePatients.some(activePt => 
-        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
-      );
-      if (isStillPresent) return false;
-      if (!ds.isHistorical) {
-        const dischargeDateVal = discPt.dischargeDate || discPt.date;
-        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
-          return false;
-        }
-      }
-      return true;
-    });
 
-    const uniqueCleanDischarged: any[] = [];
-    cleanDischarged.forEach(p => {
-      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
-        uniqueCleanDischarged.push(p);
-      }
-    });
+  const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
 
-    // Clean entries
-    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
-    const uniqueTodayEntries: any[] = [];
-    todayEntries.forEach(p => {
-      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
-        uniqueTodayEntries.push(p);
-      }
-    });
-
-    const workbook = new ExcelJS.Workbook();
-    const isRefined = req.query.refined === 'true';
-    
-    // Add all sheets if data exists (except companion status sheets per user request)
-    if (isRefined) {
-      await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
-      await addRefinedEntrySheet(workbook, uniqueTodayEntries);
-      await addRefinedDialysisSheet(workbook, ds.cumulativeDialysis);
-      await addRefinedExitSheet(workbook, uniqueCleanDischarged);
-      if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-        await addRefinedDebtsSheet(workbook, ds.cumulativeDebts);
-      }
-      if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
-        await addRefinedInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
-      }
-      if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-        await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers);
-      }
-    } else {
-      addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
-      addEntrySheet(workbook, uniqueTodayEntries);
-      addDialysisSheet(workbook, ds.cumulativeDialysis);
-      addExitSheet(workbook, uniqueCleanDischarged);
-      if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-        addDebtsSheet(workbook, ds.cumulativeDebts);
-      }
-      if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
-        addInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
-      }
-      if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-        addTransfersSheet(workbook, ds.cumulativeTransfers);
+  // Clean exits
+  const cairoCombTodayStr = getCairoDateTime().dateStr;
+  const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+    const isStillPresent = activePatients.some(activePt =>
+      isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+    );
+    if (isStillPresent) return false;
+    if (!ds.isHistorical) {
+      const dischargeDateVal = discPt.dischargeDate || discPt.date;
+      if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+        return false;
       }
     }
+    return true;
+  });
 
-    const filename = isRefined
-      ? `Combined_Hospital_Refined_Report_${ds.dateLabel}.xlsx`
-      : `Combined_Hospital_Report_${ds.dateLabel}.xlsx`;
+  const uniqueCleanDischarged: any[] = [];
+  cleanDischarged.forEach(p => {
+    if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+      uniqueCleanDischarged.push(p);
+    }
+  });
 
+  // Clean entries
+  const todayEntries = (ds.cumulativeEntries || []).filter(
+    entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical
+  );
+  const uniqueTodayEntries: any[] = [];
+  todayEntries.forEach(p => {
+    if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
+      uniqueTodayEntries.push(p);
+    }
+  });
+
+  const workbook = new ExcelJS.Workbook();
+
+  // Add all sheets if data exists (except companion status sheets per user request)
+  if (isRefined) {
+    await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
+    await addRefinedEntrySheet(workbook, uniqueTodayEntries);
+    await addRefinedDialysisSheet(workbook, ds.cumulativeDialysis);
+    await addRefinedExitSheet(workbook, uniqueCleanDischarged);
+    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+      await addRefinedDebtsSheet(workbook, ds.cumulativeDebts);
+    }
+    if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
+      await addRefinedInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
+    }
+    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+      await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers);
+    }
+  } else {
+    addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
+    addEntrySheet(workbook, uniqueTodayEntries);
+    addDialysisSheet(workbook, ds.cumulativeDialysis);
+    addExitSheet(workbook, uniqueCleanDischarged);
+    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+      addDebtsSheet(workbook, ds.cumulativeDebts);
+    }
+    if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
+      addInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
+    }
+    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
+      addTransfersSheet(workbook, ds.cumulativeTransfers);
+    }
+  }
+
+  const dateLabel = ds.dateLabel || cairoCombTodayStr;
+  const fileName = isRefined
+    ? `Combined_Hospital_Refined_Report_${dateLabel}.xlsx`
+    : `Combined_Hospital_Report_${dateLabel}.xlsx`;
+
+  const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  return { buffer, fileName, dateLabel };
+}
+
+app.get('/api/reports/combined', async (req, res) => {
+  const reqDate = req.query.date ? String(req.query.date).trim() : null;
+  const isRefined = req.query.refined === 'true';
+  try {
+    const { buffer, fileName } = await generateCombinedReportBuffer(reqDate, isRefined);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    await workbook.xlsx.write(res);
-    if (!res.writableEnded) res.end();
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(buffer);
   } catch (error: any) {
     console.error('Combined Report Error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(error?.statusCode || 500).json({ error: error.message });
     }
   }
 });
@@ -17922,285 +17940,407 @@ app.get('/api/whatsapp/status', async (_req, res) => {
   }
 });
 
+async function executeSendRefinedCombinedImagesToWhatsApp(reqDate: string | null = null): Promise<{
+  statusCode: number;
+  success: boolean;
+  sentCount: number;
+  totalSheets?: number;
+  error?: string;
+  results?: any[];
+}> {
+  const ds = await resolveOccupancyDataset(reqDate);
+  if (!ds.hospitalData || ds.hospitalData.length === 0) {
+    return {
+      statusCode: 400,
+      success: false,
+      sentCount: 0,
+      error: `No occupancy data available for date: ${reqDate || 'current'}.`,
+    };
+  }
+
+  if (!greenApiService.isConfigured()) {
+    return {
+      statusCode: 400,
+      success: false,
+      sentCount: 0,
+      error: 'Green API is not configured on the server. Please ensure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS are set in your environment / Vercel settings.',
+    };
+  }
+
+  const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
+  const cairoCombTodayStr = getCairoDateTime().dateStr;
+  const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
+    const isStillPresent = activePatients.some(activePt =>
+      isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
+    );
+    if (isStillPresent) return false;
+    if (!ds.isHistorical) {
+      const dischargeDateVal = discPt.dischargeDate || discPt.date;
+      if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const uniqueCleanDischarged: any[] = [];
+  cleanDischarged.forEach(p => {
+    if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
+      uniqueCleanDischarged.push(p);
+    }
+  });
+
+  const todayEntries = (ds.cumulativeEntries || []).filter(
+    entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical
+  );
+  const uniqueTodayEntries: any[] = [];
+  todayEntries.forEach(p => {
+    if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
+      uniqueTodayEntries.push(p);
+    }
+  });
+
+  const occupancyRows = getOccupancyRows(ds.hospitalData);
+  const dateLabel = ds.dateLabel || cairoCombTodayStr;
+
+  // Comprehensive MRN and Patient lookups from all datasets
+  const mrnLookups = sheetGen.buildMrnLookup(
+    ds.hospitalData,
+    [
+      uniqueTodayEntries,
+      uniqueCleanDischarged,
+      ds.cumulativeDialysis || [],
+      ds.cumulativeTransfers || [],
+      Object.values(patientRoomRegistry || {})
+    ]
+  );
+
+  const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
+
+  // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes OR, home care, dialysis, well baby
+  if (occupancyRows && occupancyRows.length > 0) {
+    const occRes = await sheetGen.generateOccupancyJpeg(
+      occupancyRows,
+      dateLabel,
+      isPatientVip,
+      ds.cumulativeDialysis || [],
+      mrnLookups
+    );
+    if (occRes.count > 0) {
+      items.push({
+        fileBuffer: occRes.buffer,
+        fileName: '01_Occupancy.jpg',
+        caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${occRes.count}`
+      });
+    }
+  }
+
+  // 2. Admissions Sheet - strictly excludes non-inpatient cases (OR, Cath Lab, HomeCare, Well Baby, Dialysis)
+  if (uniqueTodayEntries && uniqueTodayEntries.length > 0) {
+    const entriesRes = await sheetGen.generateEntriesJpeg(
+      uniqueTodayEntries,
+      dateLabel,
+      mrnLookups,
+      ds.cumulativeDialysis || []
+    );
+    if (entriesRes.count > 0) {
+      items.push({
+        fileBuffer: entriesRes.buffer,
+        fileName: '02_Admissions.jpg',
+        caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${entriesRes.count}`
+      });
+    }
+  }
+
+  // 3. Dialysis Sheet - includes ALL dialysis cases exclusively with MRN and responsible officers
+  if (ds.cumulativeDialysis && ds.cumulativeDialysis.length > 0) {
+    const diaRes = await sheetGen.generateDialysisJpeg(
+      ds.cumulativeDialysis,
+      dateLabel,
+      mrnLookups
+    );
+    if (diaRes.count > 0) {
+      items.push({
+        fileBuffer: diaRes.buffer,
+        fileName: '03_Dialysis.jpg',
+        caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${diaRes.count}`
+      });
+    }
+  }
+
+  // 4. Exit / Discharges Sheet - strictly excludes dialysis cases
+  if (uniqueCleanDischarged && uniqueCleanDischarged.length > 0) {
+    const exitRes = await sheetGen.generateExitJpeg(
+      uniqueCleanDischarged,
+      dateLabel,
+      mrnLookups,
+      ds.cumulativeDialysis || [],
+      isPatientVip
+    );
+    if (exitRes.count > 0) {
+      items.push({
+        fileBuffer: exitRes.buffer,
+        fileName: '04_Discharges.jpg',
+        caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${exitRes.count}`
+      });
+    }
+  }
+
+  // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
+  if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
+    const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel, mrnLookups, isPatientVip);
+    if (debtsRes.count > 0) {
+      const formattedPosRem = debtsRes.positiveRemaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      items.push({
+        fileBuffer: debtsRes.buffer,
+        fileName: '05_Debts.jpg',
+        caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${debtsRes.count}\nover all positive remaining is : ${formattedPosRem}`
+      });
+    }
+  }
+
+  // 6. Patient Transfers Sheet (if any) - filtered identically to addRefinedTransfersSheet
+  const todayOnlyTransfers = (ds.cumulativeTransfers || []).filter(t => {
+    if (ds.isHistorical) return true;
+    const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
+    if (!rawDate) return false;
+    return isToday(rawDate, cairoCombTodayStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairoCombTodayStr);
+  });
+  if (todayOnlyTransfers.length > 0) {
+    const transRes = await sheetGen.generateTransfersJpeg(todayOnlyTransfers, dateLabel, mrnLookups);
+    if (transRes.count > 0) {
+      items.push({
+        fileBuffer: transRes.buffer,
+        fileName: '06_Transfers.jpg',
+        caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${transRes.count}`
+      });
+    }
+  }
+
+  if (items.length === 0) {
+    return {
+      statusCode: 400,
+      success: false,
+      sentCount: 0,
+      error: 'No data records found to generate sheet images.',
+    };
+  }
+
+  console.log(`[WhatsApp Trigger] Broadcasting ${items.length} server-generated sheet JPEGs to Green API...`);
+  const results = await greenApiService.broadcastBatch(items);
+
+  const hasFailure = results.some(r => !r.success);
+  const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+  const firstError = results.flatMap(r => r.errors || [])[0];
+
+  return {
+    statusCode: hasFailure || totalSent === 0 ? 502 : 200,
+    success: !hasFailure && totalSent > 0,
+    sentCount: totalSent,
+    totalSheets: items.length,
+    error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
+    results,
+  };
+}
+
 // Dedicated server-side trigger: generates high-fidelity JPEGs using sharp and broadcasts via Green API
 // Completely bypasses browser canvas to eliminate "Tainted canvas" restrictions.
 app.post('/api/whatsapp/send-refined-combined-trigger', async (req, res) => {
   const reqDate = req.query.date ? String(req.query.date).trim() : null;
-  const ds = await resolveOccupancyDataset(reqDate);
-  if (!ds.hospitalData || ds.hospitalData.length === 0) {
-    return res.status(400).json({ success: false, error: `No occupancy data available for date: ${reqDate || 'current'}.` });
-  }
-
-  if (!greenApiService.isConfigured()) {
-    return res.status(400).json({
-      success: false,
-      error: 'Green API is not configured on the server. Please ensure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS are set in your environment / Vercel settings.'
-    });
-  }
-
   try {
-    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
-    const cairoCombTodayStr = getCairoDateTime().dateStr;
-    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
-      const isStillPresent = activePatients.some(activePt => 
-        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
-      );
-      if (isStillPresent) return false;
-      if (!ds.isHistorical) {
-        const dischargeDateVal = discPt.dischargeDate || discPt.date;
-        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    const uniqueCleanDischarged: any[] = [];
-    cleanDischarged.forEach(p => {
-      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
-        uniqueCleanDischarged.push(p);
-      }
-    });
-
-    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
-    const uniqueTodayEntries: any[] = [];
-    todayEntries.forEach(p => {
-      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
-        uniqueTodayEntries.push(p);
-      }
-    });
-
-    const occupancyRows = getOccupancyRows(ds.hospitalData);
-    const dateLabel = ds.dateLabel || cairoCombTodayStr;
-
-    // Comprehensive MRN and Patient lookups from all datasets
-    const mrnLookups = sheetGen.buildMrnLookup(
-      ds.hospitalData,
-      [
-        uniqueTodayEntries,
-        uniqueCleanDischarged,
-        ds.cumulativeDialysis || [],
-        ds.cumulativeTransfers || [],
-        Object.values(patientRoomRegistry || {})
-      ]
-    );
-
-    const items: Array<{ fileBuffer: Buffer; fileName: string; caption: string }> = [];
-
-    // 1. Occupancy Sheet (Colored Structured Grid) - strictly excludes OR, home care, dialysis, well baby
-    if (occupancyRows && occupancyRows.length > 0) {
-      const occRes = await sheetGen.generateOccupancyJpeg(
-        occupancyRows,
-        dateLabel,
-        isPatientVip,
-        ds.cumulativeDialysis || [],
-        mrnLookups
-      );
-      if (occRes.count > 0) {
-        items.push({
-          fileBuffer: occRes.buffer,
-          fileName: '01_Occupancy.jpg',
-          caption: `📊 تقرير الإشغال العام (${dateLabel})\nالمستشفى: Elite Hospital\nإجمالي الحالات: ${occRes.count}`
-        });
-      }
-    }
-
-    // 2. Admissions Sheet - strictly excludes non-inpatient cases (OR, Cath Lab, HomeCare, Well Baby, Dialysis)
-    if (uniqueTodayEntries && uniqueTodayEntries.length > 0) {
-      const entriesRes = await sheetGen.generateEntriesJpeg(
-        uniqueTodayEntries,
-        dateLabel,
-        mrnLookups,
-        ds.cumulativeDialysis || []
-      );
-      if (entriesRes.count > 0) {
-        items.push({
-          fileBuffer: entriesRes.buffer,
-          fileName: '02_Admissions.jpg',
-          caption: `📥 حالات الدخول اليومي (${dateLabel})\nإجمالي الدخول: ${entriesRes.count}`
-        });
-      }
-    }
-
-    // 3. Dialysis Sheet - includes ALL dialysis cases exclusively with MRN and responsible officers
-    if (ds.cumulativeDialysis && ds.cumulativeDialysis.length > 0) {
-      const diaRes = await sheetGen.generateDialysisJpeg(
-        ds.cumulativeDialysis,
-        dateLabel,
-        mrnLookups
-      );
-      if (diaRes.count > 0) {
-        items.push({
-          fileBuffer: diaRes.buffer,
-          fileName: '03_Dialysis.jpg',
-          caption: `🩺 مرضى الغسيل الكلوي (${dateLabel})\nإجمالي الجلسات: ${diaRes.count}`
-        });
-      }
-    }
-
-    // 4. Exit / Discharges Sheet - strictly excludes dialysis cases
-    if (uniqueCleanDischarged && uniqueCleanDischarged.length > 0) {
-      const exitRes = await sheetGen.generateExitJpeg(
-        uniqueCleanDischarged,
-        dateLabel,
-        mrnLookups,
-        ds.cumulativeDialysis || [],
-        isPatientVip
-      );
-      if (exitRes.count > 0) {
-        items.push({
-          fileBuffer: exitRes.buffer,
-          fileName: '04_Discharges.jpg',
-          caption: `🚪 حالات الخروج الرسمية (${dateLabel})\nإجمالي الخروج: ${exitRes.count}`
-        });
-      }
-    }
-
-    // 5. General Debts Sheet (Cash Debts - Insured Debts strictly excluded per user specification)
-    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-      const debtsRes = await sheetGen.generateDebtsJpeg(ds.cumulativeDebts, dateLabel, mrnLookups, isPatientVip);
-      if (debtsRes.count > 0) {
-        const formattedPosRem = debtsRes.positiveRemaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        items.push({
-          fileBuffer: debtsRes.buffer,
-          fileName: '05_Debts.jpg',
-          caption: `💰 تقرير مديونيات المرضى (${dateLabel})\nإجمالي الحالات: ${debtsRes.count}\nover all positive remaining is : ${formattedPosRem}`
-        });
-      }
-    }
-
-    // 6. Patient Transfers Sheet (if any) - filtered identically to addRefinedTransfersSheet
-    const todayOnlyTransfers = (ds.cumulativeTransfers || []).filter(t => {
-      if (ds.isHistorical) return true;
-      const rawDate = t.lastTransferDate || t.date || (t.history && t.history.length > 0 ? t.history[t.history.length - 1].date : '') || '';
-      if (!rawDate) return false;
-      return isToday(rawDate, cairoCombTodayStr) || isToday(rawDate) || isToday(String(rawDate).split(' ')[0], cairoCombTodayStr);
-    });
-    if (todayOnlyTransfers.length > 0) {
-      const transRes = await sheetGen.generateTransfersJpeg(todayOnlyTransfers, dateLabel, mrnLookups);
-      if (transRes.count > 0) {
-        items.push({
-          fileBuffer: transRes.buffer,
-          fileName: '06_Transfers.jpg',
-          caption: `🔄 سجل تحويلات المرضى (${dateLabel})\nإجمالي التحويلات: ${transRes.count}`
-        });
-      }
-    }
-
-    if (items.length === 0) {
-      return res.status(400).json({ success: false, error: 'No data records found to generate sheet images.' });
-    }
-
-    console.log(`[WhatsApp Trigger] Broadcasting ${items.length} server-generated sheet JPEGs to Green API...`);
-    const results = await greenApiService.broadcastBatch(items);
-
-    const hasFailure = results.some(r => !r.success);
-    const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
-    const firstError = results.flatMap(r => r.errors || [])[0];
-
-    return res.status(hasFailure || totalSent === 0 ? 502 : 200).json({
-      success: !hasFailure && totalSent > 0,
-      sentCount: totalSent,
-      totalSheets: items.length,
-      error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
-      results
-    });
+    const { statusCode, ...payload } = await executeSendRefinedCombinedImagesToWhatsApp(reqDate);
+    return res.status(statusCode).json(payload);
   } catch (error: any) {
     console.error('[WhatsApp Trigger Error]:', error);
     return res.status(500).json({ success: false, error: error.message || 'Internal error broadcasting sheets to WhatsApp.' });
   }
 });
 
+async function executeSendCombinedExcelToWhatsApp(reqDate: string | null = null): Promise<{
+  statusCode: number;
+  success: boolean;
+  sentCount: number;
+  fileName?: string;
+  error?: string;
+  results?: any[];
+}> {
+  if (!greenApiService.isConfigured()) {
+    return {
+      statusCode: 400,
+      success: false,
+      sentCount: 0,
+      error: 'Green API is not configured on the server. Please configure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS in .env',
+    };
+  }
+
+  let excelBuffer: Buffer;
+  let fileName: string;
+  let dateLabel: string;
+  try {
+    const generated = await generateCombinedReportBuffer(reqDate, true);
+    excelBuffer = generated.buffer;
+    fileName = generated.fileName;
+    dateLabel = generated.dateLabel;
+  } catch (err: any) {
+    return {
+      statusCode: err?.statusCode || 500,
+      success: false,
+      sentCount: 0,
+      error: err?.message || 'Failed to generate combined Excel report.',
+    };
+  }
+
+  const caption = `📊 ملف التقرير المجمع للمستشفى (${dateLabel})\nالمستشفى: Elite Hospital\nالملف: ${fileName}`;
+
+  console.log(`[WhatsApp Combined Excel] Broadcasting ${fileName} (${excelBuffer.length} bytes) to WhatsApp...`);
+  const results = await greenApiService.broadcastBatch([{
+    fileBuffer: excelBuffer,
+    fileName,
+    caption,
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }]);
+
+  const hasFailure = results.some(r => !r.success);
+  const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
+  const firstError = results.flatMap(r => r.errors || [])[0];
+
+  return {
+    statusCode: hasFailure || totalSent === 0 ? 502 : 200,
+    success: !hasFailure && totalSent > 0,
+    sentCount: totalSent,
+    fileName,
+    error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
+    results,
+  };
+}
+
 // Endpoint sending the exact downloadable Combined Excel Sheet (.xlsx) to WhatsApp groups without any changes
 app.post('/api/whatsapp/send-combined-excel', async (req, res) => {
   try {
-    if (!greenApiService.isConfigured()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Green API is not configured on the server. Please configure GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS in .env'
-      });
-    }
-
     const reqDate = req.query.date || req.body?.date ? String(req.query.date || req.body?.date).trim() : null;
-    const ds = await resolveOccupancyDataset(reqDate);
-    if (!ds.hospitalData || ds.hospitalData.length === 0) {
-      return res.status(400).json({ success: false, error: `No occupancy data available for date: ${reqDate || 'current'}.` });
-    }
-
-    const activePatients = ds.hospitalData ? extractRawPatientsFromRows(ds.hospitalData) : [];
-    const cairoCombTodayStr = getCairoDateTime().dateStr;
-    const cleanDischarged = (ds.cumulativeDischarged || []).filter(discPt => {
-      const isStillPresent = activePatients.some(activePt => 
-        isPatientMatch(discPt, activePt) || isNameMatch(discPt.name, activePt.name)
-      );
-      if (isStillPresent) return false;
-      if (!ds.isHistorical) {
-        const dischargeDateVal = discPt.dischargeDate || discPt.date;
-        if (dischargeDateVal && !isToday(dischargeDateVal, cairoCombTodayStr)) {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    const uniqueCleanDischarged: any[] = [];
-    cleanDischarged.forEach(p => {
-      if (!uniqueCleanDischarged.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name))) {
-        uniqueCleanDischarged.push(p);
-      }
-    });
-
-    const todayEntries = (ds.cumulativeEntries || []).filter(entryPt => isToday(entryPt.date) || isToday((entryPt.date || "").split(" ")[0]) || ds.isHistorical);
-    const uniqueTodayEntries: any[] = [];
-    todayEntries.forEach(p => {
-      if (!uniqueTodayEntries.some(existing => isPatientMatch(existing, p))) {
-        uniqueTodayEntries.push(p);
-      }
-    });
-
-    // Build the exact same workbook as the download button without any changes
-    const workbook = new ExcelJS.Workbook();
-    await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
-    await addRefinedEntrySheet(workbook, uniqueTodayEntries);
-    await addRefinedDialysisSheet(workbook, ds.cumulativeDialysis);
-    await addRefinedExitSheet(workbook, uniqueCleanDischarged);
-    if (ds.cumulativeDebts && ds.cumulativeDebts.length > 0) {
-      await addRefinedDebtsSheet(workbook, ds.cumulativeDebts);
-    }
-    if (ds.cumulativeInsuredDebts && ds.cumulativeInsuredDebts.length > 0) {
-      await addRefinedInsuredDebtsSheet(workbook, ds.cumulativeInsuredDebts);
-    }
-    if (ds.cumulativeTransfers && ds.cumulativeTransfers.length > 0) {
-      await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers);
-    }
-
-    const excelBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
-    const dateLabel = ds.dateLabel || cairoCombTodayStr;
-    const fileName = `Combined_Hospital_Refined_Report_${dateLabel}.xlsx`;
-    const caption = `📊 ملف التقرير المجمع للمستشفى (${dateLabel})\nالمستشفى: Elite Hospital\nالملف: ${fileName}`;
-
-    console.log(`[WhatsApp Combined Excel] Broadcasting ${fileName} (${excelBuffer.length} bytes) to WhatsApp...`);
-    const results = await greenApiService.broadcastBatch([{
-      fileBuffer: excelBuffer,
-      fileName,
-      caption,
-      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    }]);
-
-    const hasFailure = results.some(r => !r.success);
-    const totalSent = results.reduce((sum, r) => sum + r.sentCount, 0);
-    const firstError = results.flatMap(r => r.errors || [])[0];
-
-    return res.status(hasFailure || totalSent === 0 ? 502 : 200).json({
-      success: !hasFailure && totalSent > 0,
-      sentCount: totalSent,
-      fileName,
-      error: hasFailure ? firstError : (totalSent === 0 ? 'No messages were delivered by Green API.' : undefined),
-      results
-    });
+    const { statusCode, ...payload } = await executeSendCombinedExcelToWhatsApp(reqDate);
+    return res.status(statusCode).json(payload);
   } catch (error: any) {
     console.error('[WhatsApp Combined Excel Error]:', error);
     return res.status(500).json({ success: false, error: error.message || 'Internal error broadcasting combined Excel report to WhatsApp.' });
+  }
+});
+
+// --- TELEGRAM BOT ROUTES ---
+const telegramBotHandlers: TelegramBotHandlers = {
+  onRefined: async () => {
+    const { buffer, fileName, dateLabel } = await generateCombinedReportBuffer(null, true);
+    return {
+      buffer,
+      fileName,
+      dateLabel,
+      caption: `Refined Combined Sheet (${dateLabel})`,
+    };
+  },
+  onDuty: async () => {
+    const { buffer, fileName, dateLabel } = await generateCombinedReportBuffer(null, false);
+    return {
+      buffer,
+      fileName,
+      dateLabel,
+      caption: `Combined Duty Manager Sheet (${dateLabel})`,
+    };
+  },
+  onWhatsapp: async () => {
+    return executeSendCombinedExcelToWhatsApp(null);
+  },
+  onImage: async () => {
+    return executeSendRefinedCombinedImagesToWhatsApp(null);
+  },
+};
+
+app.get('/api/telegram/status', async (_req, res) => {
+  try {
+    if (!telegramBotService.isConfigured()) {
+      return res.json({
+        configured: false,
+        error: 'TELEGRAM_BOT_TOKEN is not set in server environment variables.',
+      });
+    }
+    const [me, webhookInfo] = await Promise.all([
+      telegramBotService.getMe(),
+      telegramBotService.getWebhookInfo(),
+    ]);
+    return res.json({
+      configured: true,
+      bot: me,
+      webhook: webhookInfo,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      configured: telegramBotService.isConfigured(),
+      error: err?.message || 'Failed to check Telegram bot status',
+    });
+  }
+});
+
+const handleSetupTelegramWebhook = async (req: express.Request, res: express.Response) => {
+  try {
+    if (!telegramBotService.isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        error: 'TELEGRAM_BOT_TOKEN is not configured in environment variables.',
+      });
+    }
+
+    const explicitUrl = String(req.query.url || req.body?.url || '').trim();
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    const webhookUrl = explicitUrl || (host ? `${proto}://${host}/api/telegram/webhook` : '');
+
+    if (!webhookUrl || !webhookUrl.startsWith('https://')) {
+      return res.status(400).json({
+        success: false,
+        error: `A valid HTTPS webhook URL is required (got "${webhookUrl || 'empty'}"). Pass ?url=https://your-domain.vercel.app/api/telegram/webhook or open this endpoint on your deployed HTTPS domain.`,
+      });
+    }
+
+    await telegramBotService.setWebhook(webhookUrl);
+    await telegramBotService.setMyCommands();
+    const webhookInfo = await telegramBotService.getWebhookInfo();
+
+    return res.json({
+      success: true,
+      webhookUrl,
+      webhookInfo,
+    });
+  } catch (err: any) {
+    console.error('[Telegram Setup Webhook Error]:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to register Telegram webhook.',
+    });
+  }
+};
+
+app.get('/api/telegram/setup-webhook', handleSetupTelegramWebhook);
+app.post('/api/telegram/setup-webhook', handleSetupTelegramWebhook);
+
+app.post('/api/telegram/webhook', async (req, res) => {
+  try {
+    if (!telegramBotService.isConfigured()) {
+      return res.status(503).json({ ok: false, error: 'Telegram bot is not configured.' });
+    }
+
+    const expectedSecret = telegramBotService.getWebhookSecret();
+    if (expectedSecret) {
+      const providedSecret = String(req.headers['x-telegram-bot-api-secret-token'] || '');
+      if (providedSecret !== expectedSecret) {
+        return res.status(403).json({ ok: false, error: 'Forbidden' });
+      }
+    }
+
+    await telegramBotService.handleUpdate(req.body, telegramBotHandlers);
+    return res.status(200).json({ ok: true });
+  } catch (err: any) {
+    console.error('[Telegram Webhook Error]:', err);
+    // Return 200 to prevent Telegram infinite retry storms on unexpected payload errors
+    return res.status(200).json({ ok: false, error: err?.message || 'Internal error' });
   }
 });
 
@@ -18843,6 +18983,9 @@ async function startServer() {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
     syncSupervisor.start().catch((err) => {
       console.error('Failed to start SyncSupervisor:', err);
+    });
+    telegramBotService.startPollingIfLocal(telegramBotHandlers).catch((err) => {
+      console.error('Failed to start Telegram local polling:', err);
     });
   });
 }
