@@ -13,6 +13,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { PatientTransferRecord } from '../types';
+import { VipBadge } from './ui/VipBadge';
 
 interface PatientTransfersTableProps {
   transfers: PatientTransferRecord[];
@@ -20,6 +21,7 @@ interface PatientTransfersTableProps {
   onDownloadExcel: () => Promise<void>;
   isDownloading?: boolean;
   activePatients?: any[];
+  isVipFn?: (name?: string | null) => boolean;
 }
 
 export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
@@ -27,6 +29,7 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
   onRefresh,
   onDownloadExcel,
   isDownloading = false,
+  isVipFn,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [loadingAction, setLoadingAction] = useState(false);
@@ -426,8 +429,9 @@ export const PatientTransfersTable: React.FC<PatientTransfersTableProps> = ({
                       </td>
                       
                       <td className="py-3 px-4">
-                        <div className="font-bold text-slate-900 flex items-center gap-2">
+                        <div className="font-bold text-slate-900 flex items-center gap-2 flex-wrap">
                           <span>{item.name}</span>
+                          {isVipFn?.(item.name) && <VipBadge />}
                           {isMultiHop && (
                             <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-amber-100 text-amber-800 border border-amber-200 shrink-0">
                               Multi-Transfer ({journey.length - 1})

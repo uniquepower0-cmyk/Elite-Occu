@@ -19,10 +19,12 @@ import { useToast } from '../context/ToastContext';
 import { EmptyState } from './ui/EmptyState';
 import { ErrorBanner } from './ui/ErrorBanner';
 import { TableSkeleton } from './ui/TableSkeleton';
+import { VipBadge } from './ui/VipBadge';
 
 interface ORHistoryViewProps {
   onNotify?: (msg: string) => void;
   refreshTrigger?: number;
+  isVipFn?: (name?: string | null) => boolean;
 }
 
 const REGEX_YMD = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/;
@@ -78,7 +80,7 @@ export const formatDateDDMMYYYY = (dateStr: string | null | undefined): string =
   return s;
 };
 
-export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
+export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshTrigger, isVipFn }) => {
   const toast = useToast();
   const [dates, setDates] = useState<string[]>([]);
   const [futureDateSet, setFutureDateSet] = useState<Set<string>>(new Set());
@@ -608,7 +610,12 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                             <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                             <td className="py-2 px-3 font-bold text-teal-900 font-mono">{c.orRoom || '-'}</td>
                             <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{c.mrn || '-'}</td>
-                            <td className="py-2 px-3 font-bold text-[#0b3c34]">{c.patientName || '-'}</td>
+                            <td className="py-2 px-3 font-bold text-[#0b3c34]">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span>{c.patientName || '-'}</span>
+                                {isVipFn?.(c.patientName) && <VipBadge />}
+                              </div>
+                            </td>
                             <td className="py-2 px-3 text-slate-600">{c.surgeon || '-'}</td>
                             <td className="py-2 px-3 text-slate-600 max-w-[200px] truncate" title={c.operation}>{c.operation || '-'}</td>
                             <td className="py-2 px-3">

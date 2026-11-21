@@ -191,6 +191,86 @@ export class GreenApiService {
 
     return results;
   }
+
+  /**
+   * Send a plain/markdown WhatsApp text message to a single chat/group via Green API.
+   */
+  public async sendTextMessage(chatId: string, message: string, retries = 2): Promise<{ idMessage: string }> {
+    if (!this.instanceId || !this.apiToken) {
+      throw new Error('Green API is not configured: Missing GREEN_API_INSTANCE_ID or GREEN_API_TOKEN in server environment.');
+    }
+
+    const url = `https://api.green-api.com/waInstance${this.instanceId}/sendMessage/${this.apiToken}`;
+
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId, message }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(`Green API HTTP ${response.status}: ${errorText}`);
+        }
+
+        const data = (await response.json()) as { idMessage?: string };
+        if (!data || !data.idMessage) {
+          throw new Error(`Green API did not return idMessage: ${JSON.stringify(data)}`);
+        }
+        return { idMessage: data.idMessage };
+      } catch (err: any) {
+        if (attempt <= retries) {
+          console.warn(`[GreenApiService] sendTextMessage attempt ${attempt} failed for ${chatId}: ${err.message}. Retrying in ${attempt}s...`);
+          await sleep(1000 * attempt);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    throw new Error(`Failed to send text message to ${chatId} after ${retries + 1} attempts.`);
+  }
+
+  /**
+   * Broadcast a WhatsApp text message to customGroupIds or default GREEN_API_GROUP_IDS.
+   */
+  public async broadcastTextMessage(
+    message: string,
+    customGroupIds?: string[]
+  ): Promise<{ chatId: string; success: boolean; idMessage?: string; error?: string }[]> {
+    const groups = (customGroupIds && customGroupIds.length > 0)
+      ? customGroupIds
+      : this.getTargetGroups();
+    if (groups.length === 0) {
+      throw new Error('No target WhatsApp group IDs configured.');
+    }
+
+    const state = await this.getStateInstance();
+    if (state !== 'authorized') {
+      throw new Error(
+        `WhatsApp instance is not connected (Green API state: "${state}").`
+      );
+    }
+
+    const results: { chatId: string; success: boolean; idMessage?: string; error?: string }[] = [];
+    for (let i = 0; i < groups.length; i++) {
+      const groupId = groups[i];
+      try {
+        const res = await this.sendTextMessage(groupId, message);
+        results.push({ chatId: groupId, success: true, idMessage: res.idMessage });
+      } catch (err: any) {
+        results.push({ chatId: groupId, success: false, error: err?.message || String(err) });
+      }
+      if (i < groups.length - 1) {
+        await sleep(300);
+      }
+    }
+
+    return results;
+  }
 }
 
 export const greenApiService = new GreenApiService();

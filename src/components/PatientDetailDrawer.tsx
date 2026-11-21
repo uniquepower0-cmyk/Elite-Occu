@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { VipBadge } from './ui/VipBadge';
 import {
   X,
   User,
@@ -78,12 +79,7 @@ export const PatientDetailDrawer: React.FC<PatientDetailDrawerProps> = ({
               <span className="px-2 py-0.5 rounded-md bg-slate-200/80 dark:bg-[#142924] text-slate-700 dark:text-slate-300 text-[11px] font-bold">
                 {zone}
               </span>
-              {isVip && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold">
-                  <Crown className="w-3 h-3" />
-                  VIP
-                </span>
-              )}
+              {isVip && <VipBadge size="md" />}
               {isExceedingALOS && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-200 text-[11px] font-bold">
                   <AlertCircle className="w-3 h-3" />

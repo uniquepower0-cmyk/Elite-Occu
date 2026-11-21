@@ -52,6 +52,7 @@ import {
   type RestoredHmisOverride,
 } from './server/restoreHelpers.js';
 import { SyncSupervisor } from './server/syncSupervisor.js';
+import { notifyPowerBiVipDischarges, buildVipDischargeKey } from './server/vipDischargeNotifier.js';
 import {
   parseOPDDoctorsExcel,
   getOPDSpecialtyStats,
@@ -344,6 +345,8 @@ let lastTransfersDate = "";
 let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
 let restoredHmisOverrides: RestoredHmisOverride[] = [];
+let vipDischargeNotified: string[] = [];
+let vipDischargeAutomationPaused: boolean = false;
 
 /**
  * Permanent VIP Cases Safeguard:
@@ -2922,6 +2925,8 @@ async function executeLoadData(force = false) {
         if (parsed.lastDatabaseUpdatedAt) lastKnownDatabaseUpdatedAt = String(parsed.lastDatabaseUpdatedAt);
         manuallyDischargedNames = parsed.manuallyDischargedNames || [];
         restoredHmisOverrides = Array.isArray(parsed.restoredHmisOverrides) ? parsed.restoredHmisOverrides : [];
+        vipDischargeNotified = Array.isArray(parsed.vipDischargeNotified) ? parsed.vipDischargeNotified : [];
+        if (typeof parsed.vipDischargeAutomationPaused === 'boolean') vipDischargeAutomationPaused = parsed.vipDischargeAutomationPaused;
         cumulativeTransfers = parsed.transfers || [];
         patientRoomRegistry = parsed.patientRoomRegistry || {};
         if (parsed.lastResetDate) lastEgyptianAutoResetDate = String(parsed.lastResetDate);
@@ -3149,6 +3154,8 @@ async function executeLoadData(force = false) {
         if (meta.lastTransfersDate) lastTransfersDate = String(meta.lastTransfersDate);
         if (Array.isArray(meta.manuallyDischargedNames)) manuallyDischargedNames = meta.manuallyDischargedNames;
         if (Array.isArray(meta.restoredHmisOverrides)) restoredHmisOverrides = meta.restoredHmisOverrides;
+        if (Array.isArray(meta.vipDischargeNotified)) vipDischargeNotified = meta.vipDischargeNotified;
+        if (typeof meta.vipDischargeAutomationPaused === 'boolean') vipDischargeAutomationPaused = meta.vipDischargeAutomationPaused;
       }
     } else if (stateMap['state/dataset']) {
       // Fallback for legacy state/dataset single row if present
@@ -4090,6 +4097,8 @@ async function saveData() {
       lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt,
       manuallyDischargedNames: manuallyDischargedNames,
       restoredHmisOverrides: restoredHmisOverrides,
+      vipDischargeNotified: vipDischargeNotified,
+      vipDischargeAutomationPaused: vipDischargeAutomationPaused,
       transfers: cumulativeTransfers,
       patientRoomRegistry: patientRoomRegistry,
       lastResetDate: lastEgyptianAutoResetDate,
@@ -4241,6 +4250,8 @@ async function saveData() {
         cachedMetaData.lastTransfersDate !== lastTransfersDate ||
         !arePayloadsEqual(cachedMetaData.manuallyDischargedNames, manuallyDischargedNames || []) ||
         !arePayloadsEqual(cachedMetaData.restoredHmisOverrides, restoredHmisOverrides || []) ||
+        !arePayloadsEqual(cachedMetaData.vipDischargeNotified, vipDischargeNotified || []) ||
+        Boolean(cachedMetaData.vipDischargeAutomationPaused) !== Boolean(vipDischargeAutomationPaused) ||
         !arePayloadsEqual(cachedMetaData.counts, currentMetaCounts);
 
       if (!metaChanged && dirtyContentNodes.length === 0) {
@@ -4262,6 +4273,8 @@ async function saveData() {
             lastTransfersDate: lastTransfersDate,
             manuallyDischargedNames: manuallyDischargedNames || [],
             restoredHmisOverrides: restoredHmisOverrides || [],
+            vipDischargeNotified: vipDischargeNotified || [],
+            vipDischargeAutomationPaused: Boolean(vipDischargeAutomationPaused),
             counts: currentMetaCounts
           },
           updated_at: nowIso
@@ -8367,6 +8380,7 @@ async function updateHospitalState(rows: any[][]) {
     ? lastActiveDate
     : (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || ""));
   const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
+  const newAutoDischargedForAlert: any[] = [];
 
   if (isDifferentDay) {
     console.log(`[Sync Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Running daily rollover for previous day...`);
@@ -8392,6 +8406,7 @@ async function updateHospitalState(rows: any[][]) {
         (p as any).dischargeDate = getTodayRiyadhDateStr();
         (p as any).dischargeType = 'auto';
         cumulativeDischarged.push(p);
+        newAutoDischargedForAlert.push(p);
       }
     });
 
@@ -8437,6 +8452,7 @@ async function updateHospitalState(rows: any[][]) {
               dischargeType: 'auto'
             };
             cumulativeDischarged.push(discObj);
+            newAutoDischargedForAlert.push(discObj);
           }
         }
       }
@@ -8454,6 +8470,17 @@ async function updateHospitalState(rows: any[][]) {
 
   // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
   extractSubsheetsFromHospitalData(rows);
+
+  if (!isDifferentDay && !isNewSheetLikelyEmpty && newAutoDischargedForAlert.length > 0) {
+    await ensureVipCasesLoaded();
+    const vipAlertRes = await notifyPowerBiVipDischarges({
+      discharges: newAutoDischargedForAlert,
+      isVipFn: isPatientVip,
+      notifiedKeys: vipDischargeNotified,
+      paused: vipDischargeAutomationPaused,
+    });
+    vipDischargeNotified = vipAlertRes.notifiedKeys;
+  }
 
   uploadedAt = Date.now();
   setSaveChangeType('upload');
@@ -8799,7 +8826,10 @@ app.get('/api/occupancy/data', async (req, res) => {
     return true;
   });
 
-  const allFilteredDischarged = filterHelper(uniqueCleanDischarged);
+  const allFilteredDischarged = filterHelper(uniqueCleanDischarged).map(p => ({
+    ...p,
+    isVip: Boolean(p.isVip || p.isVIP || isPatientVip(p.name)),
+  }));
   const autoDischargedRows = allFilteredDischarged.filter(p => p.dischargeType !== 'manual' && !isManuallyDischarged(p.name));
   const manualDischargedRows = allFilteredDischarged.filter(p => p.dischargeType === 'manual' || isManuallyDischarged(p.name));
   const activeManualNames = manualDischargedRows.map(p => p.name);
@@ -8831,6 +8861,7 @@ app.get('/api/occupancy/data', async (req, res) => {
       companionStatus: cumulativeCompanionStatus,
       losData: cumulativeLOS,
       vipCasesText: vipCasesText,
+      vipDischargeAutomationPaused: vipDischargeAutomationPaused,
       earlyDischargeRoomsText: earlyDischargeRoomsText,
       pendingDischargePatientsText: pendingDischargePatientsText,
       vipCount: 0,
@@ -8867,6 +8898,7 @@ app.get('/api/occupancy/data', async (req, res) => {
     companionStatus: cumulativeCompanionStatus,
     losData: cumulativeLOS,
     vipCasesText: vipCasesText,
+    vipDischargeAutomationPaused: vipDischargeAutomationPaused,
     earlyDischargeRoomsText: earlyDischargeRoomsText,
     pendingDischargePatientsText: pendingDischargePatientsText,
     vipCount: getActiveVipCount(),
@@ -9417,6 +9449,12 @@ app.post('/api/restore-patient', async (req, res) => {
       restoredAt: new Date().toISOString(),
     });
 
+    // 7c. Clear VIP discharge dedup key for this restored patient so a genuine future discharge can alert again
+    const restoredVipKey = buildVipDischargeKey({ mrn: restoredMrn, name: restoredPtName });
+    if (restoredVipKey) {
+      vipDischargeNotified = (vipDischargeNotified || []).filter(k => k !== restoredVipKey);
+    }
+
     // 8. Re-extract derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
     extractSubsheetsFromHospitalData(hospitalData);
 
@@ -9879,6 +9917,7 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     cumulativeDischarged = [];
     manuallyDischargedNames = [];
     restoredHmisOverrides = [];
+    vipDischargeNotified = [];
     cumulativeDialysis = [];
     cumulativeTransfers = [];
     cumulativeORList = [];
@@ -10172,6 +10211,7 @@ app.post('/api/reset', async (req, res) => {
     cumulativeDischarged = [];
     manuallyDischargedNames = [];
     restoredHmisOverrides = [];
+    vipDischargeNotified = [];
     patientRoomRegistry = {};
     uploadedAt = null;
     pendingDischargePatientsText = "";
@@ -17968,6 +18008,59 @@ app.get('/api/whatsapp/status', async (_req, res) => {
     });
   } catch (err: any) {
     return res.status(500).json({ configured: greenApiService.isConfigured(), error: err?.message || 'Failed to check Green API status' });
+  }
+});
+
+app.post('/api/whatsapp/vip-discharge-automation', async (req, res) => {
+  try {
+    const nextPaused = Boolean(req.body?.paused);
+    const nowIso = new Date().toISOString();
+
+    let baseMeta: Record<string, any> =
+      (inMemoryStateMap['state/metadata'] && typeof inMemoryStateMap['state/metadata'] === 'object')
+        ? { ...inMemoryStateMap['state/metadata'] }
+        : {};
+
+    if (!baseMeta || Object.keys(baseMeta).length === 0) {
+      const { data: metaRow } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .select('data')
+        .eq('path', 'state/metadata')
+        .maybeSingle();
+      if (metaRow?.data && typeof metaRow.data === 'object') {
+        baseMeta = { ...metaRow.data };
+      }
+    }
+
+    vipDischargeAutomationPaused = nextPaused;
+    const updatedMeta = {
+      ...baseMeta,
+      vipDischargeAutomationPaused: nextPaused,
+    };
+
+    const { data: upData, error: upErr } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .upsert({
+        path: 'state/metadata',
+        data: updatedMeta,
+        updated_at: nowIso,
+      })
+      .select('updated_at');
+
+    if (upErr) {
+      return res.status(500).json({ success: false, error: upErr.message });
+    }
+
+    const dbTs = upData?.[0]?.updated_at ? String(upData[0].updated_at) : nowIso;
+    inMemoryStateMap['state/metadata'] = updatedMeta;
+    inMemoryNodeTimestamps['state/metadata'] = dbTs;
+    lastKnownDatabaseUpdatedAt = dbTs;
+
+    console.log(`[VIP WhatsApp] Automation ${nextPaused ? 'PAUSED' : 'RESUMED'} via Mohanad's Sheets.`);
+    return res.json({ success: true, paused: nextPaused });
+  } catch (err: any) {
+    console.error('[VIP WhatsApp] Error toggling pause state:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to update VIP discharge automation state' });
   }
 });
 

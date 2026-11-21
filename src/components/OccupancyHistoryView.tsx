@@ -24,14 +24,16 @@ import { useToast } from '../context/ToastContext';
 import { EmptyState } from './ui/EmptyState';
 import { ErrorBanner } from './ui/ErrorBanner';
 import { TableSkeleton } from './ui/TableSkeleton';
+import { VipBadge } from './ui/VipBadge';
 
 interface OccupancyHistoryViewProps {
   onNotify?: (msg: string) => void;
   /** Increment this to force a silent re-fetch of dates and detail */
   refreshTrigger?: number;
+  isVipFn?: (name?: string | null) => boolean;
 }
 
-export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNotify, refreshTrigger }) => {
+export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNotify, refreshTrigger, isVipFn }) => {
   const toast = useToast();
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -624,7 +626,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                               <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
                               <td className="py-2 px-3 font-bold text-teal-900 font-mono">{pt.room}</td>
                               <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{pt.mrn || '-'}</td>
-                              <td className="py-2 px-3 font-bold text-[#0b3c34]">{pt.name}</td>
+                              <td className="py-2 px-3 font-bold text-[#0b3c34]">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span>{pt.name}</span>
+                                  {(pt.isVip || isVipFn?.(pt.name)) && <VipBadge />}
+                                </div>
+                              </td>
                               <td className="py-2 px-3 text-slate-600">{pt.doctor || '-'}</td>
                               <td className="py-2 px-3 text-slate-600">{pt.contractor || '-'}</td>
                               <td className="py-2 px-3 text-slate-500">{pt.floor || '-'}</td>
@@ -670,11 +677,7 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                                 <td className="py-2 px-3 font-bold text-[#0b3c34]">
                                   <div className="flex items-center gap-2">
                                     <span>{pt.name}</span>
-                                    {pt.isVip && (
-                                      <span className="px-1.5 py-0.2 text-[9px] font-black rounded bg-amber-100 text-amber-900 border border-amber-300">
-                                        VIP
-                                      </span>
-                                    )}
+                                    {(pt.isVip || isVipFn?.(pt.name)) && <VipBadge />}
                                   </div>
                                 </td>
                                 <td className="py-2 px-3 text-slate-600">{pt.doctor || '-'}</td>
@@ -720,7 +723,12 @@ export const OccupancyHistoryView: React.FC<OccupancyHistoryViewProps> = ({ onNo
                             return (
                               <tr key={idx} className="hover:bg-amber-50/50 transition-colors">
                                 <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">{idx + 1}</td>
-                                <td className="py-2 px-3 font-bold text-[#0b3c34]">{t.name}</td>
+                                <td className="py-2 px-3 font-bold text-[#0b3c34]">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span>{t.name}</span>
+                                    {isVipFn?.(t.name) && <VipBadge />}
+                                  </div>
+                                </td>
                                 <td className="py-2 px-3 font-mono font-bold text-slate-600">{t.originalRoom || '-'}</td>
                                 <td className="py-2 px-3 font-mono font-black text-amber-700">{t.currentRoom || '-'}</td>
                                 <td className="py-2 px-3">

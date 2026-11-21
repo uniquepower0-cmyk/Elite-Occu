@@ -42,8 +42,12 @@ import {
   TrendingUp,
   Command,
   SlidersHorizontal,
-  Stethoscope
+  Stethoscope,
+  Pause,
+  Play
 } from 'lucide-react';
+import { createVipMatcher } from './logic/vip';
+import { VipBadge } from './components/ui/VipBadge';
 import { 
   supabase, 
   fetchSupabaseAuditLogs, 
@@ -153,7 +157,7 @@ const ViewLoadingFallback = () => (
 
 type View = 'dashboard' | 'patients' | 'opd' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
-type PaymentFilter = 'all' | 'cash' | 'insured';
+type PaymentFilter = 'all' | 'cash' | 'insured' | 'vip';
 
 export function getCairoDateString(): string {
   try {
@@ -504,6 +508,9 @@ export default function App() {
     }
   });
   const [vipSaveStatus, setVipSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'idle'>('idle');
+  const [vipDischargeAutomationPaused, setVipDischargeAutomationPaused] = useState<boolean>(false);
+  const [isTogglingVipAutomation, setIsTogglingVipAutomation] = useState<boolean>(false);
+  const isVipMatcher = useMemo(() => createVipMatcher(vipCases), [vipCases]);
   const isVipFocusedRef = useRef(false);
   const vipDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [earlyDischargeRooms, setEarlyDischargeRooms] = useState<string>('');
@@ -1416,6 +1423,9 @@ export default function App() {
       setOrListCount(data.orListCount || 0);
       setOrList(data.orList || []);
       setOverList(data.overList || []);
+      if (typeof data.vipDischargeAutomationPaused === 'boolean') {
+        setVipDischargeAutomationPaused(data.vipDischargeAutomationPaused);
+      }
       if (Array.isArray(data.opdList)) setOpdList(data.opdList);
       if (data.opdListDate) setOpdListDate(String(data.opdListDate));
       if (data.vipCasesText !== undefined && !isVipFocusedRef.current) {
@@ -2911,9 +2921,36 @@ export default function App() {
 
       if (paymentFilter === 'cash') return isCashPayment(p.payment);
       if (paymentFilter === 'insured') return !isCashPayment(p.payment);
+      if (paymentFilter === 'vip') return isVipMatcher(p.name);
       return true;
     });
-  }, [patients, deferredSearchQuery, paymentFilter, zoneFilter]);
+  }, [patients, deferredSearchQuery, paymentFilter, zoneFilter, isVipMatcher]);
+
+  const handleToggleVipDischargeAutomation = useCallback(async () => {
+    const nextPaused = !vipDischargeAutomationPaused;
+    setIsTogglingVipAutomation(true);
+    try {
+      const res = await fetch('/api/whatsapp/vip-discharge-automation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: nextPaused }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json?.error || 'Failed to update VIP discharge automation state');
+      }
+      setVipDischargeAutomationPaused(Boolean(json.paused));
+      toast.info(
+        json.paused
+          ? 'VIP discharge WhatsApp alerts paused.'
+          : 'VIP discharge WhatsApp alerts resumed.'
+      );
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not update VIP discharge automation state');
+    } finally {
+      setIsTogglingVipAutomation(false);
+    }
+  }, [vipDischargeAutomationPaused, toast]);
 
   const handleCopyPatientSummary = useCallback(async (p: PatientRow) => {
     const text = [
@@ -3862,6 +3899,10 @@ export default function App() {
                         subValue="Active VIP cases"
                         icon={<Crown />}
                         color="yellow"
+                        onClick={() => {
+                          setCurrentView('patients');
+                          setPaymentFilter('vip');
+                        }}
                         onCopy={handleCopyFormattedVips}
                         copyLabel="Copy Formatted VIP Cases"
                       />
@@ -4152,6 +4193,7 @@ export default function App() {
                                   <div className="space-y-1.5 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <span className="text-xs font-black text-brand-primary">{entry.name}</span>
+                                      {isVipMatcher(entry.name) && <VipBadge />}
                                       <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-800 font-mono text-[10px] font-extrabold uppercase tracking-wider">
                                         Room {entry.room}
                                       </span>
@@ -4702,9 +4744,9 @@ export default function App() {
 
                                                 {/* Plotted surgical capsules */}
                                                 {plottedSurgeries.map(({ p, laneIndex, leftPct, widthPct }, pIdx) => {
-                                                  const isVip = String(p.patientName || "").match(/(VIP|important|سعادة|الامير|امير|شيخ|شيخة)/i) || 
+                                                  const isVip = isVipMatcher(p.patientName) ||
                                                     String(p.flClassName || "").toUpperCase().includes("VIP") ||
-                                                    (p.vipStatus && String(p.vipStatus).trim() !== "");
+                                                    Boolean(p.vipStatus && String(p.vipStatus).trim() !== "");
 
                                                   const isHc = isHospitalCase(p);
 
@@ -4766,8 +4808,9 @@ export default function App() {
                                         </span>
                                         <h4 className="text-sm font-black text-slate-800 flex items-center gap-1.5 mt-1">
                                           {hoveredPatient.patientName}
-                                          {String(hoveredPatient.patientName).match(/(VIP|important|سعادة|الامير|امير|شيخ|شيخة)/i) && (
-                                            <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-400" />
+                                          {(isVipMatcher(hoveredPatient.patientName) ||
+                                            String(hoveredPatient.flClassName || "").toUpperCase().includes("VIP")) && (
+                                            <VipBadge />
                                           )}
                                         </h4>
                                         <p className="text-xs text-slate-500 leading-relaxed font-semibold">
@@ -4932,9 +4975,10 @@ export default function App() {
                                             return (
                                               <div key={p.mrn ? `room-${room}-${p.mrn}` : `room-${room}-${p.patientName}-${idx}`} className="p-4 hover:bg-slate-50/40 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                                                 <div className="space-y-1">
-                                                  <div className="flex items-center gap-2">
+                                                  <div className="flex items-center gap-2 flex-wrap">
                                                     <span className="text-xs font-bold text-slate-400 font-mono">#{p.serial || idx + 1}</span>
                                                     <p className="text-sm font-extrabold text-slate-800">{p.patientName}</p>
+                                                    {isVipMatcher(p.patientName) && <VipBadge />}
                                                     <span className="text-[10px] text-slate-400 font-mono font-bold">MRN: {p.mrn}</span>
                                                   </div>
                                                   <p className="text-xs text-slate-500 font-semibold">{p.arOperationName || p.engOperationName}</p>
@@ -5128,7 +5172,12 @@ export default function App() {
                                       <td className="px-5 py-3 text-slate-500 font-mono text-[11px]">{index + 1}</td>
                                       <td className="px-5 py-3 font-mono text-slate-600 font-bold text-[11px]">{pt.patientRoom || 'N/A'}</td>
                                       <td className="px-5 py-3 font-mono text-orange-600 font-bold text-[11px]">{pt.room}</td>
-                                      <td className="px-5 py-3 font-bold text-slate-800">{pt.patientName || pt.name}</td>
+                                      <td className="px-5 py-3 font-bold text-slate-800">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span>{pt.patientName || pt.name}</span>
+                                          {isVipMatcher(pt.patientName || pt.name) && <VipBadge />}
+                                        </div>
+                                      </td>
                                       <td className="px-5 py-3 font-mono text-slate-500 text-[11px]">{pt.mrn || pt.id || '—'}</td>
                                       <td className="px-5 py-3 text-[11px]">
                                         <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 font-semibold border border-amber-100">
@@ -5208,6 +5257,17 @@ export default function App() {
                             : 'bg-white dark:bg-[#142924] border-slate-200 dark:border-emerald-500/20 text-[#155e75] dark:text-sky-300 hover:bg-slate-100'
                         }`}>
                         INSURED ({insuredCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentFilter('vip')}
+                        className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold uppercase cursor-pointer transition-colors inline-flex items-center gap-1 ${
+                          paymentFilter === 'vip' 
+                            ? 'bg-amber-500 text-white border-amber-500' 
+                            : 'bg-white dark:bg-[#142924] border-amber-300/70 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-50'
+                        }`}>
+                        <Crown className="w-3 h-3" />
+                        VIP ({vipCount})
                       </button>
                     </div>
                   </div>
@@ -5300,13 +5360,18 @@ export default function App() {
                               )}
                               <tr
                                 onClick={() => setSelectedPatient(p)}
-                                className="hover:bg-teal-50/60 dark:hover:bg-emerald-950/40 transition-colors duration-150 cursor-pointer"
+                                className={`hover:bg-teal-50/60 dark:hover:bg-emerald-950/40 transition-colors duration-150 cursor-pointer ${
+                                  isVipMatcher(p.name) ? 'border-l-4 border-l-amber-400 bg-amber-50/35 dark:bg-amber-950/15' : ''
+                                }`}
                                 title="Click to inspect patient 360° details"
                               >
                                 <td className="px-6 py-3 text-slate-500 font-mono text-[11px]">{serial++}</td>
                                 <td className="px-6 py-3 font-mono text-teal-700 font-extrabold text-[11px]">{p.room}</td>
                                 <td className="px-6 py-3">
-                                  <div className="font-bold text-slate-800">{p.name || '---'}</div>
+                                  <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 flex-wrap">
+                                    <span>{p.name || '---'}</span>
+                                    {isVipMatcher(p.name) && <VipBadge />}
+                                  </div>
                                   <div className="text-[10px] text-slate-500 font-mono italic">{p.id}</div>
                                   {p.doctor && <div className="text-[9px] text-teal-600 font-extrabold uppercase mt-1 leading-none tracking-wide bg-teal-500/5 px-2 py-1 rounded-md border border-teal-500/10 inline-block">Dr. {p.doctor}</div>}
                                 </td>
@@ -5378,9 +5443,45 @@ export default function App() {
                 {/* Section: Mohanad's Sheets */}
                 {currentView === 'mohanad-sheets' && (
                   <section className="space-y-6">
-                    <div className="pb-3 border-b border-slate-200 dark:border-emerald-500/20">
-                      <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">Mohanad's Sheets</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Refined Excel exports, WhatsApp broadcasts, VIP &amp; discharge matchers, and transfers registry</p>
+                    <div className="pb-3 border-b border-slate-200 dark:border-emerald-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50 tracking-tight">Mohanad's Sheets</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Refined Excel exports, WhatsApp broadcasts, VIP &amp; discharge matchers, and transfers registry</p>
+                      </div>
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                            vipDischargeAutomationPaused
+                              ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-500/40'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-500/40'
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              vipDischargeAutomationPaused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'
+                            }`}
+                          />
+                          {vipDischargeAutomationPaused ? 'VIP Alerts: Paused' : 'VIP Alerts: Active'}
+                        </span>
+                        <button
+                          id="toggle-vip-discharge-automation-btn"
+                          type="button"
+                          onClick={handleToggleVipDischargeAutomation}
+                          disabled={isTogglingVipAutomation}
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold border transition-all flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                            vipDischargeAutomationPaused
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                              : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/50 dark:text-amber-200 dark:border-amber-500/40'
+                          }`}
+                        >
+                          {vipDischargeAutomationPaused ? <Play size={13} /> : <Pause size={13} />}
+                          {isTogglingVipAutomation
+                            ? 'Updating...'
+                            : vipDischargeAutomationPaused
+                              ? 'Resume VIP Alerts'
+                              : 'Pause VIP Alerts'}
+                        </button>
+                      </div>
                     </div>
 
                     <div className="bg-brand-primary/10 border border-teal-500/20 rounded-xl p-4 flex gap-3 text-teal-900 text-xs shadow-sm">
@@ -5454,6 +5555,15 @@ export default function App() {
                                   <span className="text-[11px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                                     Persistent in Database Forever
+                                  </span>
+                                  <span
+                                    className={`text-[11px] font-bold px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
+                                      vipDischargeAutomationPaused
+                                        ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                        : 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                                    }`}
+                                  >
+                                    WhatsApp Discharge Alerts: {vipDischargeAutomationPaused ? 'Paused' : 'Active'}
                                   </span>
                                   {vipSaveStatus === 'saving' && (
                                     <span className="text-[10px] text-amber-600 font-bold animate-pulse">Auto-saving...</span>
@@ -5628,7 +5738,7 @@ export default function App() {
                           ) : (
                             <div className="max-h-64 overflow-y-auto border border-teal-500/10 rounded-xl divide-y divide-brand-primary/5 bg-white/30">
                               {dischargedPatients.map((p, idx) => {
-                                  const isVip = (p as any).isVip || (p as any).isVIP;
+                                  const isVip = Boolean((p as any).isVip || (p as any).isVIP || isVipMatcher(p.name));
                                   return (
                                     <div key={idx} className="p-3.5 flex items-center justify-between hover:bg-teal-500/5 transition-colors gap-4">
                                       <div className="flex flex-col gap-1 min-w-0">
@@ -5637,11 +5747,7 @@ export default function App() {
                                           <span className="px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-800 font-mono text-[10px] font-extrabold shrink-0">
                                             {p.room}
                                           </span>
-                                          {isVip && (
-                                            <span className="px-1.5 py-0.2 text-[9px] font-black rounded bg-amber-100 text-amber-900 border border-amber-300">
-                                              VIP
-                                            </span>
-                                          )}
+                                          {isVip && <VipBadge />}
                                         </div>
                                         <div className="text-[10px] text-slate-500 font-extrabold flex gap-x-3 gap-y-1 flex-wrap">
                                           <span className="truncate">Doc: {(p as any).physician || 'N/A'}</span>
@@ -5846,6 +5952,7 @@ export default function App() {
                               onDownloadExcel={downloadTransfersReport}
                               isDownloading={processing === 'Downloading Patient Transfers Sheet'}
                               activePatients={patients}
+                              isVipFn={isVipMatcher}
                             />
                           </React.Suspense>
                         </ErrorBoundary>
@@ -5863,7 +5970,7 @@ export default function App() {
                       onReset={() => setOccupancyHistoryRefreshKey(k => k + 1)}
                     >
                       <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <OccupancyHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={occupancyHistoryRefreshKey} />
+                        <OccupancyHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={occupancyHistoryRefreshKey} isVipFn={isVipMatcher} />
                       </React.Suspense>
                     </ErrorBoundary>
                   </section>
@@ -5894,7 +6001,7 @@ export default function App() {
                       onReset={() => setOrHistoryRefreshKey(k => k + 1)}
                     >
                       <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <ORHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={orHistoryRefreshKey} />
+                        <ORHistoryView onNotify={(msg) => toast.info(msg)} refreshTrigger={orHistoryRefreshKey} isVipFn={isVipMatcher} />
                       </React.Suspense>
                     </ErrorBoundary>
                   </section>
@@ -5943,6 +6050,7 @@ export default function App() {
         patients={patients}
         orList={orList}
         actions={commandActions}
+        isVipFn={isVipMatcher}
         onSelectPatient={(p) => setSelectedPatient(p)}
         onSelectORCase={(c) => {
           setCurrentView('dashboard');

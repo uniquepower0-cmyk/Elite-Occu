@@ -13,6 +13,7 @@ import {
   Crown,
 } from 'lucide-react';
 import { PatientRow } from '../logic/occupancy';
+import { VipBadge } from './ui/VipBadge';
 
 export interface CommandPaletteAction {
   id: string;
@@ -31,6 +32,7 @@ interface CommandPaletteProps {
   actions: CommandPaletteAction[];
   onSelectPatient: (patient: PatientRow) => void;
   onSelectORCase: (orCase: any) => void;
+  isVipFn?: (name?: string | null) => boolean;
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
@@ -41,6 +43,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   actions,
   onSelectPatient,
   onSelectORCase,
+  isVipFn,
 }) => {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -168,8 +171,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         {p.room}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
-                          {p.name || 'Unnamed Patient'}
+                        <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate flex items-center gap-1.5">
+                          <span className="truncate">{p.name || 'Unnamed Patient'}</span>
+                          {isVipFn?.(p.name) && <VipBadge />}
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                           {p.doctor ? `Dr. ${p.doctor}` : 'No physician'} • {p.payment || 'Unknown'}
@@ -204,8 +208,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         {c.orRoom || 'OR'}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
-                          {c.patientName}
+                        <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate flex items-center gap-1.5">
+                          <span className="truncate">{c.patientName}</span>
+                          {isVipFn?.(c.patientName) && <VipBadge />}
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                           {c.surgeonName || 'Surgeon'} • {c.startTime || '--:--'} - {c.endTime || '--:--'}
