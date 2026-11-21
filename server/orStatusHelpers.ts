@@ -11,3 +11,21 @@ export function classifyInOutFallbackSafe(p: any): 'IN' | 'OUT' {
   }
   return 'OUT';
 }
+
+/**
+ * Classifies a normalized ISO date string (`YYYY-MM-DD`) relative to today's Cairo date.
+ */
+export function getORDateContextMode(
+  normalizedIsoDate: string | null | undefined,
+  cairoToday: string
+): 'future' | 'today' | 'past' {
+  const clean = String(normalizedIsoDate || '').trim();
+  if (!clean || clean === 'current' || clean === 'today' || clean === cairoToday) {
+    return 'today';
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    if (clean > cairoToday) return 'future';
+    if (clean < cairoToday) return 'past';
+  }
+  return 'today';
+}

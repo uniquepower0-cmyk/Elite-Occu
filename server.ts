@@ -59,7 +59,7 @@ import {
   verifyVipSyncEventRequest,
   getVipDischargeTargetGroups,
 } from './server/vipDischargeNotifier.js';
-import { classifyInOutFallbackSafe } from './server/orStatusHelpers.js';
+import { classifyInOutFallbackSafe, getORDateContextMode } from './server/orStatusHelpers.js';
 import {
   parseOPDDoctorsExcel,
   getOPDSpecialtyStats,
@@ -9837,6 +9837,45 @@ async function resolveORDataset(reqDate?: string | null) {
   };
 }
 
+/**
+ * Resolves the occupancy & discharge context for a given OR date:
+ * - Future scheduled dates: match against live active occupancy (hospitalData) with empty discharged list.
+ * - Past historical dates: match against that date's historical occupancy & discharged snapshot.
+ * - Today: match against live active occupancy & today's discharged list.
+ */
+async function resolveOccupancyContextForORDate(reqDate?: string | null) {
+  const cairoToday = getCairoDateTime().dateStr;
+  const cleanReq = reqDate ? (normalizeToISODate(String(reqDate).trim()) || String(reqDate).trim()) : '';
+  const mode = getORDateContextMode(cleanReq, cairoToday);
+
+  if (mode === 'future') {
+    if (!isServerHydrated) {
+      try { await loadData(); } catch (_) {}
+    }
+    const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+    return {
+      mode,
+      hospitalData,
+      occRows,
+      dischargedOverride: [] as any[],
+      isFutureDate: true,
+    };
+  }
+
+  const occDs = await resolveOccupancyDataset(reqDate);
+  const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+  const dischargedOverride = occDs.isHistorical
+    ? (occDs.cumulativeDischarged || [])
+    : (cumulativeDischarged || []);
+  return {
+    mode,
+    hospitalData: occDs.hospitalData,
+    occRows,
+    dischargedOverride,
+    isFutureDate: false,
+  };
+}
+
 let isDailyResetting = false;
 
 function getNextCairoDateStr(baseDateStr?: string): string {
@@ -10540,26 +10579,8 @@ app.get('/api/history/or/dates', async (req, res) => {
 app.get('/api/history/or/detail', async (req, res) => {
   try {
     const dateStr = req.query.date ? String(req.query.date).trim() : getCairoDateTime().dateStr;
-    const cairoToday = getCairoDateTime().dateStr;
-    const cleanReqDate = normalizeToISODate(dateStr) || dateStr;
-    const isFutureDate = Boolean(cleanReqDate && cleanReqDate > cairoToday);
-
     const ds = await resolveORDataset(dateStr);
-    let occRows: any[][] = [];
-    let dischargedOverride: any[] = [];
-
-    if (isFutureDate) {
-      if (!isServerHydrated) {
-        try { await loadData(); } catch (_) {}
-      }
-      occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
-      dischargedOverride = [];
-    } else {
-      const occDs = await resolveOccupancyDataset(dateStr);
-      occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-      dischargedOverride = occDs.isHistorical ? (occDs.cumulativeDischarged || []) : (cumulativeDischarged || []);
-    }
-
+    const { occRows, dischargedOverride, isFutureDate } = await resolveOccupancyContextForORDate(dateStr);
     const enriched = getEnrichedOrListForStats(ds.orList, occRows, dischargedOverride);
 
     if (ds.isHistorical && !isFutureDate) {
@@ -14768,14 +14789,14 @@ function getORCaseType(p: any): 'DC' | 'HC' {
 }
 
 
-async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = []) {
+async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = [], dischargedOverride?: any[]) {
   const listDate = data[0]?.orListDate || "";
 
   // Group 1: By IN-OUT (Column O / Column K status mapped dynamically)
   const inPatients: any[] = [];
   const outPatients: any[] = [];
 
-  const enrichedList = getEnrichedOrListForStats(data, occRows);
+  const enrichedList = getEnrichedOrListForStats(data, occRows, dischargedOverride);
   enrichedList.forEach(p => {
     if (p.realStatus === 'IN') {
       inPatients.push(p);
@@ -14857,7 +14878,7 @@ async function addRefinedORListSheet(workbook: ExcelJS.Workbook, data: any[], oc
   await buildRefinedORSheetTab(workbook, 'By HC-DC', listDate, hcDcGroups);
 }
 
-async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = []) {
+async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = [], dischargedOverride?: any[]) {
   const sheet = workbook.addWorksheet('OR List - لستة العمليات', {
     views: [{ rightToLeft: false }]
   });
@@ -14901,7 +14922,7 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
   });
 
   // Enrich data so if they have an occupancy match, we grab their name from occupancy!
-  const enrichedList = getEnrichedOrListForStats(data, occRows);
+  const enrichedList = getEnrichedOrListForStats(data, occRows, dischargedOverride);
 
   let serial = 1;
 
@@ -14966,7 +14987,7 @@ async function addRefinedORListSimpleSheet(workbook: ExcelJS.Workbook, data: any
   ];
 }
 
-async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = []) {
+async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[], occRows: any[][] = [], dischargedOverride?: any[]) {
   const sheet = workbook.addWorksheet('OR Occupancy Timeline', {
     views: [{ rightToLeft: false }]
   });
@@ -14974,7 +14995,7 @@ async function addRefinedORTimelineSheet(workbook: ExcelJS.Workbook, data: any[]
   const listDate = data[0]?.orListDate || "";
 
   // Enrich patient list with matched names from the occupancy sheet
-  const enrichedData = getEnrichedOrListForStats(data, occRows);
+  const enrichedData = getEnrichedOrListForStats(data, occRows, dischargedOverride);
 
   // Helper to parse time string like "08:15" to minutes, supports AM/PM
   const parseToMinutes = (timeStr: string): number | null => {
@@ -15327,9 +15348,8 @@ app.get('/api/reports/or_timeline_refined', async (req, res) => {
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    await addRefinedORTimelineSheet(workbook, ds.orList, occRows);
+    const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
+    await addRefinedORTimelineSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Timeline_Graphics_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
@@ -15346,9 +15366,8 @@ app.get('/api/reports/or_list_refined', async (req, res) => {
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    await addRefinedORListSheet(workbook, ds.orList, occRows);
+    const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
+    await addRefinedORListSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Schedule_Refined_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
@@ -15365,9 +15384,8 @@ app.get('/api/reports/or_list_simple_refined', async (req, res) => {
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    await addRefinedORListSimpleSheet(workbook, ds.orList, occRows);
+    const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
+    await addRefinedORListSimpleSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_List_Refined_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
@@ -15386,13 +15404,12 @@ app.get('/api/reports/or_combined', async (req, res) => {
   }
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    const overList = getOverListPatients(occDs.hospitalData, ds.orList);
+    const { hospitalData: occData, occRows, dischargedOverride, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
+    const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
 
-    await addRefinedORListSheet(workbook, ds.orList, occRows);
-    await addRefinedORTimelineSheet(workbook, ds.orList, occRows);
-    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList);
+    await addRefinedORListSheet(workbook, ds.orList, occRows, dischargedOverride);
+    await addRefinedORTimelineSheet(workbook, ds.orList, occRows, dischargedOverride);
+    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList, dischargedOverride);
     await addRefinedOROverListSheet(workbook, overList);
 
     const filename = `Combined_OR_Refined_Report_${ds.dateLabel}.xlsx`;
@@ -15592,7 +15609,8 @@ async function addRefinedORReconciliationSheet(
   workbook: ExcelJS.Workbook,
   orList: any[],
   occRows: any[][],
-  overList: any[]
+  overList: any[],
+  dischargedOverride?: any[]
 ) {
   const sheet = workbook.addWorksheet('OR Reconciliation - مطابقة العمليات', {
     views: [{ rightToLeft: false }]
@@ -15639,7 +15657,8 @@ async function addRefinedORReconciliationSheet(
   let serial = 1;
 
   // 1. Process all OR list cases
-  const enrichedList = getEnrichedOrListForStats(orList, occRows);
+  const dischargedSource = Array.isArray(dischargedOverride) ? dischargedOverride : (cumulativeDischarged || []);
+  const enrichedList = getEnrichedOrListForStats(orList, occRows, dischargedSource);
   
   enrichedList.forEach((p) => {
     let displayPatientRoom = 'N/A';
@@ -15656,7 +15675,7 @@ async function addRefinedORReconciliationSheet(
       displayMRN = occPatient.mrn || p.mrn || '';
       displayContractor = occPatient.contractor || p.contractorName || p.contractor || '';
     } else {
-      const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+      const matchingDischargedObj = dischargedSource.find(discPt => {
         const discRoom = String(discPt.room || discPt.colB || "");
         if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
         const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
@@ -15789,10 +15808,9 @@ app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
   const ds = await resolveORDataset(reqDate);
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    const overList = getOverListPatients(occDs.hospitalData, ds.orList);
-    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList);
+    const { hospitalData: occData, occRows, dischargedOverride, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
+    const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
+    await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Operating_Room_Reconciliation_Report_${ds.dateLabel}.xlsx`);
     await workbook.xlsx.write(res);
@@ -15806,8 +15824,8 @@ app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
 app.get('/api/reports/or_over_list_refined', async (req, res) => {
   const reqDate = req.query.date ? String(req.query.date).trim() : null;
   const ds = await resolveORDataset(reqDate);
-  const occDs = await resolveOccupancyDataset(reqDate);
-  const overList = getOverListPatients(occDs.hospitalData, ds.orList);
+  const { hospitalData: occData, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
+  const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
   try {
     const workbook = new ExcelJS.Workbook();
     await addRefinedOROverListSheet(workbook, overList);
@@ -16345,7 +16363,7 @@ function getAvailableVacantRooms(): { [key: string]: string[] } {
 }
 
 // Function to construct the newly requested OR Admissions Sheet
-async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], occRows: any[][]) {
+async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], occRows: any[][], dischargedOverride?: any[]) {
   const sheet = workbook.addWorksheet('بيان تسكين حالات ليستة العمليات', {
     views: [{ rightToLeft: false }]
   });
@@ -16381,7 +16399,8 @@ async function addORAdmissionsSheet(workbook: ExcelJS.Workbook, orList: any[], o
 
     // Double check for the whole name in comparison to the source occupancy sheet
     const occPatient = findOccupancyPatient(p.patientName, occRows, isTaggedOut, p.mrn, p.surgeonName);
-    const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+    const dischargedSource = Array.isArray(dischargedOverride) ? dischargedOverride : (cumulativeDischarged || []);
+    const matchingDischargedObj = dischargedSource.find(discPt => {
       const discRoom = String(discPt.room || discPt.colB || "");
       if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
       const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
@@ -17017,9 +17036,8 @@ app.get('/api/reports/or_admissions', async (req, res) => {
   }
   try {
     const workbook = new ExcelJS.Workbook();
-    const occDs = await resolveOccupancyDataset(reqDate);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    await addORAdmissionsSheet(workbook, ds.orList, occRows);
+    const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
+    await addORAdmissionsSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="OR_Admissions_Sheet_${ds.dateLabel}.xlsx"`);
     await workbook.xlsx.write(res);

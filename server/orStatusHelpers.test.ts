@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyInOutFallbackSafe } from './orStatusHelpers.js';
+import { classifyInOutFallbackSafe, getORDateContextMode } from './orStatusHelpers.js';
 
 describe('orStatusHelpers.classifyInOutFallbackSafe', () => {
   it('returns OUT for OR suite day-cases and HC cases when column3 is Out or blank', () => {
@@ -56,5 +56,13 @@ describe('orStatusHelpers.classifyInOutFallbackSafe', () => {
   it('returns OUT for null/undefined inputs', () => {
     expect(classifyInOutFallbackSafe(null)).toBe('OUT');
     expect(classifyInOutFallbackSafe(undefined)).toBe('OUT');
+  });
+
+  it('determines future, today, and past OR date context modes', () => {
+    expect(getORDateContextMode('2026-11-22', '2026-11-21')).toBe('future');
+    expect(getORDateContextMode('2026-11-21', '2026-11-21')).toBe('today');
+    expect(getORDateContextMode('today', '2026-11-21')).toBe('today');
+    expect(getORDateContextMode(null, '2026-11-21')).toBe('today');
+    expect(getORDateContextMode('2026-11-20', '2026-11-21')).toBe('past');
   });
 });
