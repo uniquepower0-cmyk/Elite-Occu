@@ -59,6 +59,7 @@ import {
   verifyVipSyncEventRequest,
   getVipDischargeTargetGroups,
 } from './server/vipDischargeNotifier.js';
+import { classifyInOutFallbackSafe } from './server/orStatusHelpers.js';
 import {
   parseOPDDoctorsExcel,
   getOPDSpecialtyStats,
@@ -8612,71 +8613,19 @@ function areRowsDifferent(rowsA: any[][] | null, rowsB: any[][] | null): boolean
   return false;
 }
 
-// Helper to classify IN/OUT as a fallback using string matching
+// Helper to classify IN/OUT as a fallback using safe explicit admission status
 function classifyInOutFallback(p: any): 'IN' | 'OUT' {
-  if (!p) return 'OUT';
-  const vt = String(p.vt || "").toUpperCase().trim();
-  const column3 = String(p.column3 || "").toUpperCase().trim();
-  const flClassName = String(p.flClassName || "").toUpperCase().trim();
-  const postC = String(p.postC || "").toUpperCase().trim();
-  const orRoom = String(p.orRoom || p.room || "").toUpperCase().trim();
-
-  // Hospital ward accommodation classes (319, 325, 401-B, اولي عاديه, اولي مميزه, جناح, حسب التعاقد, حسب المريض, etc.)
-  const isHospitalClass = 
-    /\b\d{3}\b/.test(flClassName) || 
-    flClassName.includes("اولي") || 
-    flClassName.includes("أولي") || 
-    flClassName.includes("مميز") || 
-    flClassName.includes("جناح") || 
-    flClassName.includes("حسب التعاقد") || 
-    flClassName.includes("حسب المريض") ||
-    flClassName.includes("درجة") ||
-    flClassName.includes("درجه") ||
-    flClassName.includes("عادية") ||
-    flClassName.includes("عاديه") ||
-    flClassName.includes("شمالي") ||
-    flClassName.includes("جنوبي") ||
-    flClassName.includes("HC") ||
-    flClassName.includes("IP") ||
-    flClassName.includes("IN") ||
-    flClassName.includes("PRIVATECREDIT") ||
-    flClassName.includes("CREDIT");
-
-  if (isHospitalClass) {
-    return 'IN';
-  }
-
-  // Scheduled in an Operating Room suite (OR - 1 to OR - 8)
-  if (isOperatingRoom(orRoom) || /^OR\s*[-]?\s*\d+/i.test(orRoom) || orRoom.includes("OR")) {
-    return 'IN';
-  }
-
-  // Explicit Hospital Case/Inpatient checking (HC, Inpatient, PrivateCredit)
-  if (vt === "HC" || vt.includes("HOSPITAL") || vt === "INPATIENT" || vt === "PRIVATECREDIT" || column3.includes("INSURED") || column3.includes("HC") || column3.includes("IN")) {
-    return 'IN';
-  }
-
-  // Check if post-operative care requires critical care (ICU/SICU) overnight stay
-  const upperPostC = postC.toUpperCase();
-  if (upperPostC.includes("ICU") || upperPostC.includes("SICU") || upperPostC.includes("CCU") || upperPostC.includes("NICU")) {
-    return 'IN';
-  }
-
-  // Explicit Day Case/Outpatient checking (DC, DayCase, Outpatient, etc.) only if not in OR suite or hospital class
-  if (vt === "DC" || vt.includes("DAY") || vt.includes("DAYCASE") || vt.includes("OUT")) {
-    return 'OUT';
-  }
-
-  return 'IN'; 
+  return classifyInOutFallbackSafe(p);
 }
 
 // Helper to enrich OR list with accurate IN/OUT status by matching against current occupancy rows
-function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
+function getEnrichedOrListForStats(orList: any[], occRows: any[][], dischargedListOverride?: any[]): any[] {
   if (!orList || orList.length === 0) return [];
+  const dischargedSource = Array.isArray(dischargedListOverride) ? dischargedListOverride : (cumulativeDischarged || []);
   if (!occRows || occRows.length === 0) {
     return orList.map(p => {
       const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
-      const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+      const matchingDischargedObj = dischargedSource.find(discPt => {
         const discRoom = String(discPt.room || discPt.colB || "");
         if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
         const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
@@ -8720,7 +8669,7 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][]): any[] {
 
     const occPatient = findOccupancyPatient(p.patientName, occRows, isTaggedOut, p.mrn, p.surgeonName);
     const pMrn = String(p.mrn || "").trim().replace(/^0+/, "");
-    const matchingDischargedObj = cumulativeDischarged.find(discPt => {
+    const matchingDischargedObj = dischargedSource.find(discPt => {
       const discRoom = String(discPt.room || discPt.colB || "");
       if (isNonInpatientRoomForOR(discRoom) || discRoom.includes("غسيل")) return false;
       const discMrn = String(discPt.id || discPt.mrn || "").trim().replace(/^0+/, "");
@@ -10591,12 +10540,29 @@ app.get('/api/history/or/dates', async (req, res) => {
 app.get('/api/history/or/detail', async (req, res) => {
   try {
     const dateStr = req.query.date ? String(req.query.date).trim() : getCairoDateTime().dateStr;
-    const ds = await resolveORDataset(dateStr);
-    const occDs = await resolveOccupancyDataset(dateStr);
-    const occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
-    const enriched = getEnrichedOrListForStats(ds.orList, occRows);
+    const cairoToday = getCairoDateTime().dateStr;
+    const cleanReqDate = normalizeToISODate(dateStr) || dateStr;
+    const isFutureDate = Boolean(cleanReqDate && cleanReqDate > cairoToday);
 
-    if (ds.isHistorical) {
+    const ds = await resolveORDataset(dateStr);
+    let occRows: any[][] = [];
+    let dischargedOverride: any[] = [];
+
+    if (isFutureDate) {
+      if (!isServerHydrated) {
+        try { await loadData(); } catch (_) {}
+      }
+      occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
+      dischargedOverride = [];
+    } else {
+      const occDs = await resolveOccupancyDataset(dateStr);
+      occRows = occDs.hospitalData ? getOccupancyRows(occDs.hospitalData) : [];
+      dischargedOverride = occDs.isHistorical ? (occDs.cumulativeDischarged || []) : (cumulativeDischarged || []);
+    }
+
+    const enriched = getEnrichedOrListForStats(ds.orList, occRows, dischargedOverride);
+
+    if (ds.isHistorical && !isFutureDate) {
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400');
     }
 

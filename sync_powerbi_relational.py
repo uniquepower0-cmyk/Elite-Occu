@@ -3534,6 +3534,23 @@ def _sync_or_cases_relational(
             log(f"[OR Sync] Relational RPC notice (non-fatal): {rpc_err}", level="warning")
 
 
+def count_or_inpatients(
+    or_cases: list[dict[str, Any]],
+    active_mrns: Optional[set[str]] = None,
+) -> int:
+    """Counts OR cases that are actually inpatients (matched to active occupancy MRNs or explicitly column3=IN)."""
+    count = 0
+    mrn_set = active_mrns or set()
+    for c in or_cases or []:
+        if not isinstance(c, dict):
+            continue
+        c_mrn = clean_mrn_str(c.get("mrn"))
+        col3 = str(c.get("column3") or "").strip().upper()
+        if (c_mrn and c_mrn in mrn_set) or col3 in ("IN", "INPATIENT"):
+            count += 1
+    return count
+
+
 def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
     """Fetches same-day OR schedule from Power BI, formats times in 12-hour format, and syncs to Supabase."""
     global _last_synced_or_hash, _last_synced_or_cairo_date, _last_or_sync_ts, _in_memory_or_count, _last_known_mrns_by_name
@@ -3643,7 +3660,7 @@ def fetch_powerbi_or_and_sync(force: bool = False) -> bool:
             "counts": existing_counts
         }
 
-        matched_inpatients = sum(1 for c in or_cases if c.get("mrn"))
+        matched_inpatients = count_or_inpatients(or_cases)
         outpatients_cnt = max(0, len(or_cases) - matched_inpatients)
         or_summary = {
             "totalCases": len(or_cases),
@@ -3830,7 +3847,7 @@ def fetch_powerbi_or_future_and_sync(force: bool = False, dry_run: bool = False)
                     )
                     continue
 
-                matched_in = sum(1 for c in new_cases if c.get("mrn"))
+                matched_in = count_or_inpatients(new_cases)
                 out_cnt = max(0, len(new_cases) - matched_in)
                 ts_ms = int(time.time() * 1000)
                 cairo_time_str = cairo_now.strftime("%Y-%m-%d %H:%M:%S")

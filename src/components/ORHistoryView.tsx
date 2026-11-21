@@ -616,18 +616,24 @@ export const ORHistoryView: React.FC<ORHistoryViewProps> = ({ onNotify, refreshT
                                 {isVipFn?.(c.patientName) && <VipBadge />}
                               </div>
                             </td>
-                            <td className="py-2 px-3 text-slate-600">{c.surgeon || '-'}</td>
-                            <td className="py-2 px-3 text-slate-600 max-w-[200px] truncate" title={c.operation}>{c.operation || '-'}</td>
+                            <td className="py-2 px-3 text-slate-600">{c.surgeon || c.surgeonName || '-'}</td>
+                            <td className="py-2 px-3 text-slate-600 max-w-[200px] truncate" title={c.operation || c.arOperationName || c.engOperationName}>{c.operation || c.arOperationName || c.engOperationName || '-'}</td>
                             <td className="py-2 px-3">
-                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold ${
-                                c.realStatus === 'IN' 
-                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
-                                  : 'bg-blue-100 text-blue-800 border border-blue-300'
-                              }`}>
-                                {c.realStatus || 'OUT'}
-                              </span>
+                              {c.isDischarged ? (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300">
+                                  Discharged
+                                </span>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold ${
+                                  c.realStatus === 'IN' 
+                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                                    : 'bg-blue-100 text-blue-800 border border-blue-300'
+                                }`}>
+                                  {c.realStatus || 'OUT'}
+                                </span>
+                              )}
                             </td>
-                            <td className="py-2 px-3 text-slate-700 font-bold font-mono">{c.room || '-'}</td>
+                            <td className="py-2 px-3 text-slate-700 font-bold font-mono">{c.admittedRoom || c.dischargedFromRoom || c.room || '-'}</td>
                           </tr>
                         ))}
                       </tbody>
