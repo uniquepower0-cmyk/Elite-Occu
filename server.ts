@@ -52,7 +52,12 @@ import {
   type RestoredHmisOverride,
 } from './server/restoreHelpers.js';
 import { SyncSupervisor } from './server/syncSupervisor.js';
-import { notifyPowerBiVipDischarges, buildVipDischargeKey } from './server/vipDischargeNotifier.js';
+import {
+  notifyPowerBiVipDischarges,
+  notifyPowerBiVipAdmissions,
+  buildVipDischargeKey,
+  verifyVipSyncEventRequest,
+} from './server/vipDischargeNotifier.js';
 import {
   parseOPDDoctorsExcel,
   getOPDSpecialtyStats,
@@ -290,7 +295,14 @@ function getCustomHeaderBgInfo() {
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  verify: (req: any, _res, buf) => {
+    if (req.originalUrl && req.originalUrl.startsWith('/api/whatsapp/vip-sync-events')) {
+      req.rawBody = buf.toString('utf8');
+    }
+  }
+}));
 
 // Configuration
 const CONFIG = {
@@ -346,6 +358,7 @@ let lastEgyptianAutoResetDate = "";
 let manuallyDischargedNames: string[] = [];
 let restoredHmisOverrides: RestoredHmisOverride[] = [];
 let vipDischargeNotified: string[] = [];
+let vipAdmissionNotified: string[] = [];
 let vipDischargeAutomationPaused: boolean = false;
 
 /**
@@ -2926,6 +2939,7 @@ async function executeLoadData(force = false) {
         manuallyDischargedNames = parsed.manuallyDischargedNames || [];
         restoredHmisOverrides = Array.isArray(parsed.restoredHmisOverrides) ? parsed.restoredHmisOverrides : [];
         vipDischargeNotified = Array.isArray(parsed.vipDischargeNotified) ? parsed.vipDischargeNotified : [];
+        vipAdmissionNotified = Array.isArray(parsed.vipAdmissionNotified) ? parsed.vipAdmissionNotified : [];
         if (typeof parsed.vipDischargeAutomationPaused === 'boolean') vipDischargeAutomationPaused = parsed.vipDischargeAutomationPaused;
         cumulativeTransfers = parsed.transfers || [];
         patientRoomRegistry = parsed.patientRoomRegistry || {};
@@ -3155,6 +3169,7 @@ async function executeLoadData(force = false) {
         if (Array.isArray(meta.manuallyDischargedNames)) manuallyDischargedNames = meta.manuallyDischargedNames;
         if (Array.isArray(meta.restoredHmisOverrides)) restoredHmisOverrides = meta.restoredHmisOverrides;
         if (Array.isArray(meta.vipDischargeNotified)) vipDischargeNotified = meta.vipDischargeNotified;
+        if (Array.isArray(meta.vipAdmissionNotified)) vipAdmissionNotified = meta.vipAdmissionNotified;
         if (typeof meta.vipDischargeAutomationPaused === 'boolean') vipDischargeAutomationPaused = meta.vipDischargeAutomationPaused;
       }
     } else if (stateMap['state/dataset']) {
@@ -4098,6 +4113,7 @@ async function saveData() {
       manuallyDischargedNames: manuallyDischargedNames,
       restoredHmisOverrides: restoredHmisOverrides,
       vipDischargeNotified: vipDischargeNotified,
+      vipAdmissionNotified: vipAdmissionNotified,
       vipDischargeAutomationPaused: vipDischargeAutomationPaused,
       transfers: cumulativeTransfers,
       patientRoomRegistry: patientRoomRegistry,
@@ -4251,6 +4267,7 @@ async function saveData() {
         !arePayloadsEqual(cachedMetaData.manuallyDischargedNames, manuallyDischargedNames || []) ||
         !arePayloadsEqual(cachedMetaData.restoredHmisOverrides, restoredHmisOverrides || []) ||
         !arePayloadsEqual(cachedMetaData.vipDischargeNotified, vipDischargeNotified || []) ||
+        !arePayloadsEqual(cachedMetaData.vipAdmissionNotified, vipAdmissionNotified || []) ||
         Boolean(cachedMetaData.vipDischargeAutomationPaused) !== Boolean(vipDischargeAutomationPaused) ||
         !arePayloadsEqual(cachedMetaData.counts, currentMetaCounts);
 
@@ -4274,6 +4291,7 @@ async function saveData() {
             manuallyDischargedNames: manuallyDischargedNames || [],
             restoredHmisOverrides: restoredHmisOverrides || [],
             vipDischargeNotified: vipDischargeNotified || [],
+            vipAdmissionNotified: vipAdmissionNotified || [],
             vipDischargeAutomationPaused: Boolean(vipDischargeAutomationPaused),
             counts: currentMetaCounts
           },
@@ -8381,6 +8399,7 @@ async function updateHospitalState(rows: any[][]) {
     : (uploadedAt ? getCairoDateFromTimestamp(uploadedAt) : (lastActiveDate || ""));
   const isDifferentDay = activePrevDate && activePrevDate < cairo.dateStr;
   const newAutoDischargedForAlert: any[] = [];
+  const newEntriesForAlert: any[] = [];
 
   if (isDifferentDay) {
     console.log(`[Sync Upload] New operational day detected (${cairo.dateStr} vs previous ${activePrevDate}). Running daily rollover for previous day...`);
@@ -8431,6 +8450,7 @@ async function updateHospitalState(rows: any[][]) {
       const alreadyExists = cumulativeEntries.some(existing => isPatientMatch(existing, p) || isNameMatch(existing.name, p.name));
       if (!alreadyExists) {
         cumulativeEntries.push(p);
+        newEntriesForAlert.push(p);
       }
     }
   });
@@ -8471,15 +8491,39 @@ async function updateHospitalState(rows: any[][]) {
   // Extract all derived sub-sheets (Debts, Insured Debts, Medical Plans, Companion Status, LOS)
   extractSubsheetsFromHospitalData(rows);
 
-  if (!isDifferentDay && !isNewSheetLikelyEmpty && newAutoDischargedForAlert.length > 0) {
-    await ensureVipCasesLoaded();
-    const vipAlertRes = await notifyPowerBiVipDischarges({
-      discharges: newAutoDischargedForAlert,
-      isVipFn: isPatientVip,
-      notifiedKeys: vipDischargeNotified,
-      paused: vipDischargeAutomationPaused,
+  // HMIS FinancialDischarge -> Power BI Graduation on manual Excel upload
+  if (!isDifferentDay && !isNewSheetLikelyEmpty && Array.isArray(cumulativeDischarged)) {
+    cumulativeDischarged.forEach(dp => {
+      if (!dp || dp.source !== 'hmis_pending_discharge') return;
+      const stillPresent = currentSheetPatientsRaw.some(
+        currentP => isPatientMatch(dp, currentP) || isNameMatch(dp.name, currentP.name)
+      );
+      if (!stillPresent) {
+        newAutoDischargedForAlert.push(dp);
+      }
     });
-    vipDischargeNotified = vipAlertRes.notifiedKeys;
+  }
+
+  if (!isDifferentDay && !isNewSheetLikelyEmpty && (newAutoDischargedForAlert.length > 0 || newEntriesForAlert.length > 0)) {
+    await ensureVipCasesLoaded();
+    if (newAutoDischargedForAlert.length > 0) {
+      const vipAlertRes = await notifyPowerBiVipDischarges({
+        discharges: newAutoDischargedForAlert,
+        isVipFn: isPatientVip,
+        notifiedKeys: vipDischargeNotified,
+        paused: vipDischargeAutomationPaused,
+      });
+      vipDischargeNotified = vipAlertRes.notifiedKeys;
+    }
+    if (newEntriesForAlert.length > 0) {
+      const vipAdmRes = await notifyPowerBiVipAdmissions({
+        admissions: newEntriesForAlert,
+        isVipFn: isPatientVip,
+        notifiedKeys: vipAdmissionNotified,
+        paused: vipDischargeAutomationPaused,
+      });
+      vipAdmissionNotified = vipAdmRes.notifiedKeys;
+    }
   }
 
   uploadedAt = Date.now();
@@ -9050,6 +9094,37 @@ app.post('/api/vip-cases', async (req, res) => {
   } catch (err) {
     console.error('Failed to persist VIP cases to settings/vip_cases in Supabase:', err);
   }
+
+  // Case B: If user pastes a today-admitted patient into VIP Cases later the same day,
+  // notify once for active today-admitted VIPs not yet alerted today.
+  try {
+    const cairoToday = getCairoDateTime().dateStr;
+    const activeTodayEntries = (cumulativeEntries || []).filter((e: any) => {
+      if (!e || !e.name) return false;
+      const isEntryToday =
+        isToday(e.date, cairoToday) ||
+        isToday(e.rawDate, cairoToday) ||
+        isToday((e.date || '').split(' ')[0], cairoToday) ||
+        isToday((e.rawDate || '').split(' ')[0], cairoToday);
+      if (!isEntryToday) return false;
+      const alreadyDisc = (cumulativeDischarged || []).some(
+        (d: any) => isPatientMatch(d, e) || isNameMatch(d?.name, e.name)
+      );
+      return !alreadyDisc;
+    });
+    if (activeTodayEntries.length > 0) {
+      const vipAdmRes = await notifyPowerBiVipAdmissions({
+        admissions: activeTodayEntries,
+        isVipFn: isPatientVip,
+        notifiedKeys: vipAdmissionNotified,
+        paused: vipDischargeAutomationPaused,
+      });
+      vipAdmissionNotified = vipAdmRes.notifiedKeys;
+    }
+  } catch (vipAdmErr) {
+    console.warn('[VIP WhatsApp] Non-fatal error evaluating Case B admissions on /api/vip-cases:', vipAdmErr);
+  }
+
   setSaveChangeType('setting');
   await saveData();
   res.json({ success: true, text: vipCasesText });
@@ -9918,6 +9993,7 @@ async function performDailyRollover(closingDate: string): Promise<boolean> {
     manuallyDischargedNames = [];
     restoredHmisOverrides = [];
     vipDischargeNotified = [];
+    vipAdmissionNotified = [];
     cumulativeDialysis = [];
     cumulativeTransfers = [];
     cumulativeORList = [];
@@ -10212,6 +10288,7 @@ app.post('/api/reset', async (req, res) => {
     manuallyDischargedNames = [];
     restoredHmisOverrides = [];
     vipDischargeNotified = [];
+    vipAdmissionNotified = [];
     patientRoomRegistry = {};
     uploadedAt = null;
     pendingDischargePatientsText = "";
@@ -18061,6 +18138,123 @@ app.post('/api/whatsapp/vip-discharge-automation', async (req, res) => {
   } catch (err: any) {
     console.error('[VIP WhatsApp] Error toggling pause state:', err);
     return res.status(500).json({ success: false, error: err?.message || 'Failed to update VIP discharge automation state' });
+  }
+});
+
+// Thin 100%-Vercel VIP Engine endpoint called by the hospital runner when new admissions or discharges occur
+let cachedVipTextUpdatedAtForSyncEvents = '';
+app.post('/api/whatsapp/vip-sync-events', async (req: any, res) => {
+  try {
+    const signingSecret = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '').trim();
+    const rawBody = typeof req.rawBody === 'string' ? req.rawBody : JSON.stringify(req.body || {});
+    const auth = verifyVipSyncEventRequest({
+      rawBody,
+      timestampHeader: req.header('x-vip-alert-timestamp'),
+      signatureHeader: req.header('x-vip-alert-signature'),
+      secret: signingSecret,
+    });
+    if (!auth.ok) {
+      return res.status(401).json({ success: false, error: auth.error || 'Unauthorized' });
+    }
+
+    const discharges = Array.isArray(req.body?.discharges) ? req.body.discharges : [];
+    const admissions = Array.isArray(req.body?.admissions) ? req.body.admissions : [];
+    if (discharges.length === 0 && admissions.length === 0) {
+      return res.json({ success: true, sentDischarges: 0, sentAdmissions: 0 });
+    }
+
+    // 1. Refresh VIP list only if updated_at changed (40B index-only check on warm instances)
+    const { data: vipTsRow } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('updated_at')
+      .eq('path', 'settings/vip_cases')
+      .maybeSingle();
+    const remoteVipTs = String(vipTsRow?.updated_at || '');
+    if (!vipCasesCheckedFromDb || (remoteVipTs && remoteVipTs !== cachedVipTextUpdatedAtForSyncEvents)) {
+      const { data: vipRow } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .select('data, updated_at')
+        .eq('path', 'settings/vip_cases')
+        .maybeSingle();
+      if (vipRow?.data && typeof (vipRow.data as any).text === 'string') {
+        vipCasesText = (vipRow.data as any).text;
+      }
+      vipCasesCheckedFromDb = true;
+      cachedVipTextUpdatedAtForSyncEvents = String(vipRow?.updated_at || remoteVipTs);
+    }
+
+    if (!vipCasesText || !vipCasesText.trim()) {
+      return res.json({ success: true, sentDischarges: 0, sentAdmissions: 0 });
+    }
+
+    // 2. Read lightweight state/metadata (~850 B) for pause flag & dedup arrays
+    const { data: metaRow } = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data')
+      .eq('path', 'state/metadata')
+      .maybeSingle();
+    const metaData: Record<string, any> =
+      metaRow?.data && typeof metaRow.data === 'object' ? { ...(metaRow.data as any) } : {};
+
+    const paused = Boolean(metaData.vipDischargeAutomationPaused);
+    const prevDiscNotified: string[] = Array.isArray(metaData.vipDischargeNotified)
+      ? metaData.vipDischargeNotified.map(String)
+      : [];
+    const prevAdmNotified: string[] = Array.isArray(metaData.vipAdmissionNotified)
+      ? metaData.vipAdmissionNotified.map(String)
+      : [];
+
+    const discRes = discharges.length > 0
+      ? await notifyPowerBiVipDischarges({
+          discharges,
+          isVipFn: isPatientVip,
+          notifiedKeys: prevDiscNotified,
+          paused,
+        })
+      : { notifiedKeys: prevDiscNotified, sentCount: 0, suppressedCount: 0 };
+
+    const admRes = admissions.length > 0
+      ? await notifyPowerBiVipAdmissions({
+          admissions,
+          isVipFn: isPatientVip,
+          notifiedKeys: prevAdmNotified,
+          paused,
+        })
+      : { notifiedKeys: prevAdmNotified, sentCount: 0, suppressedCount: 0 };
+
+    const discChanged = !arePayloadsEqual(prevDiscNotified, discRes.notifiedKeys);
+    const admChanged = !arePayloadsEqual(prevAdmNotified, admRes.notifiedKeys);
+
+    if (discChanged || admChanged) {
+      const nowIso = new Date().toISOString();
+      const updatedMeta = {
+        ...metaData,
+        vipDischargeNotified: discRes.notifiedKeys,
+        vipAdmissionNotified: admRes.notifiedKeys,
+      };
+      vipDischargeNotified = discRes.notifiedKeys;
+      vipAdmissionNotified = admRes.notifiedKeys;
+      const { data: upData } = await supabaseAdmin
+        .from('rtdb_nodes')
+        .upsert({ path: 'state/metadata', data: updatedMeta, updated_at: nowIso })
+        .select('updated_at');
+      const dbTs = upData?.[0]?.updated_at ? String(upData[0].updated_at) : nowIso;
+      inMemoryStateMap['state/metadata'] = updatedMeta;
+      inMemoryNodeTimestamps['state/metadata'] = dbTs;
+      lastKnownDatabaseUpdatedAt = dbTs;
+    }
+
+    return res.json({
+      success: true,
+      paused,
+      sentDischarges: discRes.sentCount,
+      sentAdmissions: admRes.sentCount,
+      suppressedDischarges: discRes.suppressedCount,
+      suppressedAdmissions: admRes.suppressedCount,
+    });
+  } catch (err: any) {
+    console.error('[VIP WhatsApp] Error in /api/whatsapp/vip-sync-events:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to process VIP sync events' });
   }
 });
 

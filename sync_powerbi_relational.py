@@ -22,6 +22,7 @@ import sys
 import time
 import uuid
 import json
+import hmac
 import hashlib
 import signal
 import logging
@@ -201,297 +202,114 @@ def is_companion_bed(bed_str: Any) -> bool:
     return bool(s and RE_COMPANION_BED.search(s))
 
 
-# --- VIP DISCHARGE WHATSAPP NOTIFIER (ZERO-EGRESS CACHED) ---
-_VIP_TEXT_CACHE: dict[str, str] = {"text": "", "updated_at": ""}
+# --- VERCEL VIP SYNC EVENT DISPATCHER (100% VERCEL VIP ENGINE) ---
+DEFAULT_APP_URL: Final[str] = "https://elite-occu.vercel.app"
 
 
-def extract_vip_names(text: str) -> list[str]:
-    """Extracts clean VIP patient names from the settings/vip_cases text box."""
-    if not text:
+def get_vip_sync_events_url() -> str:
+    explicit = os.getenv("VIP_SYNC_EVENTS_URL", "").strip()
+    if explicit:
+        return explicit
+    base = (os.getenv("APP_URL", "") or DEFAULT_APP_URL).strip().rstrip("/")
+    return f"{base}/api/whatsapp/vip-sync-events"
+
+
+def sign_vip_sync_events_payload(raw_body: str, timestamp_sec: int, secret: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp_sec}.{raw_body}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def collect_hmis_graduated_vip_candidates(
+    discharged_list: list[dict[str, Any]],
+    raw_records: list[Any],
+) -> list[dict[str, Any]]:
+    """Returns hmis_pending_discharge entries that have now dropped out of raw Power BI records."""
+    if not raw_records:
         return []
-    names: list[str] = []
-    for raw_line in str(text).split("\n"):
-        line = re.sub(r"^\s*\*+.*?\*+\s*$", "", raw_line).strip()
-        if not line:
+    graduated: list[dict[str, Any]] = []
+    for dp in discharged_list:
+        if not isinstance(dp, dict) or dp.get("source") != "hmis_pending_discharge":
             continue
-        line = re.sub(r"^.*?\]\s*[^:]*:\s*", "", line)
-        line = re.sub(r"^[a-zA-Z\s\d.-]+:\s*", "", line)
-        line = re.sub(r"^(?:وصول|دخول)?\s*(?:حاله|حالة)\s*(?:/|-)?\s*", "", line)
-        line = re.sub(r"^New Patient Admission\s*(?:-\s*)?", "", line, flags=re.IGNORECASE)
-        line = re.sub(r"^\d+[\s\-.)]*", "", line).strip()
-        if ".." in line:
-            parts = re.split(r"\.{2,}", line)
-            if parts and parts[0].strip():
-                line = parts[0].strip()
-        line = re.sub(r"[\"'»«()]", "", line).strip()
-        if len(line) > 2:
-            names.append(line)
-    return names
-
-
-def _normalize_arabic_vip_name(name: str) -> str:
-    if not name:
-        return ""
-    clean = str(name).lower().strip()
-    clean = re.sub(r"[\u064B-\u065F]", "", clean)
-    clean = re.sub(r"[^a-zA-Z\u0600-\u06FF\s]", " ", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    clean = re.sub(r"^(?:ابن|ابنه|بنت|طفل|طفله|حاله|حالة)\s+", "", clean)
-    clean = re.sub(r"[أإآٱ]", "ا", clean)
-    clean = clean.replace("ة", "ه")
-    clean = re.sub(r"[ىيِ]", "ي", clean)
-    clean = clean.replace("ؤ", "و").replace("ئ", "ي")
-    clean = re.sub(r"\s+", " ", clean)
-    clean = re.sub(r"(?:^|\s)عبد\s+(\S+)", lambda m: (" " if m.group(0).startswith(" ") else "") + "عبد" + m.group(1), clean)
-    clean = re.sub(r"(?:^|\s)ابو\s+(\S+)", lambda m: (" " if m.group(0).startswith(" ") else "") + "ابو" + m.group(1), clean)
-    clean = re.sub(r"(?:^|\s)ام\s+(\S+)", lambda m: (" " if m.group(0).startswith(" ") else "") + "ام" + m.group(1), clean)
-    clean = re.sub(r"(?:^|\s)ابن\s+(\S+)", lambda m: (" " if m.group(0).startswith(" ") else "") + "ابن" + m.group(1), clean)
-    clean = re.sub(r"(?:^|\s)بن\s+(\S+)", lambda m: (" " if m.group(0).startswith(" ") else "") + "بن" + m.group(1), clean)
-    clean = re.sub(r"(?:^|\s)(\S+)\s+الدين(?=\s|$)", lambda m: (" " if m.group(0).startswith(" ") else "") + m.group(1) + "الدين", clean)
-    return clean.strip()
-
-
-def _get_vip_normalized_words(name: str) -> list[str]:
-    normalized = _normalize_arabic_vip_name(name)
-    titles = {"الافندي", "افندي", "الدكتور", "دكتور", "الدكتوره", "دكتوره", "الاستاذ", "استاذ", "المهندس", "مهندس", "الشيخ", "شيخ", "الحاج", "حاج", "السيد", "سيد"}
-    words = [w for w in normalized.split(" ") if len(w) >= 2]
-    while len(words) > 1 and words[0] in titles:
-        words.pop(0)
-    return [w[2:] if (w.startswith("ال") and len(w) > 3) else w for w in words]
-
-
-def _lcs_length(w1: list[str], w2: list[str]) -> int:
-    m, n = len(w1), len(w2)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if w1[i - 1] == w2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1] + 1
-            else:
-                dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
-    return dp[m][n]
-
-
-def is_patient_vip(patient_name: str, vip_text: str) -> bool:
-    """Matches a patient name against the VIP Cases list with Arabic normalization."""
-    if not patient_name or not vip_text:
-        return False
-    p_words = _get_vip_normalized_words(patient_name)
-    if len(p_words) < 2:
-        return False
-    for name in extract_vip_names(vip_text):
-        n_words = _get_vip_normalized_words(name)
-        if len(n_words) < 2 or p_words[0] != n_words[0]:
-            continue
-        shorter_len = min(len(p_words), len(n_words))
-        if _lcs_length(p_words, n_words) == shorter_len and shorter_len >= 2:
-            return True
-    return False
-
-
-def clean_contractor_for_display_vip(contractor: Any) -> str:
-    """Normalizes contractor names for VIP discharge alerts with Cash / Self-Pay fallback."""
-    if contractor is None:
-        return "Cash / Self-Pay"
-    s = str(contractor).strip()
-    if not s or s in ("-", "null", "undefined"):
-        return "Cash / Self-Pay"
-    s = re.sub(r"^\d+\s*[-–—]\s*", "", s).strip()
-    if re.fullmatch(r"\d+(?:\.\d+)?", s):
-        return "Cash / Self-Pay"
-    s = re.sub(r"\bmain\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"(?:شركة|شركه)", "", s)
-    s = re.sub(r"\(\s*\)|\[\s*\]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s or "Cash / Self-Pay"
-
-
-def build_vip_discharge_key(patient: dict[str, Any]) -> str:
-    """Canonical deduplication key: mrn:<digits> or name:<normalized>."""
-    raw_mrn = str(patient.get("mrn") or "").strip()
-    mrn_digits = re.sub(r"\D+", "", raw_mrn)
-    if mrn_digits and not re.fullmatch(r"0+", mrn_digits):
-        return f"mrn:{mrn_digits}"
-    norm_name = re.sub(r"\s+", " ", str(patient.get("name") or "").strip()).lower()
-    return f"name:{norm_name}" if norm_name else ""
-
-
-def format_vip_discharge_message(
-    patient_name: str,
-    room_number: str,
-    contractor: Any = "",
-    cairo_time: str = "",
-) -> str:
-    """Formats the Option 1 + Contractor VIP discharge WhatsApp alert."""
-    name = str(patient_name or "").strip() or "Unknown"
-    room = str(room_number or "").strip() or "—"
-    cont = clean_contractor_for_display_vip(contractor)
-    time_str = cairo_time or datetime.now(CAIRO_TZ).strftime("%Y-%m-%d %H:%M")
-    return "\n".join([
-        "👑 *VIP Patient Discharged*",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"• *Name:* {name}",
-        f"• *Room:* {room}",
-        f"• *Contractor:* {cont}",
-        "• *Status:* Discharged ✅",
-        f"• *Time:* {time_str}",
-        "━━━━━━━━━━━━━━━━━━━━",
-        "_Elite Hospital Occupancy Manager_",
-    ])
-
-
-def get_cached_vip_text(session: requests.Session) -> str:
-    """Fetches settings/vip_cases only when updated_at changed (index-only 40B check)."""
-    try:
-        ts_res = session.get(
-            f"{SUPABASE_REST_URL}?path=eq.settings/vip_cases&select=updated_at",
-            timeout=8,
-            verify=SUPABASE_SSL_VERIFY,
+        dp_mrn = clean_mrn_str(dp.get("mrn"))
+        still_in_powerbi = any(
+            (dp_mrn and getattr(r, "clean_mrn", None) and dp_mrn == r.clean_mrn)
+            or is_name_match(dp.get("name"), getattr(r, "name", ""))
+            for r in raw_records
         )
-        if ts_res.status_code == 200:
-            rows = ts_res.json()
-            if not rows:
-                _VIP_TEXT_CACHE["text"] = ""
-                _VIP_TEXT_CACHE["updated_at"] = ""
-                return ""
-            remote_ts = str(rows[0].get("updated_at") or "")
-            if remote_ts and remote_ts == _VIP_TEXT_CACHE["updated_at"] and _VIP_TEXT_CACHE["text"]:
-                return _VIP_TEXT_CACHE["text"]
-            data_res = session.get(
-                f"{SUPABASE_REST_URL}?path=eq.settings/vip_cases&select=data,updated_at",
-                timeout=10,
-                verify=SUPABASE_SSL_VERIFY,
-            )
-            if data_res.status_code == 200 and data_res.json():
-                row = data_res.json()[0]
-                data_obj = row.get("data") or {}
-                txt = str(data_obj.get("text") or "") if isinstance(data_obj, dict) else ""
-                _VIP_TEXT_CACHE["text"] = txt
-                _VIP_TEXT_CACHE["updated_at"] = str(row.get("updated_at") or remote_ts)
-                return txt
-    except Exception as exc:
-        log(f"[VIP WhatsApp] Notice checking settings/vip_cases cache: {exc}", level="warning")
-    return _VIP_TEXT_CACHE.get("text", "")
+        if not still_in_powerbi:
+            graduated.append(dp)
+    return graduated
 
 
-def get_vip_discharge_target_groups() -> list[str]:
-    override = os.getenv("GREEN_API_VIP_DISCHARGE_GROUP_IDS", "").strip()
-    raw = override or os.getenv("GREEN_API_GROUP_IDS", "").strip()
-    return [g.strip() for g in raw.split(",") if g.strip()]
+def dispatch_vip_sync_events_to_vercel(
+    discharges: list[dict[str, Any]],
+    admissions: list[dict[str, Any]],
+    post_fn: Optional[Any] = None,
+) -> bool:
+    """Sends newly detected Power BI discharges/admissions to Vercel for 100%-Vercel VIP matching & WhatsApp alerting."""
+    if not discharges and not admissions:
+        return True
+    secret = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY") or SUPABASE_KEY or "").strip()
+    if not secret:
+        log("[VIP Sync] Missing SUPABASE_KEY/SUPABASE_SERVICE_ROLE_KEY; skipping Vercel VIP event dispatch.", level="warning")
+        return False
 
-
-def send_green_api_text_message(chat_id: str, message: str, instance_id: str, api_token: str) -> bool:
-    url = f"https://api.green-api.com/waInstance{instance_id}/sendMessage/{api_token}"
-    res = requests.post(url, json={"chatId": chat_id, "message": message}, timeout=10)
-    if res.status_code == 200:
-        data = res.json()
-        return bool(isinstance(data, dict) and data.get("idMessage"))
-    log(f"[VIP WhatsApp] Green API HTTP {res.status_code} for {chat_id}: {res.text[:200]}", level="warning")
-    return False
-
-
-def notify_powerbi_vip_discharges(
-    candidates: list[dict[str, Any]],
-    notified_keys: list[str],
-    paused: bool,
-    session: requests.Session,
-    dry_run: Optional[bool] = None,
-    cairo_time: str = "",
-    send_fn: Optional[Any] = None,
-) -> dict[str, Any]:
-    """Evaluates Power BI discharge candidates and sends WhatsApp alerts for VIPs."""
-    ordered_keys = list(notified_keys or [])
-    notified_set = set(ordered_keys)
-
-    if not candidates:
-        return {"notified_keys": ordered_keys, "sent_count": 0, "suppressed_count": 0}
-
-    vip_text = get_cached_vip_text(session)
-    if not vip_text.strip():
-        return {"notified_keys": ordered_keys, "sent_count": 0, "suppressed_count": 0}
-
-    is_dry_run = (
-        dry_run
-        if dry_run is not None
-        else os.getenv("VIP_DISCHARGE_WHATSAPP_DRY_RUN", "0").lower() in ("1", "true", "yes")
-    )
-    target_groups = get_vip_discharge_target_groups()
-    instance_id = os.getenv("GREEN_API_INSTANCE_ID", "").strip()
-    api_token = os.getenv("GREEN_API_TOKEN", "").strip()
-
-    sent_count = 0
-    suppressed_count = 0
-
-    for p in candidates:
-        if not isinstance(p, dict):
-            continue
-        is_hmis_graduated = p.get("source") == "hmis_pending_discharge"
-        if p.get("dischargeType") == "manual" and not is_hmis_graduated:
-            continue
-        name = str(p.get("name") or "").strip()
-        room = str(p.get("room") or "").strip()
-        bed = str(p.get("bed") or room).strip()
-        if not name or is_companion_bed(bed) or is_companion_bed(room) or "323" in room:
-            continue
-        if not is_patient_vip(name, vip_text):
-            continue
-
-        key = build_vip_discharge_key(p)
-        if not key or key in notified_set:
-            continue
-
-        if paused:
-            log(f"[VIP WhatsApp] Automation is paused; suppressing alert for {name} ({room or '—'})")
-            notified_set.add(key)
-            ordered_keys.append(key)
-            suppressed_count += 1
-            continue
-
-        msg = format_vip_discharge_message(
-            patient_name=name,
-            room_number=room or "—",
-            contractor=p.get("contractor"),
-            cairo_time=cairo_time,
-        )
-
-        if is_dry_run:
-            log(f"[VIP WhatsApp][DRY-RUN] Would send:\n{msg}")
-            notified_set.add(key)
-            ordered_keys.append(key)
-            sent_count += 1
-            continue
-
-        if not target_groups:
-            log("[VIP WhatsApp] No target WhatsApp group IDs configured; skipping send.", level="warning")
-            continue
-
-        try:
-            if send_fn is not None:
-                send_fn(msg, target_groups)
-                any_ok = True
-            else:
-                if not instance_id or not api_token:
-                    log("[VIP WhatsApp] Missing GREEN_API_INSTANCE_ID or GREEN_API_TOKEN; skipping send.", level="warning")
-                    continue
-                any_ok = False
-                for idx, gid in enumerate(target_groups):
-                    if send_green_api_text_message(gid, msg, instance_id, api_token):
-                        any_ok = True
-                    if idx < len(target_groups) - 1:
-                        time.sleep(0.3)
-            if any_ok:
-                notified_set.add(key)
-                ordered_keys.append(key)
-                sent_count += 1
-                time.sleep(0.3)
-        except Exception as exc:
-            log(f"[VIP WhatsApp] Non-fatal error sending alert for {name}: {exc}", level="warning")
-
-    return {
-        "notified_keys": ordered_keys,
-        "sent_count": sent_count,
-        "suppressed_count": suppressed_count,
+    url = get_vip_sync_events_url()
+    payload = {
+        "discharges": [
+            {
+                "name": str(d.get("name") or ""),
+                "room": str(d.get("room") or ""),
+                "mrn": str(d.get("mrn") or ""),
+                "contractor": str(d.get("contractor") or ""),
+                "dischargeType": str(d.get("dischargeType") or "auto"),
+                "source": d.get("source"),
+            }
+            for d in (discharges or [])
+            if isinstance(d, dict) and d.get("name")
+        ],
+        "admissions": [
+            {
+                "name": str(a.get("name") or ""),
+                "room": str(a.get("room") or ""),
+                "mrn": str(a.get("mrn") or ""),
+                "physician": str(a.get("physician") or ""),
+                "contractor": str(a.get("contractor") or ""),
+            }
+            for a in (admissions or [])
+            if isinstance(a, dict) and a.get("name")
+        ],
     }
+    if not payload["discharges"] and not payload["admissions"]:
+        return True
+
+    raw_body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    ts_sec = int(time.time())
+    signature = sign_vip_sync_events_payload(raw_body, ts_sec, secret)
+    headers = {
+        "Content-Type": "application/json",
+        "X-VIP-Alert-Timestamp": str(ts_sec),
+        "X-VIP-Alert-Signature": signature,
+    }
+
+    try:
+        sender = post_fn or requests.post
+        res = sender(url, data=raw_body.encode("utf-8"), headers=headers, timeout=15)
+        if getattr(res, "status_code", 0) == 200:
+            body = res.json() if hasattr(res, "json") else {}
+            sent_d = int(body.get("sentDischarges", 0)) if isinstance(body, dict) else 0
+            sent_a = int(body.get("sentAdmissions", 0)) if isinstance(body, dict) else 0
+            if sent_d or sent_a:
+                log(f"[VIP Sync] Vercel dispatched {sent_a} VIP admission(s) & {sent_d} VIP discharge(s) to WhatsApp.")
+            return True
+        log(f"[VIP Sync] Vercel relay HTTP {getattr(res, 'status_code', '?')}: {str(getattr(res, 'text', ''))[:200]}", level="warning")
+        return False
+    except Exception as exc:
+        log(f"[VIP Sync] Non-fatal error dispatching VIP events to Vercel: {exc}", level="warning")
+        return False
 
 ARABIC_DIGITS_TRANS: Final = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
@@ -1154,6 +972,10 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
     if not isinstance(raw_vip_notified, list) or is_new_day or is_system_reset:
         raw_vip_notified = []
     vip_discharge_notified = [str(k) for k in raw_vip_notified if k]
+    raw_vip_adm_notified = meta.get("vipAdmissionNotified") or []
+    if not isinstance(raw_vip_adm_notified, list) or is_new_day or is_system_reset:
+        raw_vip_adm_notified = []
+    vip_admission_notified = [str(k) for k in raw_vip_adm_notified if k]
     vip_discharge_automation_paused = bool(meta.get("vipDischargeAutomationPaused", False))
 
     return {
@@ -1171,6 +993,7 @@ def fetch_existing_supabase_state(cairo_date_str: Optional[str] = None) -> dict[
         "manual_discharges": manual_discharges,
         "restored_hmis_overrides": restored_hmis_overrides,
         "vip_discharge_notified": vip_discharge_notified,
+        "vip_admission_notified": vip_admission_notified,
         "vip_discharge_automation_paused": vip_discharge_automation_paused,
         "occupancy_index": state_map.get("history/occupancy_index") or [],
         "existing_metadata": meta,
@@ -2454,6 +2277,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                 and not str(p.get("name", "")).strip().isdigit()
                 and not is_clinical_progress_note_str(str(p.get("name", "")).strip())
             ]
+            powerbi_vip_admission_candidates: list[dict[str, Any]] = []
             for p in today_entries:
                 p_name = p.get("name", "").strip()
                 p_mrn = clean_mrn_str(p.get("mrn", ""))
@@ -2463,6 +2287,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     for ex in cumulative_entries
                 ):
                     cumulative_entries.append(p)
+                    powerbi_vip_admission_candidates.append(p)
 
             # 4. Extract Previous Active Patients from occupancy_current for Auto-Discharges & Transfer Detection
             prev_rooms: dict[str, dict[str, Any]] = {}
@@ -2567,39 +2392,10 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                                 if not is_man:
                                     powerbi_vip_discharge_candidates.append(disc_entry)
 
-                    # HMIS FinancialDischarge -> Power BI Graduation: alert once Power BI drops them
-                    for dp in discharged_list:
-                        if not isinstance(dp, dict) or dp.get("source") != "hmis_pending_discharge":
-                            continue
-                        dp_mrn = clean_mrn_str(dp.get("mrn"))
-                        still_in_powerbi = any(
-                            (dp_mrn and r.clean_mrn and dp_mrn == r.clean_mrn)
-                            or is_name_match(dp.get("name"), r.name)
-                            for r in deduplicated_records
-                        )
-                        if not still_in_powerbi:
-                            powerbi_vip_discharge_candidates.append(dp)
-
-            vip_discharge_notified_next: list[str] = (
-                []
-                if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset"))
-                else list(existing.get("vip_discharge_notified") or [])
-            )
-            if (
-                deduplicated_records
-                and powerbi_vip_discharge_candidates
-                and not is_1159_pm
-                and not existing.get("is_new_day")
-                and not existing.get("is_system_reset")
-            ):
-                vip_notify_res = notify_powerbi_vip_discharges(
-                    candidates=powerbi_vip_discharge_candidates,
-                    notified_keys=vip_discharge_notified_next,
-                    paused=bool(existing.get("vip_discharge_automation_paused", False)),
-                    session=session,
-                    cairo_time=cairo_now.strftime("%Y-%m-%d %H:%M"),
-                )
-                vip_discharge_notified_next = vip_notify_res["notified_keys"]
+                    # HMIS FinancialDischarge -> Power BI Graduation: alert once raw Power BI records drop them
+                    powerbi_vip_discharge_candidates.extend(
+                        collect_hmis_graduated_vip_candidates(discharged_list, records)
+                    )
 
             # 4b. Dialysis & Transfers with 11:59 PM Cairo Rollover
             updated_registry: dict[str, Any] = dict(existing.get("registry") or {})
@@ -3020,7 +2816,8 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                         "lastActiveDate": cairo_date_str,
                         "manuallyDischargedNames": manual_names,
                         "restoredHmisOverrides": [] if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset")) else restored_hmis_overrides,
-                        "vipDischargeNotified": [] if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset")) else vip_discharge_notified_next,
+                        "vipDischargeNotified": [] if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset")) else (existing.get("vip_discharge_notified") or []),
+                        "vipAdmissionNotified": [] if (is_1159_pm or existing.get("is_new_day") or existing.get("is_system_reset")) else (existing.get("vip_admission_notified") or []),
                         "vipDischargeAutomationPaused": bool(existing.get("vip_discharge_automation_paused", False)),
                         "counts": {
                             "occupiedBeds": occupied_beds_count,
@@ -3075,6 +2872,17 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                     f"{len(companion_status_list)} companions, {len(medical_plans_list)} medical plans, "
                     f"{len(cumulative_dialysis)} dialysis, {len(cumulative_transfers)} transfers."
                 )
+                if (
+                    deduplicated_records
+                    and (powerbi_vip_discharge_candidates or powerbi_vip_admission_candidates)
+                    and not is_1159_pm
+                    and not existing.get("is_new_day")
+                    and not existing.get("is_system_reset")
+                ):
+                    dispatch_vip_sync_events_to_vercel(
+                        discharges=powerbi_vip_discharge_candidates,
+                        admissions=powerbi_vip_admission_candidates,
+                    )
                 return True
             else:
                 log(f"Supabase RTDB upsert failed with status {sb_response.status_code}: {sb_response.text}", level="warning")

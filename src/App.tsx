@@ -2942,8 +2942,8 @@ export default function App() {
       setVipDischargeAutomationPaused(Boolean(json.paused));
       toast.info(
         json.paused
-          ? 'VIP discharge WhatsApp alerts paused.'
-          : 'VIP discharge WhatsApp alerts resumed.'
+          ? 'VIP Admission & Discharge WhatsApp alerts paused.'
+          : 'VIP Admission & Discharge WhatsApp alerts resumed.'
       );
     } catch (err: any) {
       toast.error(err?.message || 'Could not update VIP discharge automation state');
@@ -5563,7 +5563,7 @@ export default function App() {
                                         : 'text-emerald-800 bg-emerald-50 border-emerald-200'
                                     }`}
                                   >
-                                    WhatsApp Discharge Alerts: {vipDischargeAutomationPaused ? 'Paused' : 'Active'}
+                                    WhatsApp VIP Alerts (Admit &amp; Exit): {vipDischargeAutomationPaused ? 'Paused' : 'Active'}
                                   </span>
                                   {vipSaveStatus === 'saving' && (
                                     <span className="text-[10px] text-amber-600 font-bold animate-pulse">Auto-saving...</span>

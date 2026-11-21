@@ -2,8 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildVipDischargeKey,
   formatVipDischargeMessage,
+  formatVipAdmissionMessage,
   normalizeContractorForVipAlert,
   notifyPowerBiVipDischarges,
+  notifyPowerBiVipAdmissions,
+  signVipSyncEventPayload,
+  verifyVipSyncEventRequest,
 } from './vipDischargeNotifier.js';
 
 describe('vipDischargeNotifier', () => {
@@ -143,5 +147,90 @@ describe('vipDischargeNotifier', () => {
     expect(sendFn).not.toHaveBeenCalled();
     expect(res.sentCount).toBe(1);
     expect(res.notifiedKeys).toEqual(['mrn:1001']);
+  });
+
+  it('formats New VIP Patient Admitted message and deduplicates/pauses admissions', async () => {
+    const msg = formatVipAdmissionMessage({
+      patientName: 'سهير ابراهيم مصطفى صيام',
+      roomNumber: '405 A',
+      physician: 'أحمد محمود علي',
+      contractor: '001 - شركة Allianz',
+      cairoTime: '2026-11-21 17:20',
+    });
+
+    expect(msg).toBe(
+      [
+        '👑 *New VIP Patient Admitted*',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '• *Name:* سهير ابراهيم مصطفى صيام',
+        '• *Room:* 405 A',
+        '• *Physician:* Dr. أحمد محمود علي',
+        '• *Contractor:* Allianz',
+        '• *Status:* Admitted 🏥',
+        '• *Time:* 2026-11-21 17:20',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '_Elite Hospital Occupancy Manager_',
+      ].join('\n')
+    );
+
+    const sendFn = vi.fn().mockResolvedValue(undefined);
+    const isVipFn = (name: string) => name.includes('سهير');
+
+    const res = await notifyPowerBiVipAdmissions({
+      admissions: [
+        { name: 'سهير ابراهيم مصطفى صيام', room: '405 A', mrn: '1001', physician: 'أحمد محمود', contractor: 'Allianz' },
+        { name: 'مرافق سهير', room: '405 C', mrn: '1002', contractor: 'Allianz' },
+        { name: 'سهير ابراهيم مصطفى صيام', room: '323', mrn: '1003', contractor: 'Cash' },
+      ],
+      isVipFn,
+      notifiedKeys: [],
+      paused: false,
+      targetGroups: ['1203630@g.us'],
+      sendFn,
+      cairoTime: '2026-11-21 17:20',
+    });
+
+    expect(sendFn).toHaveBeenCalledTimes(1);
+    expect(res.sentCount).toBe(1);
+    expect(res.notifiedKeys).toEqual(['mrn:1001']);
+  });
+
+  it('signs and verifies HMAC-SHA256 VIP sync event payloads with replay protection', () => {
+    const secret = 'test-service-role-secret';
+    const rawBody = JSON.stringify({ discharges: [], admissions: [{ name: 'سهير', room: '405 A' }] });
+    const nowSec = 1795274000;
+    const sig = signVipSyncEventPayload(rawBody, nowSec, secret);
+
+    expect(
+      verifyVipSyncEventRequest({
+        rawBody,
+        timestampHeader: String(nowSec),
+        signatureHeader: sig,
+        secret,
+        nowSec: nowSec + 10,
+      })
+    ).toEqual({ ok: true });
+
+    // Tampered body
+    expect(
+      verifyVipSyncEventRequest({
+        rawBody: rawBody + ' ',
+        timestampHeader: String(nowSec),
+        signatureHeader: sig,
+        secret,
+        nowSec: nowSec + 10,
+      }).ok
+    ).toBe(false);
+
+    // Expired timestamp (> 5 min)
+    expect(
+      verifyVipSyncEventRequest({
+        rawBody,
+        timestampHeader: String(nowSec - 400),
+        signatureHeader: signVipSyncEventPayload(rawBody, nowSec - 400, secret),
+        secret,
+        nowSec,
+      }).ok
+    ).toBe(false);
   });
 });

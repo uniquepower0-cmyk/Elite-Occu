@@ -1,5 +1,6 @@
+import crypto from 'crypto';
 import { cleanContractorForDisplay } from './contractorOfficers.js';
-import { isCompanionBed } from './nameUtils.js';
+import { isCompanionBed, isProcedureOrTemporaryRoom } from './nameUtils.js';
 import { greenApiService } from './services/greenApiService.js';
 
 export interface VipDischargeCandidate {
@@ -9,6 +10,16 @@ export interface VipDischargeCandidate {
   mrn?: string | null;
   contractor?: string | null;
   dischargeType?: string | null;
+  source?: string | null;
+}
+
+export interface VipAdmissionCandidate {
+  name?: string | null;
+  room?: string | null;
+  bed?: string | null;
+  mrn?: string | null;
+  physician?: string | null;
+  contractor?: string | null;
 }
 
 export interface NotifyVipDischargesParams {
@@ -22,11 +33,24 @@ export interface NotifyVipDischargesParams {
   sendFn?: (message: string, groupIds: string[]) => Promise<void>;
 }
 
-export interface NotifyVipDischargesResult {
+export interface NotifyVipAdmissionsParams {
+  admissions: VipAdmissionCandidate[];
+  isVipFn: (name: string) => boolean;
+  notifiedKeys: string[];
+  paused: boolean;
+  dryRun?: boolean;
+  targetGroups?: string[];
+  cairoTime?: string;
+  sendFn?: (message: string, groupIds: string[]) => Promise<void>;
+}
+
+export interface NotifyVipEventsResult {
   notifiedKeys: string[];
   sentCount: number;
   suppressedCount: number;
 }
+
+export type NotifyVipDischargesResult = NotifyVipEventsResult;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,16 +79,21 @@ export function formatCairoDischargeTime(date: Date = new Date()): string {
 }
 
 /**
- * Normalizes a contractor string for VIP discharge alerts, stripping numeric
+ * Normalizes a contractor string for VIP alerts, stripping numeric
  * prefixes and noise words, and falling back to "Cash / Self-Pay".
  */
 export function normalizeContractorForVipAlert(contractor?: string | null): string {
   if (contractor === undefined || contractor === null) return 'Cash / Self-Pay';
   let s = String(contractor).trim();
-  // Strip leading numeric codes like "001 - Allianz"
   s = s.replace(/^\d+\s*[-–—]\s*/, '').trim();
   s = cleanContractorForDisplay(s);
   return s || 'Cash / Self-Pay';
+}
+
+function normalizePhysicianForVipAlert(physician?: string | null): string {
+  const raw = String(physician || '').trim();
+  if (!raw || raw === '-' || raw === 'null' || raw === 'undefined') return '—';
+  return /^dr\.?\s/i.test(raw) ? raw : `Dr. ${raw}`;
 }
 
 /**
@@ -88,6 +117,36 @@ export function formatVipDischargeMessage(params: {
     `• *Room:* ${room}`,
     `• *Contractor:* ${contractor}`,
     '• *Status:* Discharged ✅',
+    `• *Time:* ${timeStr}`,
+    '━━━━━━━━━━━━━━━━━━━━',
+    '_Elite Hospital Occupancy Manager_',
+  ].join('\n');
+}
+
+/**
+ * Formats the New VIP Patient Admitted WhatsApp notification.
+ */
+export function formatVipAdmissionMessage(params: {
+  patientName: string;
+  roomNumber: string;
+  physician?: string | null;
+  contractor?: string | null;
+  cairoTime?: string;
+}): string {
+  const name = String(params.patientName || '').trim() || 'Unknown';
+  const room = String(params.roomNumber || '').trim() || '—';
+  const physician = normalizePhysicianForVipAlert(params.physician);
+  const contractor = normalizeContractorForVipAlert(params.contractor);
+  const timeStr = params.cairoTime || formatCairoDischargeTime();
+
+  return [
+    '👑 *New VIP Patient Admitted*',
+    '━━━━━━━━━━━━━━━━━━━━',
+    `• *Name:* ${name}`,
+    `• *Room:* ${room}`,
+    `• *Physician:* ${physician}`,
+    `• *Contractor:* ${contractor}`,
+    '• *Status:* Admitted 🏥',
     `• *Time:* ${timeStr}`,
     '━━━━━━━━━━━━━━━━━━━━',
     '_Elite Hospital Occupancy Manager_',
@@ -121,12 +180,59 @@ export function getVipDischargeTargetGroups(): string[] {
 }
 
 /**
- * Detects Power BI auto-discharged VIP patients and sends WhatsApp alerts (or records
- * dedup keys cleanly when paused so resuming never replays stale historical alerts).
+ * Signs a VIP sync event payload with HMAC-SHA256 over `${timestampSec}.${rawBody}`.
  */
-export async function notifyPowerBiVipDischarges(
-  params: NotifyVipDischargesParams
-): Promise<NotifyVipDischargesResult> {
+export function signVipSyncEventPayload(rawBody: string, timestampSec: number, secret: string): string {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(`${timestampSec}.${rawBody}`, 'utf8')
+    .digest('hex');
+}
+
+/**
+ * Verifies an incoming VIP sync event request from the hospital runner using constant-time HMAC comparison.
+ */
+export function verifyVipSyncEventRequest(params: {
+  rawBody: string;
+  timestampHeader?: string;
+  signatureHeader?: string;
+  secret: string;
+  nowSec?: number;
+}): { ok: boolean; error?: string } {
+  const { rawBody, timestampHeader, signatureHeader, secret } = params;
+  if (!secret) return { ok: false, error: 'Missing server signing secret' };
+  const tsNum = Number(timestampHeader);
+  if (!timestampHeader || !Number.isFinite(tsNum)) {
+    return { ok: false, error: 'Invalid or missing X-VIP-Alert-Timestamp' };
+  }
+  const nowSec = params.nowSec ?? Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - tsNum) > 300) {
+    return { ok: false, error: 'Expired VIP sync event timestamp' };
+  }
+  const sig = String(signatureHeader || '').trim().toLowerCase();
+  if (!sig) return { ok: false, error: 'Missing X-VIP-Alert-Signature' };
+
+  const expected = signVipSyncEventPayload(rawBody, Math.trunc(tsNum), secret);
+  const sigBuf = Buffer.from(sig, 'utf8');
+  const expBuf = Buffer.from(expected, 'utf8');
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { ok: false, error: 'Invalid VIP sync event signature' };
+  }
+  return { ok: true };
+}
+
+async function processVipAlertBatch<T extends { name?: string | null; room?: string | null; bed?: string | null; mrn?: string | null }>(params: {
+  items: T[];
+  isVipFn: (name: string) => boolean;
+  notifiedKeys: string[];
+  paused: boolean;
+  dryRun?: boolean;
+  targetGroups?: string[];
+  sendFn?: (message: string, groupIds: string[]) => Promise<void>;
+  shouldSkipItem?: (item: T) => boolean;
+  formatMessage: (item: T) => string;
+  label: string;
+}): Promise<NotifyVipEventsResult> {
   const notifiedSet = new Set<string>(Array.isArray(params.notifiedKeys) ? params.notifiedKeys : []);
   const orderedKeys: string[] = Array.isArray(params.notifiedKeys) ? [...params.notifiedKeys] : [];
   const addKey = (k: string) => {
@@ -142,17 +248,14 @@ export async function notifyPowerBiVipDischarges(
   let sentCount = 0;
   let suppressedCount = 0;
 
-  for (const p of params.discharges || []) {
-    if (!p) continue;
-    // Only auto (Power BI-based) discharges
-    if (p.dischargeType === 'manual') continue;
+  for (const p of params.items || []) {
+    if (!p || params.shouldSkipItem?.(p)) continue;
 
     const name = String(p.name || '').trim();
     const room = String(p.room || '').trim();
     const bed = String(p.bed || room).trim();
     if (!name) continue;
 
-    // Skip companion beds & dialysis room 323
     if (isCompanionBed(bed) || isCompanionBed(room)) continue;
     if (room.includes('323')) continue;
 
@@ -162,28 +265,23 @@ export async function notifyPowerBiVipDischarges(
     if (!key || notifiedSet.has(key)) continue;
 
     if (params.paused) {
-      console.log(`[VIP WhatsApp] Automation is paused; suppressing alert for ${name} (${room || '—'})`);
+      console.log(`[VIP WhatsApp] Automation is paused; suppressing ${params.label} alert for ${name} (${room || '—'})`);
       addKey(key);
       suppressedCount++;
       continue;
     }
 
-    const message = formatVipDischargeMessage({
-      patientName: name,
-      roomNumber: room || '—',
-      contractor: p.contractor,
-      cairoTime: params.cairoTime,
-    });
+    const message = params.formatMessage(p);
 
     if (isDryRun) {
-      console.log(`[VIP WhatsApp][DRY-RUN] Would send:\n${message}`);
+      console.log(`[VIP WhatsApp][DRY-RUN] Would send ${params.label}:\n${message}`);
       addKey(key);
       sentCount++;
       continue;
     }
 
     if (targetGroups.length === 0) {
-      console.warn('[VIP WhatsApp] No target group IDs configured; skipping WhatsApp send.');
+      console.warn(`[VIP WhatsApp] No target group IDs configured; skipping ${params.label} send for ${name}.`);
       continue;
     }
 
@@ -194,7 +292,7 @@ export async function notifyPowerBiVipDischarges(
         const results = await greenApiService.broadcastTextMessage(message, targetGroups);
         const anySuccess = results.some((r) => r.success);
         if (!anySuccess) {
-          console.error('[VIP WhatsApp] All group sends failed:', results);
+          console.error(`[VIP WhatsApp] All group sends failed (${params.label}):`, results);
           continue;
         }
       }
@@ -202,7 +300,7 @@ export async function notifyPowerBiVipDischarges(
       sentCount++;
       await sleep(300);
     } catch (err: any) {
-      console.error(`[VIP WhatsApp] Non-fatal error sending VIP discharge alert for ${name}:`, err?.message || err);
+      console.error(`[VIP WhatsApp] Non-fatal error sending VIP ${params.label} alert for ${name}:`, err?.message || err);
     }
   }
 
@@ -211,4 +309,61 @@ export async function notifyPowerBiVipDischarges(
     sentCount,
     suppressedCount,
   };
+}
+
+/**
+ * Detects Power BI auto-discharged VIP patients and sends WhatsApp alerts (or records
+ * dedup keys cleanly when paused so resuming never replays stale historical alerts).
+ */
+export async function notifyPowerBiVipDischarges(
+  params: NotifyVipDischargesParams
+): Promise<NotifyVipDischargesResult> {
+  return processVipAlertBatch({
+    items: params.discharges || [],
+    isVipFn: params.isVipFn,
+    notifiedKeys: params.notifiedKeys,
+    paused: params.paused,
+    dryRun: params.dryRun,
+    targetGroups: params.targetGroups,
+    sendFn: params.sendFn,
+    label: 'discharge',
+    shouldSkipItem: (p) => p.dischargeType === 'manual' && p.source !== 'hmis_pending_discharge',
+    formatMessage: (p) =>
+      formatVipDischargeMessage({
+        patientName: String(p.name || '').trim(),
+        roomNumber: String(p.room || '').trim() || '—',
+        contractor: p.contractor,
+        cairoTime: params.cairoTime,
+      }),
+  });
+}
+
+/**
+ * Detects newly admitted VIP patients (admitted today) and sends WhatsApp alerts.
+ */
+export async function notifyPowerBiVipAdmissions(
+  params: NotifyVipAdmissionsParams
+): Promise<NotifyVipEventsResult> {
+  return processVipAlertBatch({
+    items: params.admissions || [],
+    isVipFn: params.isVipFn,
+    notifiedKeys: params.notifiedKeys,
+    paused: params.paused,
+    dryRun: params.dryRun,
+    targetGroups: params.targetGroups,
+    sendFn: params.sendFn,
+    label: 'admission',
+    shouldSkipItem: (p) => {
+      const room = String(p.room || p.bed || '').trim();
+      return Boolean(room && isProcedureOrTemporaryRoom(room));
+    },
+    formatMessage: (p) =>
+      formatVipAdmissionMessage({
+        patientName: String(p.name || '').trim(),
+        roomNumber: String(p.room || '').trim() || '—',
+        physician: p.physician,
+        contractor: p.contractor,
+        cairoTime: params.cairoTime,
+      }),
+  });
 }
