@@ -27,12 +27,15 @@ describe('src/logic/vip', () => {
       'سهير ابراهيم مصطفى صيام',
       'عايده عبدالعاطي عبدالله ابوكليله',
       'د/ محمد عيد نجا نجا',
+      '[8:11 AM, 11/9/2026] Ethar Elmalah ER Alamein: حالة: عمر مصطفى مجدى مصطفى',
+      '[10:19 AM, 11/9/2026] Osama Reception Elite: وصول حاله \\عمر مصطفى مجدى مصطفى ',
     ].join('\n');
 
     const isVip = createVipMatcher(text);
     expect(isVip('سهير ابراهيم مصطفى صيام')).toBe(true);
     expect(isVip('عايدة عبد العاطى عبد الله ابو كليلة')).toBe(true);
     expect(isVip('محمد عيد نجا نجا')).toBe(true);
+    expect(isVip('عمر مصطفى مجدى مصطفى')).toBe(true);
     expect(isVip('مريض عادي غير مدرج')).toBe(false);
     expect(isVip('')).toBe(false);
   });

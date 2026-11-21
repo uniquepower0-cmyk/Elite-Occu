@@ -33,7 +33,7 @@ export function extractVipNames(text: string): string[] {
 
     line = line.replace(/^.*?\]\s*[^:]*:\s*/, '');
     line = line.replace(/^[a-zA-Z\s\d.-]+:\s*/, '');
-    line = line.replace(/^(وصول|دخول)?\s*(حاله|حالة)\s*(\/|-)?\s*/, '');
+    line = line.replace(/^(وصول|دخول)?\s*(حاله|حالة)\s*[:\\/\-\s]*/, '');
     line = line.replace(/^New Patient Admission\s*(-\s*)?/i, '');
     line = line.replace(/^\d+[\s\-.)]*/, '').trim();
 

@@ -244,12 +244,48 @@ def collect_hmis_graduated_vip_candidates(
     return graduated
 
 
+def collect_hmis_option_a_vip_candidates(
+    discharged_list: list[dict[str, Any]],
+    pre_hmis_disc: list[dict[str, Any]],
+    raw_records: list[Any],
+) -> list[dict[str, Any]]:
+    """Option A: returns newly added hmis_pending_discharge entries immediately OR any that dropped from raw Power BI."""
+    pre_mrns = {
+        clean_mrn_str(dp.get("mrn") or "")
+        for dp in (pre_hmis_disc or [])
+        if isinstance(dp, dict) and clean_mrn_str(dp.get("mrn") or "")
+    }
+    pre_names = [
+        str(dp.get("name") or "").strip()
+        for dp in (pre_hmis_disc or [])
+        if isinstance(dp, dict) and str(dp.get("name") or "").strip()
+    ]
+    graduated_ids = {
+        id(dp) for dp in collect_hmis_graduated_vip_candidates(discharged_list, raw_records)
+    }
+
+    selected: list[dict[str, Any]] = []
+    for dp in discharged_list:
+        if not isinstance(dp, dict) or dp.get("source") != "hmis_pending_discharge":
+            continue
+        dp_mrn = clean_mrn_str(dp.get("mrn") or "")
+        dp_name = str(dp.get("name") or "").strip()
+        existed_before = (
+            (dp_mrn and dp_mrn in pre_mrns)
+            or (dp_name and any(is_name_match(dp_name, pn) for pn in pre_names))
+        )
+        if (not existed_before) or (id(dp) in graduated_ids):
+            selected.append(dp)
+    return selected
+
+
 def dispatch_vip_sync_events_to_vercel(
     discharges: list[dict[str, Any]],
     admissions: list[dict[str, Any]],
     post_fn: Optional[Any] = None,
 ) -> bool:
-    """Sends newly detected Power BI discharges/admissions to Vercel for 100%-Vercel VIP matching & WhatsApp alerting."""
+    """Sends newly detected Power BI/HMIS discharges & admissions to Vercel for 100%-Vercel VIP matching & WhatsApp alerting."""
+    global _last_synced_meta_updated_at
     if not discharges and not admissions:
         return True
     secret = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY") or SUPABASE_KEY or "").strip()
@@ -300,10 +336,19 @@ def dispatch_vip_sync_events_to_vercel(
         res = sender(url, data=raw_body.encode("utf-8"), headers=headers, timeout=15)
         if getattr(res, "status_code", 0) == 200:
             body = res.json() if hasattr(res, "json") else {}
-            sent_d = int(body.get("sentDischarges", 0)) if isinstance(body, dict) else 0
-            sent_a = int(body.get("sentAdmissions", 0)) if isinstance(body, dict) else 0
-            if sent_d or sent_a:
-                log(f"[VIP Sync] Vercel dispatched {sent_a} VIP admission(s) & {sent_d} VIP discharge(s) to WhatsApp.")
+            if isinstance(body, dict):
+                sent_d = int(body.get("sentDischarges", 0))
+                sent_a = int(body.get("sentAdmissions", 0))
+                sup_d = int(body.get("suppressedDischarges", 0))
+                sup_a = int(body.get("suppressedAdmissions", 0))
+                paused = bool(body.get("paused", False))
+                meta_ts = str(body.get("metadataUpdatedAt") or "").strip()
+                if meta_ts:
+                    _last_synced_meta_updated_at = meta_ts
+                log(
+                    f"[VIP Sync] Dispatched {len(payload['admissions'])} admission(s) & {len(payload['discharges'])} discharge(s) to Vercel "
+                    f"-> sent={sent_a}/{sent_d}, suppressed={sup_a}/{sup_d}, paused={paused}"
+                )
             return True
         log(f"[VIP Sync] Vercel relay HTTP {getattr(res, 'status_code', '?')}: {str(getattr(res, 'text', ''))[:200]}", level="warning")
         return False
@@ -1969,6 +2014,7 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
 
             # 2b. Reconcile HMIS Nurse Portal "Pending Discharge" cases (with companion scrub, override respect & auto-reversal)
             restored_hmis_overrides = existing.get("restored_hmis_overrides") or []
+            pre_hmis_discharged = [dict(dp) for dp in (existing.get("discharged") or []) if isinstance(dp, dict)]
             if HMIS_PENDING_ENABLED:
                 reconcile_hmis_pending_discharges(
                     pending_cases=pending_cases,
@@ -2392,9 +2438,9 @@ def fetch_powerbi_and_sync(max_attempts: int = 4) -> bool:
                                 if not is_man:
                                     powerbi_vip_discharge_candidates.append(disc_entry)
 
-                    # HMIS FinancialDischarge -> Power BI Graduation: alert once raw Power BI records drop them
+                    # Option A: Alert immediately on new HMIS FinancialDischarge OR once raw Power BI drops them
                     powerbi_vip_discharge_candidates.extend(
-                        collect_hmis_graduated_vip_candidates(discharged_list, records)
+                        collect_hmis_option_a_vip_candidates(discharged_list, pre_hmis_discharged, records)
                     )
 
             # 4b. Dialysis & Transfers with 11:59 PM Cairo Rollover

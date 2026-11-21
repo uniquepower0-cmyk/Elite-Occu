@@ -98,6 +98,41 @@ class TestVipSyncEventsDispatcher(unittest.TestCase):
         self.assertEqual(len(graduated), 1)
         self.assertEqual(graduated[0]["mrn"], "1003")
 
+    def test_option_a_hmis_candidates_fire_immediately_on_new_hmis_pending_and_updates_meta_ts(self):
+        pre_hmis_disc = [
+            {"name": "مريض قديم", "mrn": "111", "source": "hmis_pending_discharge"},
+        ]
+        post_hmis_disc = [
+            {"name": "مريض قديم", "mrn": "111", "source": "hmis_pending_discharge"},
+            {"name": "عمر مصطفى مجدى مصطفى", "mrn": "271442", "room": "Bed 403 B", "source": "hmis_pending_discharge"},
+        ]
+        # Both are still in raw Power BI records, but 271442 was JUST added to HMIS pending this cycle
+        raw_rec_old = MagicMock(clean_mrn="111", name="مريض قديم")
+        raw_rec_omar = MagicMock(clean_mrn="271442", name="عمر مصطفى مجدى مصطفى")
+
+        cands = spr.collect_hmis_option_a_vip_candidates(
+            post_hmis_disc,
+            pre_hmis_disc=pre_hmis_disc,
+            raw_records=[raw_rec_old, raw_rec_omar],
+        )
+        self.assertEqual([c["mrn"] for c in cands], ["271442"])
+
+        mock_res = MagicMock(status_code=200)
+        mock_res.json.return_value = {
+            "success": True,
+            "paused": False,
+            "sentDischarges": 1,
+            "sentAdmissions": 0,
+            "suppressedDischarges": 0,
+            "suppressedAdmissions": 0,
+            "metadataUpdatedAt": "2026-11-21T21:15:00.000Z",
+        }
+        post_fn = MagicMock(return_value=mock_res)
+        with patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "my-secret-key"}, clear=False):
+            ok = spr.dispatch_vip_sync_events_to_vercel(cands, [], post_fn=post_fn)
+        self.assertTrue(ok)
+        self.assertEqual(spr._last_synced_meta_updated_at, "2026-11-21T21:15:00.000Z")
+
 
 if __name__ == "__main__":
     unittest.main()

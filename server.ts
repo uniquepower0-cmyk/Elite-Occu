@@ -1265,7 +1265,7 @@ function extractVipNames(text: string): string[] {
     line = line.replace(/^[a-zA-Z\s\d.-]+:\s*/, '');
 
     // Clean leading common phrases
-    line = line.replace(/^(وصول|دخول)?\s*(حاله|حالة)\s*(\/|-)?\s*/, '');
+    line = line.replace(/^(وصول|دخول)?\s*(حاله|حالة)\s*[:\\/\-\s]*/, '');
     line = line.replace(/^New Patient Admission\s*(-\s*)?/i, '');
 
     // Remove leading list numbers like "1-", "2.", "3 -", etc.
@@ -18226,6 +18226,7 @@ app.post('/api/whatsapp/vip-sync-events', async (req: any, res) => {
     const discChanged = !arePayloadsEqual(prevDiscNotified, discRes.notifiedKeys);
     const admChanged = !arePayloadsEqual(prevAdmNotified, admRes.notifiedKeys);
 
+    let metadataUpdatedAt: string | null = null;
     if (discChanged || admChanged) {
       const nowIso = new Date().toISOString();
       const updatedMeta = {
@@ -18240,6 +18241,7 @@ app.post('/api/whatsapp/vip-sync-events', async (req: any, res) => {
         .upsert({ path: 'state/metadata', data: updatedMeta, updated_at: nowIso })
         .select('updated_at');
       const dbTs = upData?.[0]?.updated_at ? String(upData[0].updated_at) : nowIso;
+      metadataUpdatedAt = dbTs;
       inMemoryStateMap['state/metadata'] = updatedMeta;
       inMemoryNodeTimestamps['state/metadata'] = dbTs;
       lastKnownDatabaseUpdatedAt = dbTs;
@@ -18252,6 +18254,7 @@ app.post('/api/whatsapp/vip-sync-events', async (req: any, res) => {
       sentAdmissions: admRes.sentCount,
       suppressedDischarges: discRes.suppressedCount,
       suppressedAdmissions: admRes.suppressedCount,
+      metadataUpdatedAt,
     });
   } catch (err: any) {
     console.error('[VIP WhatsApp] Error in /api/whatsapp/vip-sync-events:', err);
