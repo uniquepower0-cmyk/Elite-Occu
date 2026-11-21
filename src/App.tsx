@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import { createVipMatcher } from './logic/vip';
 import { VipBadge } from './components/ui/VipBadge';
+import { VipMessageGeneratorModal } from './components/VipMessageGeneratorModal';
 import { 
   supabase, 
   fetchSupabaseAuditLogs, 
@@ -510,6 +511,7 @@ export default function App() {
   const [vipSaveStatus, setVipSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'idle'>('idle');
   const [vipDischargeAutomationPaused, setVipDischargeAutomationPaused] = useState<boolean>(false);
   const [isTogglingVipAutomation, setIsTogglingVipAutomation] = useState<boolean>(false);
+  const [manualVipModalMode, setManualVipModalMode] = useState<'admitted' | 'discharged' | null>(null);
   const isVipMatcher = useMemo(() => createVipMatcher(vipCases), [vipCases]);
   const isVipFocusedRef = useRef(false);
   const vipDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -5481,6 +5483,24 @@ export default function App() {
                               ? 'Resume VIP Alerts'
                               : 'Pause VIP Alerts'}
                         </button>
+                        <button
+                          id="manual-admitted-vip-msg-btn"
+                          type="button"
+                          onClick={() => setManualVipModalMode('admitted')}
+                          className="px-3.5 py-1.5 rounded-xl text-xs font-extrabold border border-emerald-500/35 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/50 dark:text-emerald-200 dark:border-emerald-500/40 transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <UserPlus size={13} />
+                          Admitted VIP Msg
+                        </button>
+                        <button
+                          id="manual-discharged-vip-msg-btn"
+                          type="button"
+                          onClick={() => setManualVipModalMode('discharged')}
+                          className="px-3.5 py-1.5 rounded-xl text-xs font-extrabold border border-rose-500/35 bg-rose-50 hover:bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:hover:bg-rose-900/50 dark:text-rose-200 dark:border-rose-500/40 transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <LogOut size={13} />
+                          Discharged VIP Msg
+                        </button>
                       </div>
                     </div>
 
@@ -6042,6 +6062,19 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Manual VIP Admission / Discharge Message Generator Modal */}
+      <VipMessageGeneratorModal
+        mode={manualVipModalMode}
+        onClose={() => setManualVipModalMode(null)}
+        patients={manualVipModalMode === 'discharged' ? dischargedPatients : patients}
+        isVipFn={isVipMatcher}
+        onNotify={(msg, type) => {
+          if (type === 'error') toast.error(msg);
+          else if (type === 'success') toast.success(msg);
+          else toast.info(msg);
+        }}
+      />
 
       {/* Global Command Palette (Cmd+K / Ctrl+K) */}
       <CommandPalette

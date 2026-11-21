@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { extractVipNames, createVipMatcher } from './vip';
+import {
+  extractVipNames,
+  createVipMatcher,
+  normalizeContractorForVipAlertClient,
+  formatVipAdmissionMessageClient,
+  formatVipDischargeMessageClient,
+} from './vip';
 
 describe('src/logic/vip', () => {
   it('extracts VIP names from WhatsApp-formatted and numbered lines', () => {
@@ -29,5 +35,54 @@ describe('src/logic/vip', () => {
     expect(isVip('محمد عيد نجا نجا')).toBe(true);
     expect(isVip('مريض عادي غير مدرج')).toBe(false);
     expect(isVip('')).toBe(false);
+  });
+
+  it('normalizes contractor names and formats admission & discharge WhatsApp messages identically to server', () => {
+    expect(normalizeContractorForVipAlertClient('001 - شركة Allianz')).toBe('Allianz');
+    expect(normalizeContractorForVipAlertClient('002 - main')).toBe('Cash / Self-Pay');
+    expect(normalizeContractorForVipAlertClient('')).toBe('Cash / Self-Pay');
+    expect(normalizeContractorForVipAlertClient('15.5')).toBe('Cash / Self-Pay');
+
+    const admMsg = formatVipAdmissionMessageClient({
+      patientName: 'سهير ابراهيم مصطفى صيام',
+      roomNumber: '405 A',
+      physician: 'أحمد محمود علي',
+      contractor: '001 - شركة Allianz',
+      cairoTime: '2026-11-21 18:15',
+    });
+    expect(admMsg).toBe(
+      [
+        '👑 *New VIP Patient Admitted*',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '• *Name:* سهير ابراهيم مصطفى صيام',
+        '• *Room:* 405 A',
+        '• *Physician:* Dr. أحمد محمود علي',
+        '• *Contractor:* Allianz',
+        '• *Status:* Admitted 🏥',
+        '• *Time:* 2026-11-21 18:15',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '_Elite Hospital Occupancy Manager_',
+      ].join('\n')
+    );
+
+    const discMsg = formatVipDischargeMessageClient({
+      patientName: 'سهير ابراهيم مصطفى صيام',
+      roomNumber: '405 A',
+      contractor: '002 - AXA',
+      cairoTime: '2026-11-21 18:15',
+    });
+    expect(discMsg).toBe(
+      [
+        '👑 *VIP Patient Discharged*',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '• *Name:* سهير ابراهيم مصطفى صيام',
+        '• *Room:* 405 A',
+        '• *Contractor:* AXA',
+        '• *Status:* Discharged ✅',
+        '• *Time:* 2026-11-21 18:15',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '_Elite Hospital Occupancy Manager_',
+      ].join('\n')
+    );
   });
 });

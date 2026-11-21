@@ -57,6 +57,7 @@ import {
   notifyPowerBiVipAdmissions,
   buildVipDischargeKey,
   verifyVipSyncEventRequest,
+  getVipDischargeTargetGroups,
 } from './server/vipDischargeNotifier.js';
 import {
   parseOPDDoctorsExcel,
@@ -18255,6 +18256,39 @@ app.post('/api/whatsapp/vip-sync-events', async (req: any, res) => {
   } catch (err: any) {
     console.error('[VIP WhatsApp] Error in /api/whatsapp/vip-sync-events:', err);
     return res.status(500).json({ success: false, error: err?.message || 'Failed to process VIP sync events' });
+  }
+});
+
+// Zero-DB manual VIP WhatsApp send endpoint for Mohanad's Sheets manual picker
+app.post('/api/whatsapp/send-vip-message', async (req, res) => {
+  try {
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) {
+      return res.status(400).json({ success: false, error: 'Message text is required.' });
+    }
+    if (message.length > 2000) {
+      return res.status(400).json({ success: false, error: 'Message exceeds 2000 characters.' });
+    }
+
+    const targetGroups = getVipDischargeTargetGroups();
+    if (!greenApiService.isConfigured() || targetGroups.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Green API is not configured on the server. Please check GREEN_API_INSTANCE_ID, GREEN_API_TOKEN, and GREEN_API_GROUP_IDS.',
+      });
+    }
+
+    const results = await greenApiService.broadcastTextMessage(message, targetGroups);
+    const sentGroups = results.filter(r => r.success).length;
+    if (sentGroups === 0) {
+      const firstErr = results.find(r => r.error)?.error || 'Green API failed to deliver message.';
+      return res.status(502).json({ success: false, sentGroups: 0, totalGroups: targetGroups.length, error: firstErr, results });
+    }
+
+    return res.json({ success: true, sentGroups, totalGroups: targetGroups.length, results });
+  } catch (err: any) {
+    console.error('[VIP WhatsApp] Error in /api/whatsapp/send-vip-message:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to send manual VIP WhatsApp message' });
   }
 });
 

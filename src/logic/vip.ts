@@ -136,3 +136,105 @@ export function createVipMatcher(vipCasesText: string): (patientName?: string | 
     return matched;
   };
 }
+
+/**
+ * Formats a Date into `YYYY-MM-DD HH:mm` in Africa/Cairo timezone.
+ */
+export function formatCairoVipTimestampClient(date: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Cairo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  const hour = map.hour === '24' ? '00' : (map.hour || '00');
+  return `${map.year}-${map.month}-${map.day} ${hour}:${map.minute}`;
+}
+
+/**
+ * Normalizes a contractor string for client-side VIP message previews with Cash / Self-Pay fallback.
+ */
+export function normalizeContractorForVipAlertClient(contractor?: string | null): string {
+  if (contractor === undefined || contractor === null) return 'Cash / Self-Pay';
+  let s = String(contractor).trim();
+  if (!s || s === '-' || s === 'null' || s === 'undefined') return 'Cash / Self-Pay';
+  s = s.replace(/^\d+\s*[-–—]\s*/, '').trim();
+  if (!s || /^\d+(\.\d+)?$/.test(s)) return 'Cash / Self-Pay';
+  s = s.replace(/\bmain\b/gi, '');
+  s = s.replace(/(^|[\s\(\[\-\_\/\.\,\:\*\#])(شركة|شركه)([\s\)\]\-\_\/\.\,\:\*\#]|$)/g, '$1 $3');
+  s = s.replace(/(شركة|شركه)/g, '');
+  s = s.replace(/\(\s*\)|\[\s*\]/g, '');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s || 'Cash / Self-Pay';
+}
+
+function normalizePhysicianForVipAlertClient(physician?: string | null): string {
+  const raw = String(physician || '').trim();
+  if (!raw || raw === '-' || raw === 'null' || raw === 'undefined') return '—';
+  return /^dr\.?\s/i.test(raw) ? raw : `Dr. ${raw}`;
+}
+
+/**
+ * Formats the New VIP Patient Admitted WhatsApp message on the client.
+ */
+export function formatVipAdmissionMessageClient(params: {
+  patientName: string;
+  roomNumber: string;
+  physician?: string | null;
+  contractor?: string | null;
+  cairoTime?: string;
+}): string {
+  const name = String(params.patientName || '').trim() || 'Unknown';
+  const room = String(params.roomNumber || '').trim() || '—';
+  const physician = normalizePhysicianForVipAlertClient(params.physician);
+  const contractor = normalizeContractorForVipAlertClient(params.contractor);
+  const timeStr = params.cairoTime || formatCairoVipTimestampClient();
+
+  return [
+    '👑 *New VIP Patient Admitted*',
+    '━━━━━━━━━━━━━━━━━━━━',
+    `• *Name:* ${name}`,
+    `• *Room:* ${room}`,
+    `• *Physician:* ${physician}`,
+    `• *Contractor:* ${contractor}`,
+    '• *Status:* Admitted 🏥',
+    `• *Time:* ${timeStr}`,
+    '━━━━━━━━━━━━━━━━━━━━',
+    '_Elite Hospital Occupancy Manager_',
+  ].join('\n');
+}
+
+/**
+ * Formats the VIP Patient Discharged WhatsApp message on the client.
+ */
+export function formatVipDischargeMessageClient(params: {
+  patientName: string;
+  roomNumber: string;
+  contractor?: string | null;
+  cairoTime?: string;
+}): string {
+  const name = String(params.patientName || '').trim() || 'Unknown';
+  const room = String(params.roomNumber || '').trim() || '—';
+  const contractor = normalizeContractorForVipAlertClient(params.contractor);
+  const timeStr = params.cairoTime || formatCairoVipTimestampClient();
+
+  return [
+    '👑 *VIP Patient Discharged*',
+    '━━━━━━━━━━━━━━━━━━━━',
+    `• *Name:* ${name}`,
+    `• *Room:* ${room}`,
+    `• *Contractor:* ${contractor}`,
+    '• *Status:* Discharged ✅',
+    `• *Time:* ${timeStr}`,
+    '━━━━━━━━━━━━━━━━━━━━',
+    '_Elite Hospital Occupancy Manager_',
+  ].join('\n');
+}
