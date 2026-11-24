@@ -6218,13 +6218,13 @@ async function applyRefinedHeader(workbook: ExcelJS.Workbook, sheet: ExcelJS.Wor
   const safeTitle = safeEscapeXml(title);
   const customBg = getCustomHeaderBgInfo();
   const isLongTitle = title.length > 34;
-  const fontSize = isLongTitle ? 34 : 40;
-  const pillX = isLongTitle ? 220 : 420;
-  const pillW = isLongTitle ? 760 : 360;
+  const fontSize = isLongTitle ? 31 : 40;
+  const pillX = isLongTitle ? 130 : 420;
+  const pillW = isLongTitle ? 940 : 360;
   const svgText = `
     <svg width="1200" height="180" viewBox="0 0 1200 180">
-      <rect x="${pillX}" y="45" width="${pillW}" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.12" />
-      <text x="600" y="105" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="${fontSize}" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
+      <rect x="${pillX}" y="38" width="${pillW}" height="104" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.14" />
+      <text x="600" y="102" font-family="'Calibri', 'Carlito', 'Cairo', 'Segoe UI', Roboto, sans-serif" font-size="${fontSize}" font-weight="bold" fill="#000000" text-anchor="middle">${safeTitle}</text>
     </svg>
   `;
 
@@ -15947,10 +15947,10 @@ app.get('/api/procedures/data', async (req, res) => {
     const endoFresh = computeFeedFreshness(endoTs, 240);
     return res.json({
       cathlab: cathRes.data
-        ? { ...cathRes.data, items: dedupeProcedureCases(cathRes.data.items || []), updatedAt: cathTs, isStale: cathFresh.isStale }
+        ? { ...cathRes.data, items: dedupeProcedureCases(cathRes.data.items || [], 'cathlab'), updatedAt: cathTs, isStale: cathFresh.isStale }
         : null,
       endoscopy: endoRes.data
-        ? { ...endoRes.data, items: dedupeProcedureCases(endoRes.data.items || []), updatedAt: endoTs, isStale: endoFresh.isStale }
+        ? { ...endoRes.data, items: dedupeProcedureCases(endoRes.data.items || [], 'endoscopy'), updatedAt: endoTs, isStale: endoFresh.isStale }
         : null,
     });
   } catch (err: any) {
@@ -15973,7 +15973,7 @@ async function handleProcedureRefinedDownload(
       ? req.query.date.trim()
       : '';
     const targetDate = requestedDate || data?.referenceDate || getCairoDateTime().dateStr;
-    const allItems = dedupeProcedureCases(data?.items || []);
+    const allItems = dedupeProcedureCases(data?.items || [], unit);
     const dayItems = allItems.filter((c) => c.procedureDate === targetDate);
 
     const workbook = new ExcelJS.Workbook();

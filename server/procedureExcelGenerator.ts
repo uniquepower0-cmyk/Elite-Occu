@@ -78,11 +78,31 @@ function getUnitTheme(unit: 'cathlab' | 'endoscopy'): { badge: string; row: stri
   };
 }
 
+export function computeWrappedRowHeight(values: Array<string | number>, colWidths: number[]): number {
+  let maxLines = 1;
+  for (let i = 0; i < values.length; i++) {
+    const text = String(values[i] ?? '').trim();
+    if (!text) continue;
+    const width = colWidths[i] || 18;
+    // Bold Calibri 11 Arabic/Latin glyphs take ~1.3x width; use conservative 0.72 effective chars per column unit
+    const effectiveCharsPerLine = Math.max(8, Math.floor(width * 0.72));
+    const paragraphs = text.split(/\r?\n/);
+    let totalLines = 0;
+    for (const para of paragraphs) {
+      const len = para.trim().length;
+      totalLines += Math.max(1, Math.ceil(len / effectiveCharsPerLine));
+    }
+    if (totalLines > maxLines) maxLines = totalLines;
+  }
+  return Math.max(28, Math.round(maxLines * 18.5 + 14));
+}
+
 /**
  * Generates a refined 9-column Excel sheet matching addRefinedOccupancySheet's exact aesthetic:
  * - Row 1: Composited SVG header banner on Mohanad's header_bg.png
  * - Row 2: Dark slate (#37474F) bilingual column headers
  * - Room separator bands + soft pastel tinted patient rows + red bold VIP status
+ * - Full-visibility cell wrapping across all text columns + dynamic column widths & row heights
  * - Dynamic Excel formula footer (=COUNTA(...)) with zero hardcoded totals
  */
 export async function addRefinedProcedureSheet(
@@ -111,12 +131,12 @@ export async function addRefinedProcedureSheet(
   const numCols = 9;
   const headerTitle = buildProcedureHeaderTitle(unit, targetDate);
 
-  // Row 1: Refined SVG Header Banner
+  // Row 1: Refined SVG Header Banner (generous 96pt height for long Arabic titles)
   sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = '';
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(1).height = 90;
+  sheet.getRow(1).height = 96;
 
   if (options.applyRefinedHeaderFn) {
     await options.applyRefinedHeaderFn(workbook, sheet, headerTitle, numCols);
@@ -140,11 +160,11 @@ export async function addRefinedProcedureSheet(
   ];
 
   const headerRow = sheet.addRow(headerLabels);
-  headerRow.height = 25;
+  headerRow.height = 28;
   headerRow.eachCell((cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF37474F' } };
     cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FFFFFFFF' } };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     cell.border = {
       top: { style: 'thin', color: { argb: 'FFB2B2B2' } },
       bottom: { style: 'thin', color: { argb: 'FFB2B2B2' } },
@@ -153,9 +173,29 @@ export async function addRefinedProcedureSheet(
     };
   });
 
-  const cleanCases = dedupeProcedureCases(cases || []).sort(
+  const cleanCases = dedupeProcedureCases(cases || [], unit).sort(
     (a, b) => parseProcedureTimeMinutes(a.startTime) - parseProcedureTimeMinutes(b.startTime),
   );
+
+  // Pre-compute dynamic column widths from content within balanced landscape A4 bounds
+  const colWidths = [8, 22, 30, 50, 26, 28, 18, 15, 13];
+  for (const c of cleanCases) {
+    const nameLen = String(c.patientName || '').length;
+    const opMaxLine = Math.max(
+      cleanProcedureOpName(c.engOperationName).length,
+      cleanProcedureOpName(c.arOperationName).length,
+    );
+    const physLen = String(c.surgeonName || '').length;
+    const rawC = c.contractorName || c.paidBy || '';
+    const contractLen = (cleanContractorForDisplay(rawC) || rawC).length;
+    const officerLen = (getResponsibleOfficer(rawC) || '').length;
+
+    colWidths[2] = Math.min(38, Math.max(colWidths[2], nameLen + 4));
+    colWidths[3] = Math.min(60, Math.max(colWidths[3], Math.min(60, opMaxLine + 4)));
+    colWidths[4] = Math.min(34, Math.max(colWidths[4], physLen + 4));
+    colWidths[5] = Math.min(38, Math.max(colWidths[5], contractLen + 4));
+    colWidths[6] = Math.min(24, Math.max(colWidths[6], officerLen + 4));
+  }
 
   // Group by room
   const groupedByRoom: { roomName: string; items: ProcedureCaseItem[] }[] = [];
@@ -181,7 +221,7 @@ export async function addRefinedProcedureSheet(
       unit === 'endoscopy'
         ? 'لا توجد حالات مناظير مجدولة لهذا اليوم / No Endoscopy cases scheduled for this date'
         : 'لا توجد حالات قسطرة مجدولة لهذا اليوم / No Cath Lab cases scheduled for this date';
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     cell.font = { italic: true, size: 11, name: 'Calibri', color: { argb: 'FF64748B' } };
     sheet.getRow(emptyRowIdx).height = 30;
   } else {
@@ -221,10 +261,10 @@ export async function addRefinedProcedureSheet(
 
         const pRow = sheet.addRow(rowValues);
         dataRowIndices.push(pRow.number);
-        pRow.height = opEn && opAr ? 34 : 24;
+        pRow.height = computeWrappedRowHeight(rowValues, colWidths);
         pRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: theme.row } };
-          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: colNumber === 4 };
+          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: colNumber >= 2 && colNumber <= 8 };
           cell.border = {
             top: { style: 'thin', color: { argb: 'FFD2D7D9' } },
             bottom: { style: 'thin', color: { argb: 'FFD2D7D9' } },
@@ -251,7 +291,6 @@ export async function addRefinedProcedureSheet(
     // Dynamic Excel formula summary footer (zero hardcoded totals)
     const firstRow = dataRowIndices[0];
     const lastRow = dataRowIndices[dataRowIndices.length - 1];
-    const footerRowIdx = sheet.rowCount + 1;
     const footerRow = sheet.addRow([
       '',
       'إجمالي الحالات / Total',
@@ -263,15 +302,14 @@ export async function addRefinedProcedureSheet(
       '',
       { formula: `COUNTIF(I${firstRow}:I${lastRow},"VIP")` },
     ]);
-    // If single room group, formula is simply COUNTA(C4:C...)
     if (groupedByRoom.length === 1) {
       footerRow.getCell(3).value = { formula: `COUNTA(C${firstRow}:C${lastRow})` };
     }
-    footerRow.height = 24;
+    footerRow.height = 26;
     footerRow.eachCell({ includeEmpty: true }, (cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECEFF1' } };
       cell.font = { bold: true, size: 11, name: 'Calibri', color: { argb: 'FF1E293B' } };
-      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       cell.border = {
         top: { style: 'medium', color: { argb: 'FF37474F' } },
         bottom: { style: 'medium', color: { argb: 'FF37474F' } },
@@ -281,17 +319,7 @@ export async function addRefinedProcedureSheet(
     });
   }
 
-  sheet.columns = [
-    { width: 8 },  // # / الرقم
-    { width: 20 }, // Timing
-    { width: 32 }, // Patient Name
-    { width: 42 }, // Procedure
-    { width: 26 }, // Physician
-    { width: 24 }, // Contract
-    { width: 20 }, // مسئول التعاقد
-    { width: 15 }, // Case Type
-    { width: 14 }, // VIP STATUS
-  ];
+  sheet.columns = colWidths.map((w) => ({ width: w }));
 
   return { sheet, headerTitle, rowCount: cleanCases.length };
 }

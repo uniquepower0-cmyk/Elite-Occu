@@ -144,11 +144,53 @@ export type ProcedureWindowMode = 'today' | 'upcoming' | 'recent' | 'all';
 
 export function cleanProcedureOpName(raw: string | null | undefined): string {
   if (!raw) return '';
-  return String(raw)
+  let cleaned = String(raw)
     .replace(/\s*\/\/\s*s-[^\s/]+\/*\s*/gi, '')
     .replace(/\s*\/\/+\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
+  if (cleaned.includes('/')) {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const part of cleaned.split('/').map((p) => p.trim()).filter(Boolean)) {
+      const k = part.toLowerCase();
+      if (!seen.has(k)) {
+        seen.add(k);
+        unique.push(part);
+      }
+    }
+    cleaned = unique.join(' / ');
+  }
+  return cleaned;
+}
+
+export function formatMinutesTo12hTime(mins: number): string {
+  const h24 = Math.floor(mins / 60) % 24;
+  const mm = mins % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${period}`;
+}
+
+export function extractActualTime12h(rawDt: string | null | undefined): string {
+  if (!rawDt) return '';
+  const m = String(rawDt).match(/(\d{1,2}):(\d{2})/);
+  if (!m) return '';
+  const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return formatMinutesTo12hTime(mins);
+}
+
+export function normalizeEndoscopyAmPmTime(
+  timeStr: string | null | undefined,
+  unit?: 'cathlab' | 'endoscopy',
+): { time: string; normalized: boolean } {
+  const clean = String(timeStr || '').trim();
+  if (!clean || unit !== 'endoscopy') return { time: clean, normalized: false };
+  const mins = parseProcedureTimeMinutes(clean);
+  if (mins >= 60 && mins < 480) {
+    return { time: formatMinutesTo12hTime(mins + 12 * 60), normalized: true };
+  }
+  return { time: clean, normalized: false };
 }
 
 export function parseProcedureTimeMinutes(timeStr: string | null | undefined): number {
@@ -165,7 +207,10 @@ export function parseProcedureTimeMinutes(timeStr: string | null | undefined): n
   return h * 60 + mins;
 }
 
-export function dedupeProcedureCases(items: ProcedureCaseItem[]): ProcedureCaseItem[] {
+export function dedupeProcedureCases(
+  items: ProcedureCaseItem[],
+  unit?: 'cathlab' | 'endoscopy',
+): ProcedureCaseItem[] {
   if (!Array.isArray(items) || items.length === 0) return [];
   const mergeDistinct = (existing: string, incoming: string, sep = ' / '): string => {
     const cleanIn = String(incoming || '').trim();
@@ -180,16 +225,29 @@ export function dedupeProcedureCases(items: ProcedureCaseItem[]): ProcedureCaseI
 
   const map = new Map<string, ProcedureCaseItem>();
   for (const raw of items) {
+    const normStart = normalizeEndoscopyAmPmTime(raw.startTime, unit);
+    const normEnd = normalizeEndoscopyAmPmTime(raw.endTime, unit);
+    const effectiveStart = normStart.time;
+    const effectiveEnd = normEnd.time;
     const mrnKey = cleanMrnKey(raw.mrn);
     const nameKey = normalizeDoctorKey(raw.patientName);
-    const key = `${raw.procedureDate || ''}|${mrnKey || nameKey}|${(raw.startTime || '').trim()}|${(raw.room || '').trim().toLowerCase()}`;
+    const key = `${raw.procedureDate || ''}|${mrnKey || nameKey}|${effectiveStart}|${(raw.room || '').trim().toLowerCase()}`;
     const cleanedOpEn = cleanProcedureOpName(raw.engOperationName);
     const cleanedOpAr = cleanProcedureOpName(raw.arOperationName);
+    const actualStartTime = raw.actualStartTime || extractActualTime12h(raw.actualStart);
+    const actualEndTime = raw.actualEndTime || extractActualTime12h(raw.actualEnd);
 
     const existing = map.get(key);
     if (!existing) {
       map.set(key, {
         ...raw,
+        startTime: effectiveStart,
+        endTime: effectiveEnd,
+        rawStartTime: raw.rawStartTime || raw.startTime,
+        rawEndTime: raw.rawEndTime || raw.endTime,
+        timeNormalized: Boolean(raw.timeNormalized || normStart.normalized || normEnd.normalized),
+        actualStartTime,
+        actualEndTime,
         engOperationName: cleanedOpEn,
         arOperationName: cleanedOpAr,
       });
@@ -201,6 +259,8 @@ export function dedupeProcedureCases(items: ProcedureCaseItem[]): ProcedureCaseI
       existing.operativeComment = mergeDistinct(existing.operativeComment, raw.operativeComment);
       if (!existing.actualStart && raw.actualStart) existing.actualStart = raw.actualStart;
       if (!existing.actualEnd && raw.actualEnd) existing.actualEnd = raw.actualEnd;
+      if (!existing.actualStartTime && actualStartTime) existing.actualStartTime = actualStartTime;
+      if (!existing.actualEndTime && actualEndTime) existing.actualEndTime = actualEndTime;
       if (existing.status?.toLowerCase() !== 'completed' && raw.status?.toLowerCase() === 'completed') {
         existing.status = raw.status;
       }

@@ -144,8 +144,13 @@ export interface ProcedureCaseItem {
   room: string;
   startTime: string;
   endTime: string;
+  rawStartTime?: string;
+  rawEndTime?: string;
+  timeNormalized?: boolean;
   actualStart: string;
   actualEnd: string;
+  actualStartTime?: string;
+  actualEndTime?: string;
   status: string;
   mrn: string;
   patientName: string;

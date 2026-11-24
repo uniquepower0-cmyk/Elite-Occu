@@ -182,15 +182,38 @@ class TestNewPowerBIFeeds(unittest.TestCase):
         self.assertEqual(res["items"][0]["arOperationName"], "قسطرة تشخيصية")
         self.assertEqual(res["items"][1]["arOperationName"], "تصوير الشرايين المخيه")
 
-        # Endoscopy without explicit Status column should infer Completed when Actual End exists
+        # Endoscopy without explicit Status column should infer Completed when Actual End exists,
+        # normalize 03:30 AM -> 03:30 PM, and format actualStartTime/actualEndTime
         endo_xlsx = _df_to_xlsx_bytes([
             ["EnglishFullName", "Room Name", "Start Time", "End Time", "Expr1", "Expr2", "MRN", "Patient Name", "StartDateTime", "Actual Start", "Actual End"],
-            ["Essam Bedawi", "Endoscopy Operation Theatre", "03:30", "03:50", "Colonoscopy", "منظار قولون//s-Moderate", "275816", "Ali", "2026-11-23 03:30:00", "2026-11-23 13:17:47", "2026-11-23 13:24:35"],
+            ["Essam Bedawi", "Endoscopy Operation Theatre", "03:30", "03:50", "Colonoscopy/Colonoscopy", "منظار قولون//s-Moderate", "275816", "Ali", "2026-11-23 03:30:00", "2026-11-23 13:17:47", "2026-11-23 13:24:35"],
+            ["Amr Hosny", "Endoscopy Operation Theatre", "08:30", "08:50", "Upper GIT", "منظار معدة", "275817", "Sara", "2026-11-23 08:30:00", "", ""],
         ])
         endo_res = sync_mod.parse_powerbi_procedure_excel(endo_xlsx, unit="endoscopy", reference_date_str="2026-11-24")
-        self.assertEqual(len(endo_res["items"]), 1)
-        self.assertEqual(endo_res["items"][0]["status"], "Completed")
-        self.assertEqual(endo_res["items"][0]["arOperationName"], "منظار قولون")
+        self.assertEqual(len(endo_res["items"]), 2)
+        by_mrn = {it["mrn"]: it for it in endo_res["items"]}
+        self.assertEqual(by_mrn["275816"]["status"], "Completed")
+        self.assertEqual(by_mrn["275816"]["startTime"], "03:30 PM")
+        self.assertEqual(by_mrn["275816"]["endTime"], "03:50 PM")
+        self.assertTrue(by_mrn["275816"]["timeNormalized"])
+        self.assertEqual(by_mrn["275816"]["rawStartTime"], "03:30 AM")
+        self.assertEqual(by_mrn["275816"]["actualStartTime"], "01:17 PM")
+        self.assertEqual(by_mrn["275816"]["actualEndTime"], "01:24 PM")
+        self.assertEqual(by_mrn["275816"]["engOperationName"], "Colonoscopy")
+        self.assertEqual(by_mrn["275816"]["arOperationName"], "منظار قولون")
+        # 08:30 AM stays AM (not pre-dawn)
+        self.assertEqual(by_mrn["275817"]["startTime"], "08:30 AM")
+        self.assertFalse(by_mrn["275817"]["timeNormalized"])
+
+        # Cath Lab emergency 03:15 AM must NEVER be shifted to PM, but doubled '/' op name is deduplicated
+        cath_em_xlsx = _df_to_xlsx_bytes([
+            ["EnglishFullName", "Room Name", "Start Time", "End Time", "Expr1", "MRN", "Actual Patient Name", "StartDateTime", "Status"],
+            ["Dr. X", "Cath Lab Theatre", "03:15", "03:45", "Coronary Angiography & Pci/Coronary Angiography & Pci", "99911", "Emergency PCI", "2026-11-23 03:15:00", "Completed"],
+        ])
+        cath_em = sync_mod.parse_powerbi_procedure_excel(cath_em_xlsx, unit="cathlab", reference_date_str="2026-11-24")
+        self.assertEqual(cath_em["items"][0]["startTime"], "03:15 AM")
+        self.assertFalse(cath_em["items"][0]["timeNormalized"])
+        self.assertEqual(cath_em["items"][0]["engOperationName"], "Coronary Angiography & Pci")
 
     def test_upsert_feed_node_two_tier_dedup_and_dry_run(self):
         sync_mod._last_feed_hashes.clear()

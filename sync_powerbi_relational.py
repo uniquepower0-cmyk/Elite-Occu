@@ -4977,12 +4977,51 @@ def fetch_powerbi_opd_live_and_sync(force: bool = False, dry_run: bool = False) 
 
 
 def _clean_procedure_op_text(raw: str) -> str:
-    """Strips Cybernetics internal severity/nature suffixes like '//s-Major', '//s-Moderate', '//s-SpecialNature//'."""
+    """Strips Cybernetics internal severity/nature suffixes like '//s-Major', '//s-Moderate', '//s-SpecialNature//'
+    and deduplicates repeated slash-separated procedure names like 'OpA/OpA' -> 'OpA'."""
     if not raw:
         return ""
     cleaned = re.sub(r"\s*//\s*s-[^\s/]+/*\s*", "", raw, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*//+\s*$", "", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if "/" in cleaned:
+        parts = [p.strip() for p in cleaned.split("/") if p.strip()]
+        seen: set[str] = set()
+        unique_parts: list[str] = []
+        for p in parts:
+            key = p.lower()
+            if key not in seen:
+                seen.add(key)
+                unique_parts.append(p)
+        cleaned = " / ".join(unique_parts)
+    return cleaned
+
+
+def _normalize_procedure_time_12h(raw_val: Any, unit: str) -> tuple[str, str, bool]:
+    """Formats a procedure time into 12-hour AM/PM.
+    For Endoscopy only, bookings in the pre-dawn window 01:00..07:59 AM are auto-normalized by +12h
+    to PM (fixing Cybernetics default-AM entry bug), while preserving raw_12h and setting normalized=True.
+    Cath Lab is never shifted (supports 24/7 emergency PCI)."""
+    raw_12h = format_time_12h(_safe_str(raw_val))
+    if not raw_12h or unit != "endoscopy":
+        return raw_12h, raw_12h, False
+    mins = _parse_time_12h_minutes(raw_12h)
+    if 60 <= mins < 480:  # 01:00 AM .. 07:59 AM
+        h24 = (mins // 60) + 12
+        mm = mins % 60
+        h12 = 12 if (h24 % 12 == 0) else (h24 % 12)
+        return f"{h12:02d}:{mm:02d} PM", raw_12h, True
+    return raw_12h, raw_12h, False
+
+
+def _format_actual_dt_to_12h(raw_dt_str: str) -> str:
+    """Extracts HH:MM from a datetime string like '2026-11-24 13:01:21.940000' and formats to '01:01 PM'."""
+    if not raw_dt_str:
+        return ""
+    m = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?)", raw_dt_str)
+    if not m:
+        return ""
+    return format_time_12h(m.group(1))
 
 
 def _parse_time_12h_minutes(time_str: str) -> int:
@@ -5056,10 +5095,13 @@ def parse_powerbi_procedure_excel(
 
         raw_dt = _safe_str(row[c_start_dt]) if c_start_dt else ""
         proc_date = raw_dt[:10] if len(raw_dt) >= 10 else reference_date_str
-        start_12h = format_time_12h(_safe_str(row[c_start])) if c_start else ""
-        end_12h = format_time_12h(_safe_str(row[c_end])) if c_end else ""
+        start_12h, raw_start_12h, start_norm = _normalize_procedure_time_12h(row[c_start], unit) if c_start else ("", "", False)
+        end_12h, raw_end_12h, end_norm = _normalize_procedure_time_12h(row[c_end], unit) if c_end else ("", "", False)
+        time_normalized = bool(start_norm or end_norm)
         act_start = _safe_str(row[c_act_start]) if c_act_start else ""
         act_end = _safe_str(row[c_act_end]) if c_act_end else ""
+        act_start_12h = _format_actual_dt_to_12h(act_start)
+        act_end_12h = _format_actual_dt_to_12h(act_end)
 
         raw_status = _safe_str(row[c_status]) if c_status else ""
         if not raw_status:
@@ -5095,8 +5137,13 @@ def parse_powerbi_procedure_excel(
                 "room": room,
                 "startTime": start_12h,
                 "endTime": end_12h,
+                "rawStartTime": raw_start_12h,
+                "rawEndTime": raw_end_12h,
+                "timeNormalized": time_normalized,
                 "actualStart": act_start,
                 "actualEnd": act_end,
+                "actualStartTime": act_start_12h,
+                "actualEndTime": act_end_12h,
                 "status": status,
                 "mrn": mrn,
                 "patientName": patient_name,
@@ -5124,8 +5171,10 @@ def parse_powerbi_procedure_excel(
                 ex["endTime"] = end_12h
             if not ex["actualStart"] and act_start:
                 ex["actualStart"] = act_start
+                ex["actualStartTime"] = act_start_12h
             if not ex["actualEnd"] and act_end:
                 ex["actualEnd"] = act_end
+                ex["actualEndTime"] = act_end_12h
             if ex["status"].lower() != "completed" and status.lower() == "completed":
                 ex["status"] = status
             if not ex["contractorName"] and contractor:
@@ -5201,7 +5250,7 @@ def fetch_powerbi_procedures_and_sync(force: bool = False, dry_run: bool = False
         ]
 
     specs = [
-        ("cathlab", "feeds/cathlab_list", POWERBI_CATHLAB_EXPORT_URL, 141890993, 1, ["Cath Lab Theatre", "CathLab Operation Theatre 2"], None),
+        ("cathlab", "feeds/cathlab_list", POWERBI_CATHLAB_EXPORT_URL, 141890993, 1, ["Cath Lab Theatre", "CathLab Operation Theatre 2"], [("Actual Start", "Actual Start"), ("Actual End", "Actual End")]),
         ("endoscopy", "feeds/endoscopy_list", POWERBI_ENDO_EXPORT_URL, 1497662051, 2, ["Endoscopy Operation Theatre"], [("Status", "Status"), ("VT", "VT")]),
     ]
     all_ok = True

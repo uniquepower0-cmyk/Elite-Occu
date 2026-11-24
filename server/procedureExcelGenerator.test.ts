@@ -75,4 +75,31 @@ describe('procedureExcelGenerator', () => {
     expect(headerTitle).toBe('ليستة المناظير ليوم الثلاثاء ٢٤ نوفمبر ٢٠٢٦');
     expect(rowCount).toBe(0);
   });
+
+  it('prevents clipping on long bilingual procedures, deduplicates doubled slash op names, wraps all text columns, and normalizes Endoscopy AM->PM', async () => {
+    const wb = new ExcelJS.Workbook();
+    const longEndoCase = makeCase({
+      procedureDate: '2026-11-24',
+      room: 'Endoscopy Operation Theatre',
+      startTime: '04:20 AM',
+      endTime: '04:40 AM',
+      engOperationName: 'Upper GIT endoscopy with biopsy and Lower GIT endoscopy with biopsy/Upper GIT endoscopy with biopsy and Lower GIT endoscopy with biopsy',
+      arOperationName: 'منظار جهاز هضمي علوي مع اخذ عينه و منظار جهاز هضمي سفلي مع اخذ عينه',
+      contractorName: 'شركة مصر للطيران للشحن الجوي بالاسكندرية',
+    });
+
+    const { sheet } = await addRefinedProcedureSheet(wb, 'endoscopy', [longEndoCase], '2026-11-24');
+    const row4 = sheet.getRow(4);
+    // Timing normalized to PM
+    expect(row4.getCell(2).value).toBe('04:20 PM - 04:40 PM');
+    // Doubled slash English op name deduplicated
+    const procVal = String(row4.getCell(4).value);
+    expect(procVal.split('Upper GIT endoscopy').length - 1).toBe(1);
+    // All text columns (2..8) have wrapText enabled
+    for (let col = 2; col <= 8; col++) {
+      expect(row4.getCell(col).alignment?.wrapText).toBe(true);
+    }
+    // Dynamic row height is tall enough to show all wrapped bilingual lines without clipping
+    expect(row4.height).toBeGreaterThanOrEqual(70);
+  });
 });

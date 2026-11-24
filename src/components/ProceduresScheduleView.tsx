@@ -54,10 +54,22 @@ function parseTimeMinutes(timeStr: string): number {
 }
 
 function cleanOpLabel(raw: string): string {
-  return String(raw || '')
+  const base = String(raw || '')
     .replace(/\s*\/\/\s*s-[^\s/]+\/*\s*/gi, '')
     .replace(/\s*\/\/+\s*$/, '')
+    .replace(/\s+/g, ' ')
     .trim();
+  if (!base.includes('/')) return base;
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const part of base.split('/').map((p) => p.trim()).filter(Boolean)) {
+    const k = part.toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      unique.push(part);
+    }
+  }
+  return unique.join(' / ');
 }
 
 export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ isVipFn }) => {
@@ -437,9 +449,21 @@ export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ 
                         <div className="font-semibold text-slate-900 dark:text-slate-100">
                           {formatDateLabel(c.procedureDate)}
                         </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        <div
+                          className="text-[11px] text-slate-600 dark:text-slate-300"
+                          title={
+                            c.timeNormalized && c.rawStartTime
+                              ? `Auto-corrected from Cybernetics AM entry (${c.rawStartTime})`
+                              : undefined
+                          }
+                        >
                           {c.startTime || '—'}{c.endTime ? ` – ${c.endTime}` : ''}
                         </div>
+                        {(c.actualStartTime || c.actualEndTime) && (
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                            Actual: {c.actualStartTime || '—'}{c.actualEndTime ? ` – ${c.actualEndTime}` : ''}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         <span
