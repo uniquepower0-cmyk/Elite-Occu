@@ -123,6 +123,26 @@ POWERBI_OPD_EXPORT_URL: Final[str] = os.getenv(
     "POWERBI_OPD_EXPORT_URL",
     "http://10.12.0.11/powerbi/api/explore/reports/2f80fbba-95b8-4c55-aff1-5be0147ca894/export/xlsx"
 )
+POWERBI_APPROVALS_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_APPROVALS_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/91b0dd5b-59f8-414a-bd65-fcd084a65350/export/xlsx"
+)
+POWERBI_LIVE_OPD_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_LIVE_OPD_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/4194e59e-364f-426d-b0e9-90014bdfadca/export/xlsx"
+)
+POWERBI_OPD_QUEUE_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_OPD_QUEUE_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/8cb1a46c-8603-45ea-9246-ac029a1f6ab7/export/xlsx"
+)
+POWERBI_CATHLAB_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_CATHLAB_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/07aaac17-fca9-449d-bd2f-515b1bc78e4a/export/xlsx"
+)
+POWERBI_ENDO_EXPORT_URL: Final[str] = os.getenv(
+    "POWERBI_ENDO_EXPORT_URL",
+    "http://10.12.0.11/powerbi/api/explore/reports/422ed23d-d03d-438f-86ba-ade901504e6e/export/xlsx"
+)
 POWERBI_USER: Final[str] = os.getenv("POWERBI_USER", "")
 POWERBI_PASS: Final[str] = os.getenv("POWERBI_PASS", "")
 POWERBI_TIMEOUT: Final[int] = int(os.getenv("POWERBI_TIMEOUT", "90"))
@@ -3931,13 +3951,18 @@ def fetch_powerbi_or_future_and_sync(force: bool = False, dry_run: bool = False)
 
 
 def run_or_full_cycle(force: bool = False, force_future: Optional[bool] = None) -> bool:
-    """Runs today's live OR sync first, then future weekly OR history reconciliation (non-fatal)."""
+    """Runs today's live OR sync first, then future weekly OR history reconciliation (non-fatal),
+    and Cath Lab / Endoscopy schedules into isolated feeds/* nodes (non-fatal)."""
     today_ok = fetch_powerbi_or_and_sync(force=force)
     try:
         ff = force if force_future is None else force_future
         fetch_powerbi_or_future_and_sync(force=ff)
     except Exception as e:
         log(f"[OR Future] Non-fatal cycle error: {e}", level="warning")
+    try:
+        fetch_powerbi_procedures_and_sync(force=force)
+    except Exception as e:
+        log(f"[Procedures Sync] Non-fatal cycle error: {e}", level="warning")
     return today_ok
 
 
@@ -4356,6 +4381,742 @@ def fetch_powerbi_opd_and_sync(
         return False
 
 
+# --- ISOLATED OPERATIONAL FEEDS (feeds/*): INSURANCE APPROVALS, LIVE OPD, CATH LAB & ENDOSCOPY ---
+
+_last_feed_hashes: dict[str, str] = {}
+
+
+def compute_feed_hash(payload_body: dict[str, Any]) -> str:
+    """Computes a deterministic SHA-256 hash of a feed payload, excluding volatile updatedAt/hash fields."""
+    canonical = {k: v for k, v in payload_body.items() if k not in ("updatedAt", "hash")}
+    raw = json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def upsert_feed_node_if_changed(
+    path: str,
+    payload_body: dict[str, Any],
+    force: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Two-tier hash-deduplicated upsert into rtdb_nodes (feeds/*):
+    Tier 1: In-memory hash check (0 bytes, 0 Supabase calls).
+    Tier 2: Persisted cloud hash check via select=hash:data->>hash (~150 bytes).
+    Writes ONLY when data actually changed (or force=True) and never writes on dry_run.
+    Returns True if an upsert was executed, False if skipped."""
+    new_hash = compute_feed_hash(payload_body)
+
+    if dry_run:
+        log(f"[Feed Dry-Run] {path}: hash={new_hash[:12]} (skipped Supabase write)")
+        return False
+
+    # Tier 1: In-memory cache hit
+    if not force and _last_feed_hashes.get(path) == new_hash:
+        log(f"[Feed Dedup] {path} unchanged (in-memory hash {new_hash[:10]}); skipping write.")
+        return False
+
+    sb_sess = get_supabase_session()
+    # Tier 2: Lightweight persisted hash check (~150 bytes) to survive runner restarts
+    if not force:
+        try:
+            chk = sb_sess.get(
+                f"{SUPABASE_REST_URL}?path=eq.{requests.utils.quote(path, safe='')}&select=hash:data->>hash",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                timeout=12,
+                verify=SUPABASE_SSL_VERIFY,
+            )
+            if chk.status_code == 200:
+                rows = chk.json()
+                if isinstance(rows, list) and rows and rows[0].get("hash") == new_hash:
+                    _last_feed_hashes[path] = new_hash
+                    log(f"[Feed Dedup] {path} unchanged (cloud hash {new_hash[:10]}); skipping write.")
+                    return False
+        except Exception as chk_err:
+            log(f"[Feed Dedup] Non-fatal cloud hash check notice for {path}: {chk_err}", level="warning")
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    full_payload = dict(payload_body)
+    full_payload["hash"] = new_hash
+    full_payload["updatedAt"] = now_iso
+
+    resp = sb_sess.post(
+        SUPABASE_REST_URL,
+        headers=SUPABASE_HEADERS,
+        json=[{"path": path, "data": full_payload, "updated_at": now_iso}],
+        timeout=30,
+        verify=SUPABASE_SSL_VERIFY,
+    )
+    if resp.status_code not in (200, 201, 204):
+        log(f"[Feed Sync] Supabase upsert for {path} returned {resp.status_code}: {resp.text[:250]}", level="warning")
+        return False
+
+    _last_feed_hashes[path] = new_hash
+    return True
+
+
+def _fetch_powerbi_table_export(
+    export_url: str,
+    fallback_model_id: int,
+    section_index: int = 0,
+    where_override: Optional[list[dict[str, Any]]] = None,
+    auth: Optional[Any] = None,
+    timeout: tuple[int, int] = (10, 45),
+) -> bytes:
+    """Dynamically fetches modelsAndExploration for a Power BI report, locates its tableEx visual,
+    applies optional Where filters, and returns raw XLSX export bytes."""
+    report_base = export_url.rsplit("/export/", 1)[0]
+    meta_resp = requests.get(f"{report_base}/modelsAndExploration", auth=auth, timeout=(10, 20))
+    meta_resp.raise_for_status()
+    meta = meta_resp.json()
+    models = meta.get("models") or []
+    model_id = models[0].get("id", fallback_model_id) if models else fallback_model_id
+    sections = (meta.get("exploration") or {}).get("sections") or []
+    if not sections:
+        raise ValueError(f"No sections in modelsAndExploration for {report_base}")
+    sec = sections[min(section_index, len(sections) - 1)]
+
+    pq: Optional[dict[str, Any]] = None
+    for vc in sec.get("visualContainers") or []:
+        cfg_raw = vc.get("config", "{}")
+        cfg = json.loads(cfg_raw) if isinstance(cfg_raw, str) else (cfg_raw or {})
+        sv = cfg.get("singleVisual") or {}
+        if sv.get("visualType") == "tableEx" and sv.get("prototypeQuery"):
+            pq = json.loads(json.dumps(sv["prototypeQuery"]))
+            break
+    if not pq or not pq.get("Select"):
+        raise ValueError(f"No tableEx prototypeQuery found in section {section_index} of {report_base}")
+
+    if where_override is not None:
+        pq["Where"] = where_override
+
+    n_cols = len(pq["Select"])
+    export_cols = [
+        {"QueryName": s["Name"], "Name": str(s["Name"]).split(".")[-1].rstrip(")")}
+        for s in pq["Select"]
+    ]
+    payload = {
+        "exportDataType": 0,
+        "executeSemanticQueryRequest": {
+            "version": "1.0.0",
+            "queries": [{
+                "Query": {
+                    "Commands": [
+                        {
+                            "SemanticQueryDataShapeCommand": {
+                                "Query": pq,
+                                "Binding": {
+                                    "Primary": {"Groupings": [{"Projections": list(range(n_cols)), "Subtotal": 0}]},
+                                    "DataReduction": {"Primary": {"Top": {"Count": 100000}}, "Secondary": {"Top": {"Count": 100}}},
+                                    "Version": 1,
+                                },
+                            }
+                        },
+                        {
+                            "ExportDataCommand": {
+                                "Columns": export_cols,
+                                "Ordering": list(range(n_cols)),
+                                "FiltersDescription": "",
+                            }
+                        },
+                    ]
+                }
+            }],
+            "cancelQueries": [],
+            "modelId": model_id,
+            "userPreferredLocale": "en-US",
+        },
+    }
+    resp = requests.post(export_url, json=payload, auth=auth, timeout=timeout)
+    resp.raise_for_status()
+    return resp.content
+
+
+def _extract_excel_table(excel_bytes: bytes, required_keywords: list[str]) -> pd.DataFrame:
+    """Reads a Power BI XLSX export into a DataFrame with detected headers.
+    Raises ValueError if the expected header row is missing (no-clobber guard)."""
+    df = pd.read_excel(io.BytesIO(excel_bytes), header=None)
+    if df.empty:
+        raise ValueError("Empty Excel workbook returned from Power BI")
+
+    header_idx = -1
+    for r_idx in range(min(10, len(df))):
+        row_strs = [
+            str(x).lower().strip()
+            for x in df.iloc[r_idx].values
+            if pd.notna(x) and "\n" not in str(x) and "applied filters" not in str(x).lower()
+        ]
+        if len(row_strs) >= 3 and any(any(kw in s for s in row_strs) for kw in required_keywords):
+            header_idx = r_idx
+            break
+
+    if header_idx < 0:
+        raise ValueError(f"Could not locate expected header row (keywords={required_keywords})")
+
+    headers = [str(x).strip() if pd.notna(x) else f"col_{i}" for i, x in enumerate(df.iloc[header_idx].values)]
+    data = df.iloc[header_idx + 1:].copy()
+    data.columns = headers
+    return data.dropna(how="all")
+
+
+def _safe_int(val: Any) -> int:
+    try:
+        if pd.isna(val):
+            return 0
+        return int(round(float(str(val).replace(",", "").strip())))
+    except Exception:
+        return 0
+
+
+def _safe_str(val: Any) -> str:
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except Exception:
+        pass
+    s = str(val).strip()
+    return "" if s.lower() in ("nan", "none", "nat") else s
+
+
+def _find_df_col(columns: list[str], candidates: list[str]) -> Optional[str]:
+    lower_map = {c.lower().strip(): c for c in columns}
+    for cand in candidates:
+        cl = cand.lower().strip()
+        if cl in lower_map:
+            return lower_map[cl]
+    for cand in candidates:
+        cl = cand.lower().strip()
+        for k, orig in lower_map.items():
+            if cl in k:
+                return orig
+    return None
+
+
+def parse_powerbi_approvals_excel(excel_bytes: bytes) -> dict[str, Any]:
+    """Parses /BIAPPROVALBedOccupancy into normalized approval bottleneck items and summaries."""
+    df = _extract_excel_table(excel_bytes, ["patientbarcode", "contractorname", "rejectedrequests", "totalrequests"])
+    cols = list(df.columns)
+
+    c_mrn = _find_df_col(cols, ["PatientBarcode", "MRN"])
+    c_name = _find_df_col(cols, ["EnglishFullName", "Patient Name"])
+    c_room = _find_df_col(cols, ["FloorStructureName_EN", "Room"])
+    c_contractor = _find_df_col(cols, ["ContractorName"])
+    c_physician = _find_df_col(cols, ["Physician Name"])
+    c_agent = _find_df_col(cols, ["Agent Name"])
+    c_adm = _find_df_col(cols, ["AdmissionDate"])
+    c_los = _find_df_col(cols, ["LOS"])
+    c_status = _find_df_col(cols, ["Status"])
+    c_total = _find_df_col(cols, ["TotalRequests"])
+    c_pending = _find_df_col(cols, ["PendingRequests"])
+    c_inprog = _find_df_col(cols, ["InProgressRequests"])
+    c_rejected = _find_df_col(cols, ["RejectedRequests"])
+    c_closed = _find_df_col(cols, ["ClosedRequests"])
+    c_uploaded = _find_df_col(cols, ["ApprovalCount", "Uploaded Approvals"])
+    c_comment = _find_df_col(cols, ["InvoiceComment"])
+
+    items: list[dict[str, Any]] = []
+    by_contractor: dict[str, dict[str, Any]] = {}
+    by_agent: dict[str, dict[str, Any]] = {}
+
+    total_pending = 0
+    total_inprog = 0
+    total_rejected = 0
+    total_closed = 0
+    total_requests = 0
+    need_update_count = 0
+    bottleneck_patients = 0
+
+    for _, row in df.iterrows():
+        mrn = clean_mrn_str(row[c_mrn]) if c_mrn else ""
+        patient_name = _safe_str(row[c_name]) if c_name else ""
+        if not mrn and not patient_name:
+            continue
+        room = _safe_str(row[c_room]) if c_room else ""
+        contractor = _safe_str(row[c_contractor]) if c_contractor else "Unassigned"
+        physician = _safe_str(row[c_physician]) if c_physician else ""
+        agent = _safe_str(row[c_agent]) if c_agent else ""
+        adm_date = _safe_str(row[c_adm])[:10] if c_adm else ""
+        los = _safe_int(row[c_los]) if c_los else 0
+        status = _safe_str(row[c_status]) if c_status else ""
+        t_req = _safe_int(row[c_total]) if c_total else 0
+        p_req = _safe_int(row[c_pending]) if c_pending else 0
+        ip_req = _safe_int(row[c_inprog]) if c_inprog else 0
+        rej_req = _safe_int(row[c_rejected]) if c_rejected else 0
+        cl_req = _safe_int(row[c_closed]) if c_closed else 0
+        up_cnt = _safe_int(row[c_uploaded]) if c_uploaded else 0
+        comment = _safe_str(row[c_comment]) if c_comment else ""
+
+        is_need_update = "needupdate" in status.lower().replace(" ", "")
+        if rej_req > 0 or is_need_update:
+            severity = "critical"
+        elif p_req > 0 or ip_req > 0:
+            severity = "warning"
+        else:
+            severity = "ok"
+
+        if severity != "ok":
+            bottleneck_patients += 1
+        if is_need_update:
+            need_update_count += 1
+
+        total_pending += p_req
+        total_inprog += ip_req
+        total_rejected += rej_req
+        total_closed += cl_req
+        total_requests += t_req
+
+        items.append({
+            "mrn": mrn,
+            "patientName": patient_name,
+            "room": room,
+            "contractor": contractor,
+            "physician": physician,
+            "agentName": agent,
+            "admissionDate": adm_date,
+            "los": los,
+            "status": status,
+            "totalRequests": t_req,
+            "pendingRequests": p_req,
+            "inProgressRequests": ip_req,
+            "rejectedRequests": rej_req,
+            "closedRequests": cl_req,
+            "uploadedApprovals": up_cnt,
+            "invoiceComment": comment,
+            "severity": severity,
+        })
+
+        c_bucket = by_contractor.setdefault(contractor, {
+            "contractor": contractor, "patients": 0, "bottlenecks": 0,
+            "pending": 0, "inProgress": 0, "rejected": 0, "closed": 0, "total": 0,
+        })
+        c_bucket["patients"] += 1
+        if severity != "ok":
+            c_bucket["bottlenecks"] += 1
+        c_bucket["pending"] += p_req
+        c_bucket["inProgress"] += ip_req
+        c_bucket["rejected"] += rej_req
+        c_bucket["closed"] += cl_req
+        c_bucket["total"] += t_req
+
+        if agent:
+            a_bucket = by_agent.setdefault(agent, {
+                "agent": agent, "patients": 0, "bottlenecks": 0,
+                "pending": 0, "inProgress": 0, "rejected": 0, "closed": 0, "total": 0,
+            })
+            a_bucket["patients"] += 1
+            if severity != "ok":
+                a_bucket["bottlenecks"] += 1
+            a_bucket["pending"] += p_req
+            a_bucket["inProgress"] += ip_req
+            a_bucket["rejected"] += rej_req
+            a_bucket["closed"] += cl_req
+            a_bucket["total"] += t_req
+
+    sev_rank = {"critical": 0, "warning": 1, "ok": 2}
+    items.sort(key=lambda x: (sev_rank.get(x["severity"], 9), -x["rejectedRequests"], -(x["pendingRequests"] + x["inProgressRequests"]), x["room"]))
+
+    contractors_sorted = sorted(by_contractor.values(), key=lambda x: (-x["rejected"], -(x["pending"] + x["inProgress"]), -x["patients"]))
+    agents_sorted = sorted(by_agent.values(), key=lambda x: (-x["rejected"], -(x["pending"] + x["inProgress"]), -x["patients"]))
+
+    return {
+        "source": "powerbi_onprem",
+        "summary": {
+            "totalPatients": len(items),
+            "patientsWithBottlenecks": bottleneck_patients,
+            "totalPending": total_pending,
+            "totalInProgress": total_inprog,
+            "totalRejected": total_rejected,
+            "totalClosed": total_closed,
+            "totalRequests": total_requests,
+            "needUpdateCount": need_update_count,
+            "byContractor": contractors_sorted[:20],
+            "byAgent": agents_sorted[:20],
+        },
+        "items": items,
+    }
+
+
+def fetch_powerbi_approvals_and_sync(force: bool = False, dry_run: bool = False) -> bool:
+    """Fetches /BIAPPROVALBedOccupancy and upserts into feeds/insurance_approvals if changed."""
+    try:
+        auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+        xlsx_bytes = _fetch_powerbi_table_export(
+            POWERBI_APPROVALS_EXPORT_URL,
+            fallback_model_id=941746990,
+            section_index=0,
+            where_override=None,
+            auth=auth,
+        )
+        parsed = parse_powerbi_approvals_excel(xlsx_bytes)
+        wrote = upsert_feed_node_if_changed("feeds/insurance_approvals", parsed, force=force, dry_run=dry_run)
+        s = parsed["summary"]
+        log(
+            f"[Approvals Sync] Parsed {s['totalPatients']} inpatients "
+            f"(bottlenecks={s['patientsWithBottlenecks']}, rejected={s['totalRejected']}, "
+            f"pending={s['totalPending']}, inProgress={s['totalInProgress']}, wrote={wrote})."
+        )
+        return True
+    except Exception as e:
+        log(f"[Approvals Sync] Non-fatal error: {e}", level="warning")
+        return False
+
+
+def parse_powerbi_opd_live_excels(
+    live_bytes: bytes,
+    queue_bytes: Optional[bytes],
+    opd_date_str: str,
+) -> dict[str, Any]:
+    """Aggregates /BILiveOPD + /ConfirmedPatientsQueue into privacy-safe volume & queue metrics.
+    Never persists raw outpatient phone numbers."""
+    live_df = _extract_excel_table(live_bytes, ["maxstatusguid", "flspecialtyname", "employeeenglishfullname"])
+    l_cols = list(live_df.columns)
+    c_spec = _find_df_col(l_cols, ["FLSpecialtyName", "SpecialtyName"])
+    c_doc_en = _find_df_col(l_cols, ["EmployeeEnglishFullName", "Physician Name"])
+    c_status = _find_df_col(l_cols, ["MaxStatusGUID", "MaxStatus"])
+
+    counts = {"Reserved": 0, "ArrivedConfirmed": 0, "StartVisit": 0, "EndVisit": 0, "Cancel": 0}
+    spec_map: dict[str, dict[str, Any]] = {}
+    doc_map: dict[str, dict[str, Any]] = {}
+
+    for _, row in live_df.iterrows():
+        st = _safe_str(row[c_status]) if c_status else ""
+        spec = _safe_str(row[c_spec]) if c_spec else "General"
+        doc_en = _safe_str(row[c_doc_en]) if c_doc_en else ""
+        if not st and not spec and not doc_en:
+            continue
+
+        if st in counts:
+            counts[st] += 1
+
+        sb = spec_map.setdefault(spec, {
+            "specialty": spec, "total": 0, "reserved": 0, "waiting": 0,
+            "inClinic": 0, "completed": 0, "cancelled": 0,
+            "confirmedQueueWaiting": 0, "pendingTicketRequests": 0,
+        })
+        sb["total"] += 1
+        if st == "Reserved":
+            sb["reserved"] += 1
+        elif st == "ArrivedConfirmed":
+            sb["waiting"] += 1
+        elif st == "StartVisit":
+            sb["inClinic"] += 1
+        elif st == "EndVisit":
+            sb["completed"] += 1
+        elif st == "Cancel":
+            sb["cancelled"] += 1
+
+        if doc_en:
+            dkey = f"{doc_en.lower()}||{spec.lower()}"
+            db = doc_map.setdefault(dkey, {
+                "physicianEn": doc_en, "physicianAr": "", "specialty": spec,
+                "total": 0, "reserved": 0, "waiting": 0, "inClinic": 0,
+                "completed": 0, "cancelled": 0,
+                "confirmedQueueWaiting": 0, "confirmedQueueInClinic": 0,
+                "confirmedQueueCompleted": 0, "pendingTicketRequests": 0,
+            })
+            db["total"] += 1
+            if st == "Reserved":
+                db["reserved"] += 1
+            elif st == "ArrivedConfirmed":
+                db["waiting"] += 1
+            elif st == "StartVisit":
+                db["inClinic"] += 1
+            elif st == "EndVisit":
+                db["completed"] += 1
+            elif st == "Cancel":
+                db["cancelled"] += 1
+
+    q_waiting = 0
+    q_in_clinic = 0
+    q_completed = 0
+    q_ticket_req = 0
+    q_doc_map: dict[str, dict[str, Any]] = {}
+
+    if queue_bytes:
+        try:
+            q_df = _extract_excel_table(queue_bytes, ["maxstatusguid", "flspecialtyname", "employeearabicfullname"])
+            q_cols = list(q_df.columns)
+            qc_spec = _find_df_col(q_cols, ["FLSpecialtyName"])
+            qc_doc_ar = _find_df_col(q_cols, ["EmployeeArabicFullName"])
+            qc_st = _find_df_col(q_cols, ["MaxStatusGUID"])
+            qc_req = _find_df_col(q_cols, ["RequestNumberStatus"])
+
+            for _, row in q_df.iterrows():
+                qst = _safe_str(row[qc_st]) if qc_st else ""
+                qspec = _safe_str(row[qc_spec]) if qc_spec else "General"
+                qdoc_ar = _safe_str(row[qc_doc_ar]) if qc_doc_ar else ""
+                qreq = _safe_str(row[qc_req]) if qc_req else ""
+
+                is_req = qreq.lower() == "requested"
+                if is_req:
+                    q_ticket_req += 1
+                if qst == "ArrivedConfirmed":
+                    q_waiting += 1
+                elif qst == "StartVisit":
+                    q_in_clinic += 1
+                elif qst == "EndVisit":
+                    q_completed += 1
+
+                if qspec in spec_map:
+                    if qst == "ArrivedConfirmed":
+                        spec_map[qspec]["confirmedQueueWaiting"] += 1
+                    if is_req:
+                        spec_map[qspec]["pendingTicketRequests"] += 1
+
+                if qdoc_ar:
+                    qk = f"{qdoc_ar.lower()}||{qspec.lower()}"
+                    qb = q_doc_map.setdefault(qk, {
+                        "physicianAr": qdoc_ar, "specialty": qspec,
+                        "waiting": 0, "inClinic": 0, "completed": 0, "pendingTicketRequests": 0,
+                    })
+                    if qst == "ArrivedConfirmed":
+                        qb["waiting"] += 1
+                    elif qst == "StartVisit":
+                        qb["inClinic"] += 1
+                    elif qst == "EndVisit":
+                        qb["completed"] += 1
+                    if is_req:
+                        qb["pendingTicketRequests"] += 1
+        except Exception as qe:
+            log(f"[OPD Live] Non-fatal queue parse notice: {qe}", level="warning")
+
+    total_bookings = sum(counts.values())
+    active_non_cancel = max(0, total_bookings - counts["Cancel"])
+    showed_up = counts["ArrivedConfirmed"] + counts["StartVisit"] + counts["EndVisit"]
+    show_up_rate = round((showed_up / active_non_cancel) * 100.0, 1) if active_non_cancel > 0 else 0.0
+
+    by_specialty = sorted(spec_map.values(), key=lambda x: (-x["waiting"], -x["total"]))
+    by_physician = sorted(doc_map.values(), key=lambda x: (-x["waiting"], -x["total"]))
+    queue_by_physician_ar = sorted(q_doc_map.values(), key=lambda x: (-x["waiting"], -x["pendingTicketRequests"]))
+
+    return {
+        "opdDate": opd_date_str,
+        "source": "powerbi_onprem",
+        "summary": {
+            "totalBookings": total_bookings,
+            "reserved": counts["Reserved"],
+            "arrivedWaiting": counts["ArrivedConfirmed"],
+            "inClinic": counts["StartVisit"],
+            "completed": counts["EndVisit"],
+            "cancelled": counts["Cancel"],
+            "showUpRatePct": show_up_rate,
+            "confirmedQueueWaiting": q_waiting,
+            "confirmedQueueInClinic": q_in_clinic,
+            "confirmedQueueCompleted": q_completed,
+            "pendingTicketRequests": q_ticket_req,
+        },
+        "bySpecialty": by_specialty,
+        "byPhysician": by_physician,
+        "queueByPhysicianAr": queue_by_physician_ar,
+    }
+
+
+def fetch_powerbi_opd_live_and_sync(force: bool = False, dry_run: bool = False) -> bool:
+    """Fetches /BILiveOPD + /ConfirmedPatientsQueue and upserts into feeds/opd_live if changed.
+    Skips overnight closed-clinic hours (23:00-07:29 Cairo) unless force=True or dry_run=True."""
+    try:
+        cairo_now = get_cairo_now()
+        if not force and not dry_run and (cairo_now.hour >= 23 or cairo_now.hour < 7 or (cairo_now.hour == 7 and cairo_now.minute < 30)):
+            return True
+
+        auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+        live_where = [
+            {"Condition": {"Not": {"Expression": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "v"}}, "Property": "ReasonGUID"}}], "Values": [[{"Literal": {"Value": "'WrongData'"}}]]}}}}},
+            {"Condition": {"Not": {"Expression": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "v"}}, "Property": "SpecialtyName"}}], "Values": [[{"Literal": {"Value": f"'{x}'"}}] for x in ["CT", "MRI", "X Ray", "U/S"]]}}}}},
+        ]
+        queue_where = [
+            {"Condition": {"Not": {"Expression": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "v"}}, "Property": "Physician Name"}}], "Values": [[{"Literal": {"Value": f"'{x}'"}}] for x in ["موعد اشعه  CT", "موعد اشعه  MRI", "موعد اشعه  XRay", "موعد اشعه اشعه US", "Lab   Reservation"]]}}}}},
+        ]
+
+        live_bytes = _fetch_powerbi_table_export(
+            POWERBI_LIVE_OPD_EXPORT_URL,
+            fallback_model_id=1752932899,
+            section_index=0,
+            where_override=live_where,
+            auth=auth,
+        )
+        queue_bytes: Optional[bytes] = None
+        try:
+            queue_bytes = _fetch_powerbi_table_export(
+                POWERBI_OPD_QUEUE_EXPORT_URL,
+                fallback_model_id=914096509,
+                section_index=0,
+                where_override=queue_where,
+                auth=auth,
+            )
+        except Exception as q_err:
+            log(f"[OPD Live] ConfirmedPatientsQueue fetch notice (continuing with BILiveOPD): {q_err}", level="warning")
+
+        parsed = parse_powerbi_opd_live_excels(live_bytes, queue_bytes, cairo_now.date().isoformat())
+        wrote = upsert_feed_node_if_changed("feeds/opd_live", parsed, force=force, dry_run=dry_run)
+        s = parsed["summary"]
+        log(
+            f"[OPD Live Sync] {s['totalBookings']} bookings "
+            f"(waiting={s['arrivedWaiting']}, inClinic={s['inClinic']}, completed={s['completed']}, "
+            f"queueWaiting={s['confirmedQueueWaiting']}, wrote={wrote})."
+        )
+        return True
+    except Exception as e:
+        log(f"[OPD Live Sync] Non-fatal error: {e}", level="warning")
+        return False
+
+
+def parse_powerbi_procedure_excel(
+    excel_bytes: bytes,
+    unit: str,
+    reference_date_str: str,
+) -> dict[str, Any]:
+    """Parses /BICathlabReservation or /BIEndoReservation Excel export into normalized procedure records."""
+    df = _extract_excel_table(excel_bytes, ["room name", "mrn", "englishfullname", "startdatetime"])
+    cols = list(df.columns)
+
+    c_surgeon = _find_df_col(cols, ["EnglishFullName", "Surgeon Name"])
+    c_class = _find_df_col(cols, ["FLClassName"])
+    c_prep = _find_df_col(cols, ["PreparationInstructions"])
+    c_room = _find_df_col(cols, ["Room Name", "OR Room"])
+    c_contractor = _find_df_col(cols, ["ContractorName"])
+    c_paidby = _find_df_col(cols, ["PaidBy"])
+    c_start = _find_df_col(cols, ["Start Time"])
+    c_end = _find_df_col(cols, ["End Time"])
+    c_postc = _find_df_col(cols, ["PostRoomCategoryGUID", "Post C"])
+    c_comment = _find_df_col(cols, ["OperativeComment"])
+    c_op_en = _find_df_col(cols, ["FLOperationName", "Eng Operation Name", "Expr1"])
+    c_op_ar = _find_df_col(cols, ["SLOperationName", "Ar Operation Naem", "Expr2"])
+    c_mrn = _find_df_col(cols, ["MRN"])
+    c_vt = _find_df_col(cols, ["VT", "Visit Type"])
+    c_patient = _find_df_col(cols, ["Actual Patient Name", "Patient Name"])
+    c_dose = _find_df_col(cols, ["Cathlab Dose"])
+    c_start_dt = _find_df_col(cols, ["StartDateTime"])
+    c_status = _find_df_col(cols, ["Status"])
+    c_act_start = _find_df_col(cols, ["Actual Start"])
+    c_act_end = _find_df_col(cols, ["Actual End"])
+
+    items: list[dict[str, Any]] = []
+    today_cnt = 0
+    upcoming_cnt = 0
+    recent_cnt = 0
+    in_progress_cnt = 0
+    completed_today_cnt = 0
+    scheduled_today_cnt = 0
+
+    for idx, row in df.iterrows():
+        patient_name = _safe_str(row[c_patient]) if c_patient else ""
+        mrn = clean_mrn_str(row[c_mrn]) if c_mrn else ""
+        room = _safe_str(row[c_room]) if c_room else ""
+        if not patient_name and not mrn and not room:
+            continue
+
+        raw_dt = _safe_str(row[c_start_dt]) if c_start_dt else ""
+        proc_date = raw_dt[:10] if len(raw_dt) >= 10 else reference_date_str
+        status = _safe_str(row[c_status]) if c_status else "Scheduled"
+
+        if proc_date == reference_date_str:
+            today_cnt += 1
+            if status.lower() == "inor":
+                in_progress_cnt += 1
+            elif status.lower() == "completed":
+                completed_today_cnt += 1
+            else:
+                scheduled_today_cnt += 1
+        elif proc_date > reference_date_str:
+            upcoming_cnt += 1
+        else:
+            recent_cnt += 1
+
+        items.append({
+            "serial": str(len(items) + 1),
+            "procedureDate": proc_date,
+            "room": room,
+            "startTime": format_time_12h(_safe_str(row[c_start])) if c_start else "",
+            "endTime": format_time_12h(_safe_str(row[c_end])) if c_end else "",
+            "actualStart": _safe_str(row[c_act_start]) if c_act_start else "",
+            "actualEnd": _safe_str(row[c_act_end]) if c_act_end else "",
+            "status": status,
+            "mrn": mrn,
+            "patientName": patient_name,
+            "surgeonName": _safe_str(row[c_surgeon]) if c_surgeon else "",
+            "engOperationName": _safe_str(row[c_op_en]) if c_op_en else "",
+            "arOperationName": _safe_str(row[c_op_ar]) if c_op_ar else "",
+            "contractorName": _safe_str(row[c_contractor]) if c_contractor else "",
+            "paidBy": _safe_str(row[c_paidby]) if c_paidby else "",
+            "flClassName": _safe_str(row[c_class]) if c_class else "",
+            "vt": _safe_str(row[c_vt]) if c_vt else "",
+            "postC": _safe_str(row[c_postc]) if c_postc else "",
+            "preparationInstructions": _safe_str(row[c_prep]) if c_prep else "",
+            "operativeComment": _safe_str(row[c_comment]) if c_comment else "",
+            "cathlabDose": _safe_str(row[c_dose]) if c_dose else "",
+        })
+
+    items.sort(key=lambda x: (x["procedureDate"], x["startTime"], x["room"]))
+    for i, item in enumerate(items, 1):
+        item["serial"] = str(i)
+
+    return {
+        "unit": unit,
+        "referenceDate": reference_date_str,
+        "source": "powerbi_onprem",
+        "summary": {
+            "todayCount": today_cnt,
+            "upcomingCount": upcoming_cnt,
+            "recentCount": recent_cnt,
+            "inProgressCount": in_progress_cnt,
+            "completedTodayCount": completed_today_cnt,
+            "scheduledTodayCount": scheduled_today_cnt,
+        },
+        "items": items,
+    }
+
+
+def fetch_powerbi_procedures_and_sync(force: bool = False, dry_run: bool = False) -> bool:
+    """Fetches Cath Lab & Endoscopy rolling 14-day schedules (-7d .. +7d) into feeds/cathlab_list & feeds/endoscopy_list."""
+    cairo_today = get_cairo_now().date()
+    win_start = cairo_today - datetime.timedelta(days=7)
+    win_end = cairo_today + datetime.timedelta(days=7)
+    ref_str = cairo_today.isoformat()
+    auth = HttpNtlmAuth(POWERBI_USER, POWERBI_PASS) if POWERBI_USER else None
+
+    def _build_where(rooms: list[str]) -> list[dict[str, Any]]:
+        return [
+            {"Condition": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "OR Room"}}], "Values": [[{"Literal": {"Value": f"'{rm}'"}}] for rm in rooms]}}},
+            {"Condition": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "Status"}}], "Values": [[{"Literal": {"Value": "'Completed'"}}], [{"Literal": {"Value": "'Scheduled'"}}], [{"Literal": {"Value": "'InOR'"}}]]}}},
+            {"Condition": {"Not": {"Expression": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "ORStatus"}}], "Values": [[{"Literal": {"Value": "'Cancel'"}}]]}}}}},
+            {"Condition": {"Not": {"Expression": {"In": {"Expressions": [{"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "FLOperationName"}}], "Values": [[{"Literal": {"Value": "null"}}]]}}}}},
+            {"Condition": {"And": {
+                "Left": {"Comparison": {"ComparisonKind": 2, "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}}, "Right": {"Literal": {"Value": f"datetime'{win_start.isoformat()}T00:00:00'"}}}},
+                "Right": {"Comparison": {"ComparisonKind": 3, "Left": {"Column": {"Expression": {"SourceRef": {"Source": "o"}}, "Property": "StartDateTime"}}, "Right": {"Literal": {"Value": f"datetime'{win_end.isoformat()}T23:59:59'"}}}},
+            }}},
+        ]
+
+    specs = [
+        ("cathlab", "feeds/cathlab_list", POWERBI_CATHLAB_EXPORT_URL, 141890993, 1, ["Cath Lab Theatre", "CathLab Operation Theatre 2"]),
+        ("endoscopy", "feeds/endoscopy_list", POWERBI_ENDO_EXPORT_URL, 1497662051, 2, ["Endoscopy Operation Theatre"]),
+    ]
+    all_ok = True
+    for unit, path, url, fallback_mid, sec_idx, rooms in specs:
+        try:
+            xlsx = _fetch_powerbi_table_export(
+                url,
+                fallback_model_id=fallback_mid,
+                section_index=sec_idx,
+                where_override=_build_where(rooms),
+                auth=auth,
+            )
+            parsed = parse_powerbi_procedure_excel(xlsx, unit=unit, reference_date_str=ref_str)
+            parsed["windowStart"] = win_start.isoformat()
+            parsed["windowEnd"] = win_end.isoformat()
+            wrote = upsert_feed_node_if_changed(path, parsed, force=force, dry_run=dry_run)
+            s = parsed["summary"]
+            log(
+                f"[Procedures Sync:{unit}] {len(parsed['items'])} cases in 14d window "
+                f"(today={s['todayCount']}, upcoming={s['upcomingCount']}, recent={s['recentCount']}, wrote={wrote})."
+            )
+        except Exception as e:
+            all_ok = False
+            log(f"[Procedures Sync:{unit}] Non-fatal error: {e}", level="warning")
+    return all_ok
+
+
 # --- SCHEDULING & TIMEZONE ROLLOVER ORCHESTRATION ---
 
 last_cairo_seen_date: str = ""
@@ -4685,6 +5446,14 @@ def run_sync_job(force: bool = False, force_future_or: Optional[bool] = None) ->
     publish_standalone_heartbeat()
     fortinet_reconnect()
     fetch_powerbi_and_sync()
+    try:
+        fetch_powerbi_approvals_and_sync(force=force)
+    except Exception as e:
+        log(f"[Approvals Sync] Non-fatal cycle error: {e}", level="warning")
+    try:
+        fetch_powerbi_opd_live_and_sync(force=force)
+    except Exception as e:
+        log(f"[OPD Live Sync] Non-fatal cycle error: {e}", level="warning")
     if force or _last_or_sync_ts == 0.0 or (time.time() - _last_or_sync_ts) >= 7200.0:
         run_or_full_cycle(force=force, force_future=force_future_or)
     if _last_opd_sync_ts == 0.0 or force:
@@ -4709,6 +5478,20 @@ if __name__ == "__main__":
     or_weekly_dry_run = "--or-weekly-dry-run" in sys.argv
     opd_dry_run = "--opd-dry-run" in sys.argv
     opd_sync_only = "--opd-sync-only" in sys.argv
+    approvals_dry_run = "--approvals-dry-run" in sys.argv
+    opd_live_dry_run = "--opd-live-dry-run" in sys.argv
+    procedures_dry_run = "--procedures-dry-run" in sys.argv
+    sync_new_feeds_only = "--sync-new-feeds-only" in sys.argv
+
+    if approvals_dry_run or opd_live_dry_run or procedures_dry_run or sync_new_feeds_only:
+        fortinet_reconnect()
+        if approvals_dry_run or sync_new_feeds_only:
+            fetch_powerbi_approvals_and_sync(force=force_now, dry_run=approvals_dry_run)
+        if opd_live_dry_run or sync_new_feeds_only:
+            fetch_powerbi_opd_live_and_sync(force=True, dry_run=opd_live_dry_run)
+        if procedures_dry_run or sync_new_feeds_only:
+            fetch_powerbi_procedures_and_sync(force=force_now, dry_run=procedures_dry_run)
+        sys.exit(0)
 
     if opd_dry_run or opd_sync_only:
         cairo_now = get_cairo_now()

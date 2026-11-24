@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
+import { OPDLiveMetricsPanel } from './OPDLiveMetricsPanel';
 
 export interface OPDClinicSession {
   serial: string;
@@ -266,6 +267,9 @@ export const OPDStatusView: React.FC<OPDStatusViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Live OPD Volume & Confirmed Queue (On-Premises Auto-Sync) */}
+      <OPDLiveMetricsPanel />
+
       {/* Header & Actions */}
       <div className="bg-white/90 dark:bg-[#0f201c] backdrop-blur-md p-6 rounded-2xl border border-slate-200/90 dark:border-emerald-500/20 shadow-xs space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">

@@ -43,6 +43,8 @@ import {
   Command,
   SlidersHorizontal,
   Stethoscope,
+  HeartPulse,
+  ShieldAlert,
   Pause,
   Play
 } from 'lucide-react';
@@ -95,6 +97,8 @@ const AuditLogsView = React.lazy(() => import('./components/AuditLogsView'));
 const MaintenanceView = React.lazy(() => import('./components/MaintenanceView'));
 const MedicalDirectorView = React.lazy(() => import('./components/MedicalDirectorView').then(m => ({ default: m.MedicalDirectorView })));
 const DutyManagerView = React.lazy(() => import('./components/DutyManagerView').then(m => ({ default: m.DutyManagerView })));
+const InsuranceApprovalsView = React.lazy(() => import('./components/InsuranceApprovalsView').then(m => ({ default: m.InsuranceApprovalsView })));
+const ProceduresScheduleView = React.lazy(() => import('./components/ProceduresScheduleView').then(m => ({ default: m.ProceduresScheduleView })));
 
 import { NavItem } from './components/ui/NavItem';
 import { ActionButton } from './components/ui/ActionButton';
@@ -112,6 +116,7 @@ import { useTheme } from './context/ThemeContext';
 import { SolarThemeToggle } from './components/ui/SolarThemeToggle';
 import { CommandPalette, CommandPaletteAction } from './components/CommandPalette';
 import { PatientDetailDrawer } from './components/PatientDetailDrawer';
+import type { InsuranceApprovalsPayload, InsuranceApprovalItem } from './types';
 
 interface AutoFetchCountdownBadgeProps {
   rate: string;
@@ -156,7 +161,7 @@ const ViewLoadingFallback = () => (
   </div>
 );
 
-type View = 'dashboard' | 'patients' | 'opd' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
+type View = 'dashboard' | 'patients' | 'approvals' | 'opd' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'procedures' | 'audit-logs' | 'maintenance';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured' | 'vip';
 
@@ -493,6 +498,27 @@ export default function App() {
   const [todaysEntries, setTodaysEntries] = useState(0);
   const [vipCount, setVipCount] = useState(0);
   const [currentView, setCurrentView] = useState<View>('dashboard');
+  const [approvalsData, setApprovalsData] = useState<InsuranceApprovalsPayload | null>(null);
+  const approvalsFetchedRef = useRef<boolean>(false);
+
+  const findApprovalForPatient = useCallback(
+    (p: PatientRow | null): InsuranceApprovalItem | null => {
+      if (!p || !approvalsData?.items?.length) return null;
+      const cleanId = String(p.id || '').replace(/[^0-9]/g, '').replace(/^0+/, '');
+      if (cleanId) {
+        const hit = approvalsData.items.find(
+          (it) => String(it.mrn || '').replace(/[^0-9]/g, '').replace(/^0+/, '') === cleanId
+        );
+        if (hit) return hit;
+      }
+      const normRoom = String(p.room || '').trim().toLowerCase();
+      if (normRoom) {
+        return approvalsData.items.find((it) => String(it.room || '').trim().toLowerCase() === normRoom) || null;
+      }
+      return null;
+    },
+    [approvalsData]
+  );
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -722,6 +748,20 @@ export default function App() {
       fetchLoginLogs();
     }
   }, [isAuthenticated, currentView]);
+
+  // Lazy-fetch isolated insurance approvals feed only when Patients/Approvals/Drawer is opened (0 extra Dashboard cold-start egress)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (approvalsFetchedRef.current) return;
+    if (currentView !== 'patients' && currentView !== 'approvals' && !selectedPatient) return;
+    approvalsFetchedRef.current = true;
+    fetch('/api/approvals/data')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (json?.data) setApprovalsData(json.data);
+      })
+      .catch(() => {});
+  }, [isAuthenticated, currentView, selectedPatient]);
 
   useEffect(() => {
     // 0. Check for OAuth error redirected back in URL
@@ -3267,6 +3307,17 @@ export default function App() {
                 icon={<Clock />}
                 label="Duty Manager"
               />
+              <NavItem
+                active={currentView === 'approvals'}
+                onClick={() => handleNav('approvals')}
+                icon={<ShieldAlert />}
+                label="Approvals"
+                badge={
+                  approvalsData?.summary?.patientsWithBottlenecks
+                    ? `${approvalsData.summary.patientsWithBottlenecks}`
+                    : 'LIVE'
+                }
+              />
               <NavItem 
                 active={currentView === 'mohanad-sheets'} 
                 onClick={() => handleNav('mohanad-sheets', () => setMohanadSubTab('downloads'))}
@@ -3300,6 +3351,13 @@ export default function App() {
                 icon={<Activity />}
                 label="OR Dashboard History"
                 badge="OR"
+              />
+              <NavItem
+                active={currentView === 'procedures'}
+                onClick={() => handleNav('procedures')}
+                icon={<HeartPulse />}
+                label="Cath Lab & Endo"
+                badge="CATH"
               />
             </nav>
           </div>
@@ -5373,6 +5431,27 @@ export default function App() {
                                   <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 flex-wrap">
                                     <span>{p.name || '---'}</span>
                                     {isVipMatcher(p.name) && <VipBadge />}
+                                    {(() => {
+                                      const appMatch = findApprovalForPatient(p);
+                                      if (!appMatch || appMatch.severity === 'ok') return null;
+                                      return (
+                                        <span
+                                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                            appMatch.severity === 'critical'
+                                              ? 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-500/30'
+                                              : 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-500/30'
+                                          }`}
+                                          title={appMatch.invoiceComment || appMatch.status}
+                                        >
+                                          <ShieldAlert className="w-3 h-3" />
+                                          {appMatch.rejectedRequests > 0
+                                            ? `${appMatch.rejectedRequests} Rej`
+                                            : appMatch.status?.toLowerCase().includes('needupdate')
+                                            ? 'Update Needed'
+                                            : `${appMatch.pendingRequests + appMatch.inProgressRequests} Pending`}
+                                        </span>
+                                      );
+                                    })()}
                                   </div>
                                   <div className="text-[10px] text-slate-500 font-mono italic">{p.id}</div>
                                   {p.doctor && <div className="text-[9px] text-teal-600 font-extrabold uppercase mt-1 leading-none tracking-wide bg-teal-500/5 px-2 py-1 rounded-md border border-teal-500/10 inline-block">Dr. {p.doctor}</div>}
@@ -5402,7 +5481,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {(currentView === 'opd' || currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
+            {(currentView === 'approvals' || currentView === 'procedures' || currentView === 'opd' || currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
               <motion.div 
                 key="role-workflows"
                 initial={{ opacity: 0, y: 10 }}
@@ -6027,6 +6106,48 @@ export default function App() {
                   </section>
                 )}
 
+                {/* Section: Insurance Approval Bottlenecks */}
+                {currentView === 'approvals' && (
+                  <section className="space-y-6 animate-fade-in">
+                    <ErrorBoundary
+                      fallbackTitle="Approvals View Unavailable"
+                      fallbackSubtitle="Could not load insurance approval bottlenecks. Please retry."
+                      onReset={() => setCurrentView('approvals')}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <InsuranceApprovalsView
+                          initialData={approvalsData}
+                          onDataLoaded={(d) => setApprovalsData(d)}
+                          onSelectPatientByMrn={(mrn, room) => {
+                            const clean = String(mrn || '').replace(/[^0-9]/g, '').replace(/^0+/, '');
+                            const found = patients.find(
+                              (pt) =>
+                                (clean && String(pt.id || '').replace(/[^0-9]/g, '').replace(/^0+/, '') === clean) ||
+                                (room && String(pt.room || '').trim().toLowerCase() === String(room).trim().toLowerCase())
+                            );
+                            if (found) setSelectedPatient(found);
+                          }}
+                        />
+                      </React.Suspense>
+                    </ErrorBoundary>
+                  </section>
+                )}
+
+                {/* Section: Cath Lab & Endoscopy Schedules */}
+                {currentView === 'procedures' && (
+                  <section className="space-y-6 animate-fade-in">
+                    <ErrorBoundary
+                      fallbackTitle="Cath Lab & Endoscopy Schedules Unavailable"
+                      fallbackSubtitle="Could not load Cath Lab and Endoscopy schedules. Please retry."
+                      onReset={() => setCurrentView('procedures')}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <ProceduresScheduleView isVipFn={isVipMatcher} />
+                      </React.Suspense>
+                    </ErrorBoundary>
+                  </section>
+                )}
+
                 {/* Section: User Login Audit Logs */}
                 {currentView === 'audit-logs' && (
                   <ErrorBoundary
@@ -6119,6 +6240,7 @@ export default function App() {
             ? transfersList.find((t) => isClientNameMatch(selectedPatient.name, t.name || '')) || null
             : null
         }
+        approvalMatch={findApprovalForPatient(selectedPatient)}
         isVip={selectedPatient ? isPatientVipClient(selectedPatient.name, vipCases) : false}
         onCopySummary={handleCopyPatientSummary}
         onAddVip={handleQuickAddVip}

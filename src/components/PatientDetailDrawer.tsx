@@ -12,9 +12,10 @@ import {
   Copy,
   LogOut,
   Building2,
+  ShieldAlert,
 } from 'lucide-react';
 import { PatientRow, getGroup, isCashPayment } from '../logic/occupancy';
-import { PatientTransferRecord } from '../types';
+import { InsuranceApprovalItem, PatientTransferRecord } from '../types';
 
 interface PatientDetailDrawerProps {
   patient: PatientRow | null;
@@ -22,6 +23,7 @@ interface PatientDetailDrawerProps {
   orMatch?: any | null;
   losMatch?: any | null;
   transferMatch?: PatientTransferRecord | null;
+  approvalMatch?: InsuranceApprovalItem | null;
   isVip?: boolean;
   onCopySummary: (patient: PatientRow) => void;
   onAddVip?: (patient: PatientRow) => void;
@@ -35,6 +37,7 @@ export const PatientDetailDrawer: React.FC<PatientDetailDrawerProps> = ({
   orMatch,
   losMatch,
   transferMatch,
+  approvalMatch,
   isVip,
   onCopySummary,
   onAddVip,
@@ -172,6 +175,49 @@ export const PatientDetailDrawer: React.FC<PatientDetailDrawerProps> = ({
           )}
 
           {/* OR Schedule Cross-Reference */}
+          {/* Insurance Approvals Cross-Reference */}
+          {approvalMatch && (
+            <div
+              className={`p-4 rounded-xl border space-y-2 ${
+                approvalMatch.severity === 'critical'
+                  ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/50 dark:bg-rose-950/25'
+                  : approvalMatch.severity === 'warning'
+                  ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/25'
+                  : 'border-slate-200 dark:border-emerald-500/20 bg-slate-50/60 dark:bg-[#142924]'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                  <ShieldAlert
+                    className={`w-4 h-4 ${
+                      approvalMatch.severity === 'critical'
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : approvalMatch.severity === 'warning'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-emerald-600 dark:text-emerald-400'
+                    }`}
+                  />
+                  Insurance Approvals
+                </span>
+                <span className="text-[11px] font-mono font-bold tabular-nums text-slate-700 dark:text-slate-200">
+                  {approvalMatch.rejectedRequests} rej · {approvalMatch.pendingRequests + approvalMatch.inProgressRequests} open · {approvalMatch.closedRequests} done
+                </span>
+              </div>
+              <div className="text-xs text-slate-700 dark:text-slate-200 font-medium">
+                {approvalMatch.contractor}
+                {approvalMatch.agentName ? ` · Agent: ${approvalMatch.agentName}` : ''}
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                Status: {approvalMatch.status || '—'} · Uploaded: {approvalMatch.uploadedApprovals}
+              </div>
+              {approvalMatch.invoiceComment && (
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 bg-white/70 dark:bg-[#0b1815]/60 rounded-lg p-2 border border-slate-200/70 dark:border-emerald-500/15">
+                  {approvalMatch.invoiceComment}
+                </p>
+              )}
+            </div>
+          )}
+
           {orMatch && (
             <div className="p-4 rounded-xl border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/50 dark:bg-indigo-950/30 space-y-1.5">
               <div className="flex items-center justify-between">

@@ -43,6 +43,7 @@ import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
+import { computeFeedFreshness, enrichOpdLiveWithScheduleCapacity } from './server/newFeedsLogic.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
 import { isCompanionBed, isNonInpatientRoomForOR, hasConflictingRealMrns } from './server/nameUtils.js';
 import {
@@ -15836,6 +15837,119 @@ app.get('/api/reports/or_over_list_refined', async (req, res) => {
   } catch (error: any) {
     console.error('Refined Over List Report Error:', error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Isolated On-Premises Feeds (feeds/*): Read-Only Cached Endpoints ─────────
+// Completely isolated from state/* hydration, saveData(), /api/reset, and daily rollovers.
+// Uses 2-stage timestamp check (~150 bytes) + 30s in-memory TTL to minimize Supabase egress.
+const isolatedFeedCache: Record<string, { data: any; updatedAt: string | null; checkedAtMs: number }> = {};
+
+async function readIsolatedFeedNode(feedPath: string, force: boolean = false): Promise<{ data: any; updatedAt: string | null }> {
+  const now = Date.now();
+  const cached = isolatedFeedCache[feedPath];
+  if (!force && cached && now - cached.checkedAtMs < 30_000) {
+    return { data: cached.data, updatedAt: cached.updatedAt };
+  }
+  if (!supabaseAdmin) {
+    return { data: cached?.data ?? null, updatedAt: cached?.updatedAt ?? null };
+  }
+  try {
+    const metaRes = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('updated_at')
+      .eq('path', feedPath)
+      .maybeSingle();
+
+    const cloudTs = metaRes.data?.updated_at ? String(metaRes.data.updated_at) : null;
+    if (!cloudTs) {
+      isolatedFeedCache[feedPath] = { data: null, updatedAt: null, checkedAtMs: now };
+      return { data: null, updatedAt: null };
+    }
+    if (!force && cached && cached.data !== null && cached.updatedAt === cloudTs) {
+      cached.checkedAtMs = now;
+      return { data: cached.data, updatedAt: cached.updatedAt };
+    }
+
+    const fullRes = await supabaseAdmin
+      .from('rtdb_nodes')
+      .select('data, updated_at')
+      .eq('path', feedPath)
+      .maybeSingle();
+
+    const payload = fullRes.data?.data ?? null;
+    const finalTs = fullRes.data?.updated_at ? String(fullRes.data.updated_at) : cloudTs;
+    isolatedFeedCache[feedPath] = { data: payload, updatedAt: finalTs, checkedAtMs: now };
+    return { data: payload, updatedAt: finalTs };
+  } catch (err) {
+    console.warn(`[Feeds] Read notice for ${feedPath}:`, err);
+    return { data: cached?.data ?? null, updatedAt: cached?.updatedAt ?? null };
+  }
+}
+
+app.get('/api/approvals/data', async (req, res) => {
+  try {
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    const { data, updatedAt } = await readIsolatedFeedNode('feeds/insurance_approvals', force);
+    if (!data) {
+      return res.json({ available: false, data: null, updatedAt: null, isStale: true });
+    }
+    const ts = data.updatedAt || updatedAt;
+    const { isStale, ageMinutes } = computeFeedFreshness(ts, 90);
+    return res.json({
+      available: true,
+      data: { ...data, updatedAt: ts, isStale },
+      updatedAt: ts,
+      isStale,
+      ageMinutes,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to read insurance approvals feed' });
+  }
+});
+
+app.get('/api/opd/live', async (req, res) => {
+  try {
+    if (!isServerHydrated) {
+      try { await loadData(); } catch (_) {}
+    }
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    const { data, updatedAt } = await readIsolatedFeedNode('feeds/opd_live', force);
+    if (!data) {
+      return res.json({ available: false, data: null, updatedAt: null, isStale: true });
+    }
+    const ts = data.updatedAt || updatedAt;
+    const { isStale, ageMinutes } = computeFeedFreshness(ts, 90);
+    const enriched = enrichOpdLiveWithScheduleCapacity(data, cumulativeOPDList || []);
+    return res.json({
+      available: true,
+      data: enriched ? { ...enriched, updatedAt: ts, isStale } : null,
+      updatedAt: ts,
+      isStale,
+      ageMinutes,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to read live OPD feed' });
+  }
+});
+
+app.get('/api/procedures/data', async (req, res) => {
+  try {
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    const [cathRes, endoRes] = await Promise.all([
+      readIsolatedFeedNode('feeds/cathlab_list', force),
+      readIsolatedFeedNode('feeds/endoscopy_list', force),
+    ]);
+    const cathTs = cathRes.data?.updatedAt || cathRes.updatedAt;
+    const endoTs = endoRes.data?.updatedAt || endoRes.updatedAt;
+    const cathFresh = computeFeedFreshness(cathTs, 240);
+    const endoFresh = computeFeedFreshness(endoTs, 240);
+    return res.json({
+      cathlab: cathRes.data ? { ...cathRes.data, updatedAt: cathTs, isStale: cathFresh.isStale } : null,
+      endoscopy: endoRes.data ? { ...endoRes.data, updatedAt: endoTs, isStale: endoFresh.isStale } : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to read procedures schedule feeds' });
   }
 });
 
