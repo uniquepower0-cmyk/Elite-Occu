@@ -3,20 +3,12 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
-import * as xlsx from 'xlsx';
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import sharp from 'sharp';
 import { greenApiService } from './server/services/greenApiService.js';
 import { telegramBotService, type TelegramBotHandlers } from './server/services/telegramBotService.js';
-import * as sheetGen from './server/services/sheetImageGenerator.js';
 import { createClient } from '@supabase/supabase-js';
-import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import admin from 'firebase-admin';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
-import { getDatabase as getAdminDatabase } from 'firebase-admin/database';
 import {
   getCairoDateTime,
   getCairoDateFromTimestamp,
@@ -44,7 +36,6 @@ import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } 
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
 import { computeFeedFreshness, dedupeProcedureCases, enrichOpdLiveWithScheduleCapacity } from './server/newFeedsLogic.js';
-import { addRefinedProcedureSheet } from './server/procedureExcelGenerator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
 import { isCompanionBed, isNonInpatientRoomForOR, hasConflictingRealMrns } from './server/nameUtils.js';
 import {
@@ -63,13 +54,17 @@ import {
 } from './server/vipDischargeNotifier.js';
 import { classifyInOutFallbackSafe, getORDateContextMode } from './server/orStatusHelpers.js';
 import {
-  parseOPDDoctorsExcel,
-  getOPDSpecialtyStats,
-  addRefinedOPDScheduleSheet,
-  addRefinedOPDTimelineSheet,
-  addOPDHousingSheet,
-  type OPDClinicSession,
-} from './server/opdLogic.js';
+  normalizeArabicNameCached,
+  getNormalizedWordsCached,
+  isNameMatchFast,
+  createManualDischargeIndex,
+  createVipMatcherIndex,
+  STATE_AND_APP_SETTINGS_PATHS,
+  getCoreFirstWord,
+  type ManualDischargeIndex,
+  type VipMatcherIndex,
+} from './server/cpuOptimizationHelpers.js';
+import type { OPDClinicSession } from './server/opdLogic.js';
 
 process.env.DOTENV_CONFIG_QUIET = 'true';
 dotenv.config({ quiet: true });
@@ -116,60 +111,118 @@ export const supabaseAdmin = createClient(
 console.log(`Supabase Client initialized successfully with endpoint: ${SUPABASE_URL}`);
 
 
-// --- MONKEY PATCH EXCELJS FOR A4 PRINT PREPARATION (COLUMN-TO-COLUMN) ---
-const originalAddWorksheet = ExcelJS.Workbook.prototype.addWorksheet;
-(ExcelJS.Workbook.prototype as any).addWorksheet = function (name: string, options: any = {}) {
-  // Identify if this worksheet is for medical plans (traditional or refined) or VIP cases medical updates.
-  // We match general group sheet names ("ICU", "VIP", "SICU", etc.) and room-range patterns as well as explicit flags on "this" (the Workbook).
-  const isMedicalPlan = (this as any).isMedicalPlans === true ||
-                        name === 'VIP Cases Medical Updates' ||
-                        ['ICU', 'VIP', 'SICU', 'CCU', 'NICU', 'PICU', 'Others', 'Medical Plans', 'Medical Plans Refined'].includes(name) ||
-                        /^\d+-\d+$/.test(name) ||
-                        /^Floor \d+$/.test(name);
+// --- LAZY LOADERS FOR HEAVY LIBRARIES (avoids ~300ms+ local / ~1.5s Vercel cold-start CPU on non-report routes) ---
+let _excelJsModulePromise: Promise<typeof import('exceljs')> | null = null;
+let _excelJsPatched = false;
 
-  const orientation = isMedicalPlan ? 'landscape' : 'portrait';
+async function createExcelWorkbook(): Promise<ExcelJS.Workbook> {
+  if (!_excelJsModulePromise) {
+    _excelJsModulePromise = import('exceljs');
+  }
+  const mod = await _excelJsModulePromise;
+  const ExcelJSMod = ((mod as any).default || mod) as typeof import('exceljs');
+  if (!_excelJsPatched) {
+    _excelJsPatched = true;
+    const originalAddWorksheet = ExcelJSMod.Workbook.prototype.addWorksheet;
+    (ExcelJSMod.Workbook.prototype as any).addWorksheet = function (name: string, options: any = {}) {
+      const isMedicalPlan = (this as any).isMedicalPlans === true ||
+                            name === 'VIP Cases Medical Updates' ||
+                            ['ICU', 'VIP', 'SICU', 'CCU', 'NICU', 'PICU', 'Others', 'Medical Plans', 'Medical Plans Refined'].includes(name) ||
+                            /^\d+-\d+$/.test(name) ||
+                            /^Floor \d+$/.test(name);
 
-  const defaultPageSetup = {
-    paperSize: 9, // A4 Paper size
-    orientation: orientation,
-    fitToPage: true,
-    fitToWidth: 1, // Fit all columns to page width
-    fitToHeight: 0, // Let rows spill over naturally without scaling height
-    margins: {
-      left: 0.25,
-      right: 0.25,
-      top: 0.25,
-      bottom: 0.25,
-      header: 0.15,
-      footer: 0.15
-    }
-  };
+      const orientation = isMedicalPlan ? 'landscape' : 'portrait';
 
-  options.pageSetup = {
-    ...defaultPageSetup,
-    ...options.pageSetup,
-    margins: {
-      ...defaultPageSetup.margins,
-      ...(options.pageSetup?.margins || {})
-    }
-  };
+      const defaultPageSetup = {
+        paperSize: 9, // A4 Paper size
+        orientation: orientation,
+        fitToPage: true,
+        fitToWidth: 1, // Fit all columns to page width
+        fitToHeight: 0, // Let rows spill over naturally without scaling height
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.25,
+          bottom: 0.25,
+          header: 0.15,
+          footer: 0.15
+        }
+      };
 
-  // Ensure grid lines are visible during printing and layout views
-  if (!options.views) {
-    options.views = [{ showGridLines: true }];
-  } else {
-    options.views.forEach((view: any) => {
-      view.showGridLines = view.showGridLines !== false;
+      options.pageSetup = {
+        ...defaultPageSetup,
+        ...options.pageSetup,
+        margins: {
+          ...defaultPageSetup.margins,
+          ...(options.pageSetup?.margins || {})
+        }
+      };
+
+      if (!options.views) {
+        options.views = [{ showGridLines: true }];
+      } else {
+        options.views.forEach((view: any) => {
+          view.showGridLines = view.showGridLines !== false;
+        });
+      }
+
+      return originalAddWorksheet.call(this, name, options);
+    };
+  }
+  return new ExcelJSMod.Workbook();
+}
+
+let _xlsxModulePromise: Promise<typeof import('xlsx')> | null = null;
+async function getXlsx() {
+  if (!_xlsxModulePromise) {
+    _xlsxModulePromise = import('xlsx');
+  }
+  const mod = await _xlsxModulePromise;
+  return (mod as any).default || mod;
+}
+
+let _sharpModulePromise: Promise<any> | null = null;
+async function getSharp() {
+  if (!_sharpModulePromise) {
+    _sharpModulePromise = import('sharp').then((m) => {
+      const s = (m as any).default || m;
+      if (process.env.VERCEL && typeof s?.concurrency === 'function') {
+        try { s.concurrency(2); } catch (_) {}
+      }
+      return s;
     });
   }
+  return _sharpModulePromise;
+}
 
-  return originalAddWorksheet.call(this, name, options);
-};
+let _sheetGenPromise: Promise<typeof import('./server/services/sheetImageGenerator.js')> | null = null;
+function getSheetGen() {
+  if (!_sheetGenPromise) {
+    _sheetGenPromise = import('./server/services/sheetImageGenerator.js');
+  }
+  return _sheetGenPromise;
+}
+
+let _opdLogicPromise: Promise<typeof import('./server/opdLogic.js')> | null = null;
+function getOpdLogic() {
+  if (!_opdLogicPromise) {
+    _opdLogicPromise = import('./server/opdLogic.js');
+  }
+  return _opdLogicPromise;
+}
+
+let _procedureExcelGenPromise: Promise<typeof import('./server/procedureExcelGenerator.js')> | null = null;
+function getProcedureExcelGen() {
+  if (!_procedureExcelGenPromise) {
+    _procedureExcelGenPromise = import('./server/procedureExcelGenerator.js');
+  }
+  return _procedureExcelGenPromise;
+}
 
 const __filename = process.argv[1] || path.join(process.cwd(), 'server.ts');
 const __dirname = path.dirname(__filename);
 
-// Initialize Firebase Admin for the backend Server
+// Lazy-initialize Firebase Admin ONLY when local service account files exist (never on Vercel)
 const candidateConfigPaths = [
   path.join(process.cwd(), 'firebase-applet-config.json'),
   path.join(__dirname, 'firebase-applet-config.json'),
@@ -181,46 +234,57 @@ const candidateServiceAccountPaths = [
   path.join(process.cwd(), '..', 'service-account-key.json')
 ];
 
-const CONFIG_PATH = candidateConfigPaths.find(p => fs.existsSync(p));
-const SERVICE_ACCOUNT_PATH = candidateServiceAccountPaths.find(p => fs.existsSync(p));
+const CONFIG_PATH = !process.env.VERCEL ? candidateConfigPaths.find(p => fs.existsSync(p)) : undefined;
+const SERVICE_ACCOUNT_PATH = !process.env.VERCEL ? candidateServiceAccountPaths.find(p => fs.existsSync(p)) : undefined;
 
 let adminDb: any = null;
 let adminRTDB: any = null;
 
 if (CONFIG_PATH && SERVICE_ACCOUNT_PATH) {
-  try {
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8'));
-    
-    let adminApp;
-    if (admin.apps.length === 0) {
-      adminApp = admin.initializeApp({
-        projectId: config.projectId,
-        credential: admin.credential.cert(serviceAccount),
-        databaseURL: `https://${config.projectId}-default-rtdb.firebaseio.com`
-      });
-    } else {
-      adminApp = admin.apps[0];
-    }
-    
-    if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
-      adminDb = getAdminFirestore(adminApp, config.firestoreDatabaseId);
-    } else {
-      adminDb = getAdminFirestore(adminApp);
-    }
-
+  Promise.all([
+    import('firebase-admin'),
+    import('firebase-admin/firestore'),
+    import('firebase-admin/database'),
+  ]).then(([adminMod, firestoreMod, dbMod]) => {
     try {
-      adminRTDB = getAdminDatabase(adminApp);
-    } catch (rtdbErr) {
-      console.error("Failed to initialize Firebase Realtime Database in Admin SDK:", rtdbErr);
-    }
+      const admin = (adminMod as any).default || adminMod;
+      const getAdminFirestore = firestoreMod.getFirestore;
+      const getAdminDatabase = dbMod.getDatabase;
+      const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+      const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8'));
 
-    console.log("Firebase Admin SDK successfully initialized in backend using database:", config.firestoreDatabaseId || 'default');
-  } catch (err) {
-    console.error("Failed to initialize Firebase Admin in backend:", err);
-  }
+      let adminApp;
+      if (admin.apps.length === 0) {
+        adminApp = admin.initializeApp({
+          projectId: config.projectId,
+          credential: admin.credential.cert(serviceAccount),
+          databaseURL: `https://${config.projectId}-default-rtdb.firebaseio.com`
+        });
+      } else {
+        adminApp = admin.apps[0];
+      }
+
+      if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
+        adminDb = getAdminFirestore(adminApp, config.firestoreDatabaseId);
+      } else {
+        adminDb = getAdminFirestore(adminApp);
+      }
+
+      try {
+        adminRTDB = getAdminDatabase(adminApp);
+      } catch (rtdbErr) {
+        console.error("Failed to initialize Firebase Realtime Database in Admin SDK:", rtdbErr);
+      }
+
+      console.log("Firebase Admin SDK successfully initialized in backend using database:", config.firestoreDatabaseId || 'default');
+    } catch (err) {
+      console.error("Failed to initialize Firebase Admin in backend:", err);
+    }
+  }).catch((err) => {
+    console.error("Failed to load Firebase Admin modules:", err);
+  });
 } else {
-  console.info("[Firebase Admin] No service-account-key.json or firebase-applet-config.json detected. Running with Supabase/local persistent store.");
+  console.info("[Firebase Admin] Skipped on serverless / no service-account-key.json. Running with Supabase persistent store.");
 }
 
 // Register 30-day rolling retention hooks:
@@ -282,6 +346,9 @@ function getCustomHeaderBgInfo() {
     path.join(WRITABLE_BASE, 'header_bg.png'),
     path.join(WRITABLE_BASE, 'header_bg.jpg'),
     path.join(WRITABLE_BASE, 'header_bg.jpeg'),
+    // Prefer lightweight 13KB header_bg.webp (2.2x faster sharp decode CPU) over 322KB header_bg.png
+    path.join(process.cwd(), 'header_bg.webp'),
+    path.join(process.cwd(), 'public', 'header_bg.webp'),
     path.join(process.cwd(), 'header_bg.png'),
     path.join(process.cwd(), 'header_bg.jpg'),
     path.join(process.cwd(), 'header_bg.jpeg'),
@@ -402,31 +469,56 @@ async function ensureVipCasesLoaded(): Promise<string> {
   return vipCasesText;
 }
 
+let cachedManualDiscIndex: ManualDischargeIndex | null = null;
+let cachedManualNamesRef: string[] | null = null;
+let cachedManualNamesLen = -1;
+let cachedManualNamesLast = '';
+let cachedCumDiscRef: any[] | null = null;
+let cachedCumDiscLen = -1;
+let cachedCumDiscLastKey = '';
+let cachedCumDiscManualCount = -1;
+
+function invalidateManualDischargeIndex(): void {
+  cachedManualDiscIndex = null;
+}
+
+function getManualDischargeIndex(): ManualDischargeIndex {
+  const mList = manuallyDischargedNames || [];
+  const dList = cumulativeDischarged || [];
+  const mLast = mList.length > 0 ? String(mList[mList.length - 1] || '') : '';
+  const dLast = dList.length > 0 ? `${dList[dList.length - 1]?.name || ''}|${dList[dList.length - 1]?.dischargeType || ''}` : '';
+  let manualCount = 0;
+  for (let i = 0; i < dList.length; i++) {
+    if (dList[i]?.dischargeType === 'manual') manualCount++;
+  }
+
+  if (
+    cachedManualDiscIndex &&
+    cachedManualNamesRef === mList &&
+    cachedManualNamesLen === mList.length &&
+    cachedManualNamesLast === mLast &&
+    cachedCumDiscRef === dList &&
+    cachedCumDiscLen === dList.length &&
+    cachedCumDiscLastKey === dLast &&
+    cachedCumDiscManualCount === manualCount
+  ) {
+    return cachedManualDiscIndex;
+  }
+
+  cachedManualDiscIndex = createManualDischargeIndex(mList, dList, parseDateToTimestamp);
+  cachedManualNamesRef = mList;
+  cachedManualNamesLen = mList.length;
+  cachedManualNamesLast = mLast;
+  cachedCumDiscRef = dList;
+  cachedCumDiscLen = dList.length;
+  cachedCumDiscLastKey = dLast;
+  cachedCumDiscManualCount = manualCount;
+  return cachedManualDiscIndex;
+}
+
 function isManuallyDischarged(patientName: string, admissionDateVal?: any): boolean {
   if (!patientName) return false;
-  const isInNames = !!(manuallyDischargedNames && manuallyDischargedNames.length > 0 && manuallyDischargedNames.some(mName => isNameMatch(mName, patientName)));
-  const matchingDischarges = (cumulativeDischarged || []).filter(p =>
-    (p.dischargeType === 'manual' || (p.name && manuallyDischargedNames.some(m => isNameMatch(m, p.name)))) &&
-    isNameMatch(p.name, patientName)
-  );
-  if (!isInNames && matchingDischarges.length === 0) return false;
-
-  if (admissionDateVal && matchingDischarges.length > 0) {
-    const admTs = parseDateToTimestamp(admissionDateVal);
-    if (admTs !== null) {
-      let latestDiscTs: number | null = null;
-      for (const d of matchingDischarges) {
-        const dt = parseDateToTimestamp(d.dischargeDate || d.date);
-        if (dt !== null && (latestDiscTs === null || dt > latestDiscTs)) {
-          latestDiscTs = dt;
-        }
-      }
-      if (latestDiscTs !== null && admTs > latestDiscTs) {
-        return false;
-      }
-    }
-  }
-  return true;
+  return getManualDischargeIndex().isManuallyDischarged(patientName, admissionDateVal);
 }
 
 function normalizeRoom(roomStr: string): string {
@@ -1290,54 +1382,14 @@ function extractVipNames(text: string): string[] {
   return names;
 }
 
-// Comprehensive Arabic normalizer with diacritic removal and punctuation stripping
+// Comprehensive Arabic normalizer with memoized diacritic removal and punctuation stripping
 function normalizeArabicName(name: string): string {
-  if (!name) return "";
-  let clean = name.toLowerCase().trim();
-  // Strip common Arabic diacritics (tashkeel)
-  clean = clean.replace(/[\u064B-\u065F]/g, "");
-  // Strip any non-letter and non-space characters (compatible regex)
-  clean = clean.replace(/[^a-zA-Z\u0600-\u06FF\s]/g, " ");
-  // Collapse whitespace
-  clean = clean.replace(/\s+/g, " ").trim();
-
-  // Strip leading "ابن", "ابنه", "بنت", "طفل", "طفله", "حاله", "حالة" from the clean name string
-  clean = clean.replace(/^(ابن|ابنه|بنت|طفل|طفله|حاله|حالة)\s+/, '');
-
-  return clean
-    .replace(/[أإآٱ]/g, 'ا')
-    .replace(/ة/g, 'ه')
-    .replace(/[ىيِ]/g, 'ي')
-    .replace(/ؤ/g, 'و')
-    .replace(/ئ/g, 'ي')
-    .replace(/\s+/g, ' ')
-    // Join common Arabic compounds to ensure unified parts
-    .replace(/(?:^|\s)عبد\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' عبد' + p1 : 'عبد' + p1)
-    .replace(/(?:^|\s)ابو\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ابو' + p1 : 'ابو' + p1)
-    .replace(/(?:^|\s)ام\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ام' + p1 : 'ام' + p1)
-    .replace(/(?:^|\s)ابن\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' ابن' + p1 : 'ابن' + p1)
-    .replace(/(?:^|\s)بن\s+(\S+)/g, (match, p1) => match.startsWith(' ') ? ' بن' + p1 : 'بن' + p1)
-    .replace(/(?:^|\s)(\S+)\s+الدين(?=\s|$)/g, (match, p1) => match.startsWith(' ') ? ' ' + p1 + 'الدين' : p1 + 'الدين');
+  return normalizeArabicNameCached(name);
 }
 
-// Get normalized list of words for robust matching
+// Get normalized list of words for robust matching (memoized)
 function getNormalizedWords(name: string): string[] {
-  const normalized = normalizeArabicName(name);
-  const titles = ["الافندي", "افندي", "الدكتور", "دكتور", "الدكتوره", "دكتوره", "الاستاذ", "استاذ", "المهندس", "مهندس", "الشيخ", "شيخ", "الحاج", "حاج", "السيد", "سيد"];
-  let words = normalized.split(' ').filter(w => w.length >= 2);
-  
-  // Skip leading titles if followed by other words
-  while (words.length > 1 && titles.includes(words[0])) {
-    words.shift();
-  }
-
-  return words.map(w => {
-    // Strip leading 'ال' (Al-) prefix safely if word is long enough
-    if (w.startsWith('ال') && w.length > 3) {
-      return w.substring(2);
-    }
-    return w;
-  });
+  return getNormalizedWordsCached(name);
 }
 
 // LCS function
@@ -1358,95 +1410,21 @@ function getLcsLength(words1: string[], words2: string[]): number {
   return dp[m][n];
 }
 
-// Arab-friendly soft comparison requiring intelligent matches
+let cachedVipMatcherText: string | null = null;
+let cachedVipMatcher: VipMatcherIndex | null = null;
+
+// Arab-friendly soft comparison requiring intelligent matches (O(1) first-word indexed)
 function isPatientVip(patientName: string): boolean {
   if (!patientName || !vipCasesText) return false;
-  
-  const pWords = getNormalizedWords(patientName);
-  if (pWords.length < 2) return false;
-
-  const vipNamesList = extractVipNames(vipCasesText);
-
-  for (const name of vipNamesList) {
-    const nWords = getNormalizedWords(name);
-    if (nWords.length < 2) continue;
-
-    // First name must match (after normalization and stripping)
-    if (pWords[0] !== nWords[0]) continue;
-
-    const shorterLen = Math.min(pWords.length, nWords.length);
-    const lcsLen = getLcsLength(pWords, nWords);
-
-    // Exact sequential subsequence match: the shorter name's words must fully match with order preserved
-    if (lcsLen === shorterLen && lcsLen >= 2) {
-      return true;
-    }
+  if (cachedVipMatcherText !== vipCasesText || !cachedVipMatcher) {
+    cachedVipMatcherText = vipCasesText;
+    cachedVipMatcher = createVipMatcherIndex(vipCasesText);
   }
-  return false;
+  return cachedVipMatcher.isVip(patientName);
 }
 
 function isNameMatch(nameA: string, nameB: string): boolean {
-  if (!nameA || !nameB) return false;
-  
-  const lowA = String(nameA).toLowerCase().trim();
-  const lowB = String(nameB).toLowerCase().trim();
-  const isPascalA = lowA.includes("باسكال") || lowA.includes("pascal");
-  const isJeanA = lowA.includes("jeaneldie") || lowA.includes("nzola") || lowA.includes("mpaka");
-  const isPascalB = lowB.includes("باسكال") || lowB.includes("pascal");
-  const isJeanB = lowB.includes("jeaneldie") || lowB.includes("nzola") || lowB.includes("mpaka");
-
-  if ((isPascalA && isJeanB) || (isJeanA && isPascalB)) {
-    return true;
-  }
-
-  const normA = normalizeArabicName(nameA);
-  const normB = normalizeArabicName(nameB);
-  if (normA === normB) return true;
-  
-  const wordsA = getNormalizedWords(nameA);
-  const wordsB = getNormalizedWords(nameB);
-  
-  if (wordsA.length === 0 || wordsB.length === 0) return false;
-
-  const babyPrefixes = ["ابن", "ابنه", "طفل", "طفله", "مولود", "مولوده", "baby", "twin"];
-  const isBabyA = babyPrefixes.includes(wordsA[0]);
-  const isBabyB = babyPrefixes.includes(wordsB[0]);
-
-  const coreWordsA = isBabyA ? wordsA.slice(1) : wordsA;
-  const coreWordsB = isBabyB ? wordsB.slice(1) : wordsB;
-
-  if (coreWordsA.length === 0 || coreWordsB.length === 0) return false;
-
-  // Crucial: First given name MUST match! Distinct first names mean different patients!
-  if (coreWordsA[0] !== coreWordsB[0]) {
-    return false;
-  }
-
-  const minCoreSize = Math.min(coreWordsA.length, coreWordsB.length);
-  const setA = new Set(coreWordsA);
-  const setB = new Set(coreWordsB);
-  const commonWords = [...setA].filter(w => setB.has(w));
-
-  // Intelligent sub-phrase match for 2 words (e.g. "روان اسامه" and "روان اسامه حسن علي")
-  if (minCoreSize === 2) {
-    if (coreWordsA[0] === coreWordsB[0] && coreWordsA[1] === coreWordsB[1]) {
-      return true;
-    }
-  }
-
-  // 3 or more words: first name must match
-  if (minCoreSize >= 3) {
-    // If father names match:
-    if (coreWordsA[0] === coreWordsB[0] && coreWordsA[1] === coreWordsB[1] && commonWords.length >= 3 && (commonWords.length / minCoreSize) >= 0.75) {
-      return true;
-    }
-    // If father name was omitted or skipped, require high overlap and at least 3 matching words
-    if (coreWordsA[0] === coreWordsB[0] && commonWords.length >= 3 && (commonWords.length / minCoreSize) >= 0.85) {
-      return true;
-    }
-  }
-
-  return normA === normB;
+  return isNameMatchFast(nameA, nameB);
 }
 
 function isPatientMatch(
@@ -1560,19 +1538,11 @@ function isToday(dateStr: any, referenceDate?: string | Date | null): boolean {
     }
   }
 
-  // Check against today's calendar date in Cairo timezone
-  const timezones = ["Africa/Cairo"];
-  for (const tz of timezones) {
-    try {
-      const today = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
-      const year = today.getFullYear();
-      const month = today.getMonth() + 1;
-      const day = today.getDate();
-
-      if (inputComp.y === year && inputComp.m === month && inputComp.d === day) {
-        return true;
-      }
-    } catch (e) {}
+  // Check against today's calendar date in Cairo timezone using cached getCairoDateTime()
+  const cairoToday = getCairoDateTime().dateStr;
+  const [cy, cm, cd] = cairoToday.split('-').map(Number);
+  if (inputComp.y === cy && inputComp.m === cm && inputComp.d === cd) {
+    return true;
   }
 
   return false;
@@ -1639,6 +1609,8 @@ function isClinicalProgressNote(val: string): boolean {
 
 const knownPatientMrnByName = new Map<string, string>();
 const knownPatientList: { normName: string; rawName: string; mrn: string }[] = [];
+const knownPatientByFirstWord = new Map<string, { normName: string; rawName: string; mrn: string }[]>();
+const knownMrnMissCache = new Set<string>();
 let lastKnownPatientsFetchTs = 0;
 
 function isValidRealMrn(val: any): boolean {
@@ -1658,9 +1630,23 @@ function registerKnownPatientMrn(name: any, mrn: any): void {
   if (/^\d+$/.test(nameStr) || isClinicalProgressNote(nameStr)) return;
   const norm = normalizeArabicName(nameStr);
   if (!norm || norm.length < 3) return;
+  const alreadyKnown = knownPatientMrnByName.has(norm);
   knownPatientMrnByName.set(norm, mrnStr);
-  if (!knownPatientList.some(item => item.normName === norm)) {
-    knownPatientList.push({ normName: norm, rawName: nameStr, mrn: mrnStr });
+  if (!alreadyKnown) {
+    const entry = { normName: norm, rawName: nameStr, mrn: mrnStr };
+    knownPatientList.push(entry);
+    const fw = getCoreFirstWord(nameStr);
+    if (fw) {
+      let bucket = knownPatientByFirstWord.get(fw);
+      if (!bucket) {
+        bucket = [];
+        knownPatientByFirstWord.set(fw, bucket);
+      }
+      bucket.push(entry);
+    }
+    if (knownMrnMissCache.size > 0) {
+      knownMrnMissCache.clear();
+    }
   }
 }
 
@@ -1744,10 +1730,12 @@ function resolveKnownPatientMrn(name: any, room: any = "", rawMrn: any = ""): st
   if (!nameStr) {
     return cleanedRaw || "";
   }
-  harvestKnownMrnsFromMemory();
   const norm = normalizeArabicName(nameStr);
   if (norm && knownPatientMrnByName.has(norm)) {
     return knownPatientMrnByName.get(norm)!;
+  }
+  if (norm && knownMrnMissCache.has(norm)) {
+    return buildDeterministicUnknownMrn(nameStr, String(room || ""));
   }
   if (patientRoomRegistry && typeof patientRoomRegistry === "object") {
     for (const k of Object.keys(patientRoomRegistry)) {
@@ -1760,11 +1748,19 @@ function resolveKnownPatientMrn(name: any, room: any = "", rawMrn: any = ""): st
       }
     }
   }
-  for (const entry of knownPatientList) {
-    if (isNameMatch(entry.rawName, nameStr)) {
-      if (norm) knownPatientMrnByName.set(norm, entry.mrn);
-      return entry.mrn;
+  const fw = getCoreFirstWord(nameStr);
+  const bucket = fw ? knownPatientByFirstWord.get(fw) : undefined;
+  if (bucket) {
+    for (const entry of bucket) {
+      if (isNameMatch(entry.rawName, nameStr)) {
+        if (norm) knownPatientMrnByName.set(norm, entry.mrn);
+        return entry.mrn;
+      }
     }
+  }
+  if (norm) {
+    if (knownMrnMissCache.size >= 4000) knownMrnMissCache.clear();
+    knownMrnMissCache.add(norm);
   }
   return buildDeterministicUnknownMrn(nameStr, String(room || ""));
 }
@@ -2978,12 +2974,12 @@ async function executeLoadData(force = false) {
     };
 
     // Query granular state and settings nodes using a 2-stage egress-optimized fetch:
-    // Stage 1: Single combined query for path and updated_at (tiny metadata payload) across state/% and settings/%
+    // Stage 1: Single combined query for path and updated_at across explicit app state & settings paths
+    // (strictly excludes high-frequency settings/sync_runners heartbeats & settings/sync_control so warm fast-path stays intact)
     const sbMetaRes = await supabaseAdmin
       .from('rtdb_nodes')
       .select('path, updated_at')
-      .or('path.like.state/%,path.like.settings/%')
-      .neq('path', 'state/dataset');
+      .in('path', [...STATE_AND_APP_SETTINGS_PATHS]);
 
     if (sbMetaRes.error) {
       console.error('Supabase granular state/settings metadata query error:', sbMetaRes.error);
@@ -3587,6 +3583,7 @@ async function executeLoadData(force = false) {
     console.error('Error during initial daily reset check:', resetErr);
   }
 
+  invalidateOccupancyResponseCache();
   isServerHydrated = true;
 }
 
@@ -4127,6 +4124,7 @@ async function saveData() {
     };
     
     // 1. Save locally fast sync (atomic crash-resilient I/O)
+    invalidateOccupancyResponseCache();
     try { 
       await writeJsonAtomic(DATA_FILE, data);
       console.log('Hospital data saved to local persistence.'); 
@@ -4641,6 +4639,7 @@ async function handleUnifiedUpload(req: any, res: any) {
     console.log('File received:', req.file.originalname, 'Size:', req.file.size);
 
     // Parse the Excel file with formatting preserved
+    const xlsx = await getXlsx();
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true, cellNF: true, cellText: true });
     
     // Find the best sheet (one that has "patient" or "المريض" or "room" or "الغرفة")
@@ -5666,6 +5665,7 @@ app.post('/api/upload-or-list', handleUploadSingle, async (req: any, res) => {
       await loadData();
     }
     await checkEgyptianDailyReset();
+    const xlsx = await getXlsx();
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true, cellNF: true, cellText: true });
     
     if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -6180,6 +6180,7 @@ async function getCompositedHeaderBuffer(
     return headerBufferCache.get(fullCacheKey)!;
   }
 
+  const sharp = await getSharp();
   let bgBuffer: Buffer | null = null;
   if (customBg && fs.existsSync(customBg.path) && fs.statSync(customBg.path).size > 0) {
     try {
@@ -8294,11 +8295,12 @@ function addDebtsSheet(workbook: ExcelJS.Workbook, debts: any[]) {
   sheet.getColumn(10).width = 18;
 }
 
-function getActiveVipCount(): number {
-  if (!hospitalData) return 0;
+function getActiveVipCount(precomputedOccRows?: any[][]): number {
+  if (!hospitalData && !precomputedOccRows) return 0;
   let count = 0;
   // Use getOccupancyRows to map the raw debts sheet columns
-  const dataRows = getOccupancyRows(hospitalData).slice(3);
+  const occSource = precomputedOccRows || getOccupancyRows(hospitalData);
+  const dataRows = occSource.slice(3);
   for (const row of dataRows) {
     if (!row) continue;
     const room = String(row[0] || "").trim();
@@ -8703,6 +8705,23 @@ function getEnrichedOrListForStats(orList: any[], occRows: any[][], dischargedLi
   });
 }
 
+const cumulativeBedCache = new Map<string, { key: string; payload: any; cachedAt: number }>();
+const cumulativeOrCache = new Map<string, { key: string; payload: any; cachedAt: number }>();
+const CUMULATIVE_CACHE_TTL_MS = 30_000;
+
+let cachedOccupancyDataKey: string | null = null;
+let cachedOccupancyDataJson: string | null = null;
+let cachedOccupancyDataEtag: string | null = null;
+
+function invalidateOccupancyResponseCache(): void {
+  cachedOccupancyDataKey = null;
+  cachedOccupancyDataJson = null;
+  cachedOccupancyDataEtag = null;
+  cumulativeBedCache.clear();
+  cumulativeOrCache.clear();
+  invalidateManualDischargeIndex();
+}
+
 app.get('/api/occupancy/data', async (req, res) => {
   // 1. Proactive day-rollover check (vital for sleeping containers and serverless environments)
   try {
@@ -8735,6 +8754,32 @@ app.get('/api/occupancy/data', async (req, res) => {
     return res.status(304).end();
   }
 
+  // Today's Cairo calendar date is the single authoritative source of truth for daily event matching
+  const cairo = getCairoDateTime();
+  const cairoTodayStr = cairo.dateStr;
+
+  const responseCacheKey = [
+    currentEtagTs,
+    cairoTodayStr,
+    hospitalData ? hospitalData.length : -1,
+    previousHospitalData ? previousHospitalData.length : -1,
+    (cumulativeDischarged || []).length,
+    (manuallyDischargedNames || []).length,
+    (cumulativeEntries || []).length,
+    (cumulativeORList || []).length,
+    (cumulativeOPDList || []).length,
+    (cumulativeTransfers || []).length,
+    (vipCasesText || '').length,
+    (earlyDischargeRoomsText || '').length,
+    (pendingDischargePatientsText || '').length,
+    vipDischargeAutomationPaused ? 1 : 0,
+  ].join('|');
+
+  if (!force && cachedOccupancyDataKey === responseCacheKey && cachedOccupancyDataJson && cachedOccupancyDataEtag === currentEtag) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.send(cachedOccupancyDataJson);
+  }
+
   const filterHelper = (list: any[]) => {
     return (list || []).filter(p => {
       const roomVal = p.room || p.colB || "";
@@ -8748,10 +8793,6 @@ app.get('/api/occupancy/data', async (req, res) => {
   const occRows = hospitalData ? getOccupancyRows(hospitalData) : [];
   const enrichedOrList = getEnrichedOrListForStats(cumulativeORList, occRows);
   const activePatients = hospitalData ? extractRawPatientsFromRows(hospitalData) : [];
-
-  // Today's Cairo calendar date is the single authoritative source of truth for daily event matching
-  const cairo = getCairoDateTime();
-  const cairoTodayStr = cairo.dateStr;
 
   const cleanDischarged = (cumulativeDischarged || []).filter(discPt => {
     const isManual = discPt.dischargeType === 'manual' || isManuallyDischarged(discPt.name);
@@ -8837,79 +8878,84 @@ app.get('/api/occupancy/data', async (req, res) => {
     return isToday(tDate, cairoTodayStr) || isToday(tDate) || isToday((tDate || "").split(" ")[0], cairoTodayStr);
   });
 
-  if (!hospitalData) {
-    return res.json({ 
-      rows: [], 
-      previousRows: [], 
-      dischargedRows: allFilteredDischarged,
-      autoDischargedRows,
-      manualDischargedRows,
-      manuallyDischargedNames: activeManualNames,
-      dischargesCount: allFilteredDischarged.length,
-      autoDischargesCount: autoDischargedRows.length,
-      manualDischargesCount: manualDischargedRows.length,
-      entryRows: filterHelper(uniqueTodayEntries),
-      dialysisRows: cleanDialysis,
-      dialysisCount: cleanDialysis.length,
-      debtRows: cumulativeDebts,
-      insuredDebtRows: cumulativeInsuredDebts,
-      medicalPlans: cumulativeMedicalPlans,
-      companionStatus: cumulativeCompanionStatus,
-      losData: cumulativeLOS,
-      vipCasesText: vipCasesText,
-      vipDischargeAutomationPaused: vipDischargeAutomationPaused,
-      earlyDischargeRoomsText: earlyDischargeRoomsText,
-      pendingDischargePatientsText: pendingDischargePatientsText,
-      vipCount: 0,
-      uploadedAt: uploadedAt,
-      hasORList: (cumulativeORList || []).length > 0,
-      orListCount: (cumulativeORList || []).length,
-      orList: enrichedOrList,
-      hasOPDList: (cumulativeOPDList || []).length > 0,
-      opdListDate,
-      opdList: cumulativeOPDList,
-      overList: [],
-      transfers: cleanTransfers,
-      transfersCount: cleanTransfers.length,
-      lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
-    });
-  }
+  const payloadObj = !hospitalData
+    ? {
+        rows: [],
+        previousRows: [],
+        dischargedRows: allFilteredDischarged,
+        autoDischargedRows,
+        manualDischargedRows,
+        manuallyDischargedNames: activeManualNames,
+        dischargesCount: allFilteredDischarged.length,
+        autoDischargesCount: autoDischargedRows.length,
+        manualDischargesCount: manualDischargedRows.length,
+        entryRows: filterHelper(uniqueTodayEntries),
+        dialysisRows: cleanDialysis,
+        dialysisCount: cleanDialysis.length,
+        debtRows: cumulativeDebts,
+        insuredDebtRows: cumulativeInsuredDebts,
+        medicalPlans: cumulativeMedicalPlans,
+        companionStatus: cumulativeCompanionStatus,
+        losData: cumulativeLOS,
+        vipCasesText: vipCasesText,
+        vipDischargeAutomationPaused: vipDischargeAutomationPaused,
+        earlyDischargeRoomsText: earlyDischargeRoomsText,
+        pendingDischargePatientsText: pendingDischargePatientsText,
+        vipCount: 0,
+        uploadedAt: uploadedAt,
+        hasORList: (cumulativeORList || []).length > 0,
+        orListCount: (cumulativeORList || []).length,
+        orList: enrichedOrList,
+        hasOPDList: (cumulativeOPDList || []).length > 0,
+        opdListDate,
+        opdList: cumulativeOPDList,
+        overList: [],
+        transfers: cleanTransfers,
+        transfersCount: cleanTransfers.length,
+        lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
+      }
+    : {
+        rows: occRowsUnfiltered,
+        previousRows: hospitalData ? getOccupancyRowsUnfiltered(previousHospitalData) : [],
+        dischargedRows: allFilteredDischarged,
+        autoDischargedRows,
+        manualDischargedRows,
+        manuallyDischargedNames: activeManualNames,
+        dischargesCount: allFilteredDischarged.length,
+        autoDischargesCount: autoDischargedRows.length,
+        manualDischargesCount: manualDischargedRows.length,
+        entryRows: filterHelper(uniqueTodayEntries),
+        dialysisRows: cleanDialysis,
+        dialysisCount: cleanDialysis.length,
+        debtRows: cumulativeDebts,
+        insuredDebtRows: cumulativeInsuredDebts,
+        medicalPlans: cumulativeMedicalPlans,
+        companionStatus: cumulativeCompanionStatus,
+        losData: cumulativeLOS,
+        vipCasesText: vipCasesText,
+        vipDischargeAutomationPaused: vipDischargeAutomationPaused,
+        earlyDischargeRoomsText: earlyDischargeRoomsText,
+        pendingDischargePatientsText: pendingDischargePatientsText,
+        vipCount: getActiveVipCount(occRows),
+        uploadedAt: uploadedAt,
+        hasORList: (cumulativeORList || []).length > 0,
+        orListCount: (cumulativeORList || []).length,
+        orList: enrichedOrList,
+        hasOPDList: (cumulativeOPDList || []).length > 0,
+        opdListDate,
+        opdList: cumulativeOPDList,
+        overList: getOverListPatients(hospitalData, cumulativeORList, occRowsUnfiltered, occRows),
+        transfers: cleanTransfers,
+        transfersCount: cleanTransfers.length,
+        lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
+      };
 
-  res.json({ 
-    rows: occRowsUnfiltered, 
-    previousRows: hospitalData ? getOccupancyRowsUnfiltered(previousHospitalData) : [],
-    dischargedRows: allFilteredDischarged,
-    autoDischargedRows,
-    manualDischargedRows,
-    manuallyDischargedNames: activeManualNames,
-    dischargesCount: allFilteredDischarged.length,
-    autoDischargesCount: autoDischargedRows.length,
-    manualDischargesCount: manualDischargedRows.length,
-    entryRows: filterHelper(uniqueTodayEntries),
-    dialysisRows: cleanDialysis,
-    dialysisCount: cleanDialysis.length,
-    debtRows: cumulativeDebts,
-    insuredDebtRows: cumulativeInsuredDebts,
-    medicalPlans: cumulativeMedicalPlans,
-    companionStatus: cumulativeCompanionStatus,
-    losData: cumulativeLOS,
-    vipCasesText: vipCasesText,
-    vipDischargeAutomationPaused: vipDischargeAutomationPaused,
-    earlyDischargeRoomsText: earlyDischargeRoomsText,
-    pendingDischargePatientsText: pendingDischargePatientsText,
-    vipCount: getActiveVipCount(),
-    uploadedAt: uploadedAt,
-    hasORList: (cumulativeORList || []).length > 0,
-    orListCount: (cumulativeORList || []).length,
-    orList: enrichedOrList,
-    hasOPDList: (cumulativeOPDList || []).length > 0,
-    opdListDate,
-    opdList: cumulativeOPDList,
-    overList: getOverListPatients(hospitalData, cumulativeORList),
-    transfers: cleanTransfers,
-    transfersCount: cleanTransfers.length,
-    lastDatabaseUpdatedAt: lastKnownDatabaseUpdatedAt || (uploadedAt ? new Date(uploadedAt).toISOString() : null)
-  });
+  const serializedJson = JSON.stringify(payloadObj);
+  cachedOccupancyDataKey = responseCacheKey;
+  cachedOccupancyDataJson = serializedJson;
+  cachedOccupancyDataEtag = currentEtag;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  return res.send(serializedJson);
 });
 
 app.get('/api/vip-cases', async (req, res) => {
@@ -10714,11 +10760,20 @@ app.get('/api/occupancy/cumulative', async (req, res) => {
       await loadData();
     }
 
-    const liveRows = hospitalData ? getOccupancyRows(hospitalData) : null;
     const isCurrentMonth = requestedMonth === currentMonthStr;
+    const cacheKey = `${requestedMonth}|${lastKnownDatabaseUpdatedAt || ''}|${cairo.dateStr}`;
+    const cached = cumulativeBedCache.get(requestedMonth);
+    if (cached && cached.key === cacheKey && Date.now() - cached.cachedAt < CUMULATIVE_CACHE_TTL_MS) {
+      res.setHeader('Cache-Control', isCurrentMonth ? 'private, max-age=15' : 'public, max-age=60, s-maxage=300, stale-while-revalidate=600');
+      return res.json(cached.payload);
+    }
+
+    const liveRows = hospitalData ? getOccupancyRows(hospitalData) : null;
     const todayStr = isCurrentMonth ? cairo.dateStr : undefined;
 
     const data = await cumulativeOccupancy.getBedMonthToDate(requestedMonth, liveRows, todayStr, cumulativeDischarged);
+    cumulativeBedCache.set(requestedMonth, { key: cacheKey, payload: data, cachedAt: Date.now() });
+    res.setHeader('Cache-Control', isCurrentMonth ? 'private, max-age=15' : 'public, max-age=60, s-maxage=300, stale-while-revalidate=600');
     res.json(data);
   } catch (err: any) {
     console.error('[API /api/occupancy/cumulative] Error:', err);
@@ -10736,6 +10791,7 @@ app.get('/api/occupancy/cumulative/history', async (req, res) => {
     const limit = (isNaN(rawLimit) || rawLimit < 1 || rawLimit > 36) ? 12 : rawLimit;
 
     const summaries = await cumulativeOccupancy.getBedHistory(limit);
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600');
     res.json({ summaries });
   } catch (err: any) {
     console.error('[API /api/occupancy/cumulative/history] Error:', err);
@@ -10766,9 +10822,18 @@ app.get('/api/or/cumulative', async (req, res) => {
     }
 
     const isCurrentMonth = requestedMonth === currentMonthStr;
+    const cacheKey = `${requestedMonth}|${lastKnownDatabaseUpdatedAt || ''}|${cairo.dateStr}`;
+    const cached = cumulativeOrCache.get(requestedMonth);
+    if (cached && cached.key === cacheKey && Date.now() - cached.cachedAt < CUMULATIVE_CACHE_TTL_MS) {
+      res.setHeader('Cache-Control', isCurrentMonth ? 'private, max-age=15' : 'public, max-age=60, s-maxage=300, stale-while-revalidate=600');
+      return res.json(cached.payload);
+    }
+
     const todayStr = isCurrentMonth ? cairo.dateStr : undefined;
 
     const data = await cumulativeOccupancy.getORMonthToDate(requestedMonth, cumulativeORList, todayStr);
+    cumulativeOrCache.set(requestedMonth, { key: cacheKey, payload: data, cachedAt: Date.now() });
+    res.setHeader('Cache-Control', isCurrentMonth ? 'private, max-age=15' : 'public, max-age=60, s-maxage=300, stale-while-revalidate=600');
     res.json(data);
   } catch (err: any) {
     console.error('[API /api/or/cumulative] Error:', err);
@@ -10786,6 +10851,7 @@ app.get('/api/or/cumulative/history', async (req, res) => {
     const limit = (isNaN(rawLimit) || rawLimit < 1 || rawLimit > 36) ? 12 : rawLimit;
 
     const summaries = await cumulativeOccupancy.getORHistory(limit);
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600');
     res.json({ summaries });
   } catch (err: any) {
     console.error('[API /api/or/cumulative/history] Error:', err);
@@ -10892,6 +10958,7 @@ app.post('/api/database/trigger-fetch', async (req, res) => {
 
 app.get('/api/history/status', (req, res) => {
   const cairo = getCairoDateTime();
+  res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=120');
   res.json({
     cairoTime: cairo.fullStr,
     cairoDate: cairo.dateStr,
@@ -10976,7 +11043,7 @@ app.get('/api/reports/unified', async (req, res) => {
   if (!hospitalData) return res.status(400).json({ error: 'No data available. Please upload a sheet first.' });
 
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const sheetConfigs = [
       { name: 'اشغال', title: 'الأشغال' },
       { name: 'دخول', title: 'دخول' },
@@ -11109,7 +11176,7 @@ app.get('/api/reports/occupancy_formatted', async (req, res) => {
     return res.status(400).json({ error: `No data available for date: ${reqDate || 'current'}.` });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Formatted_Occupancy_${ds.dateLabel}.xlsx`);
@@ -11130,7 +11197,7 @@ app.get('/api/reports/preview_occupancy_formatted', async (req, res) => {
     return res.status(400).json({ error: `No data available for date: ${reqDate || 'current'}.` });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addGridOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Colored_Structured_Grid_Occupancy_${ds.dateLabel}.xlsx`);
@@ -11207,6 +11274,18 @@ app.get('/api/header-background', (req, res) => {
 });
 
 app.get('/api/header-background-info', (req, res) => {
+  // On Vercel, only report custom override if user explicitly uploaded one into /tmp;
+  // otherwise frontend uses the static CDN-cached /header_bg.webp directly.
+  if (IS_VERCEL) {
+    const uploadedPaths = [
+      path.join(WRITABLE_BASE, 'header_bg.png'),
+      path.join(WRITABLE_BASE, 'header_bg.jpg'),
+      path.join(WRITABLE_BASE, 'header_bg.jpeg'),
+    ];
+    const hasUploaded = uploadedPaths.some((p) => fs.existsSync(p) && fs.statSync(p).size > 0);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    return res.json({ exists: hasUploaded });
+  }
   const customBg = getCustomHeaderBgInfo();
   res.json({ exists: !!customBg });
 });
@@ -11458,7 +11537,7 @@ app.get('/api/reports/transfers_formatted', async (req, res) => {
   try {
     const reqDate = req.query.date ? String(req.query.date).trim() : null;
     const ds = await resolveOccupancyDataset(reqDate);
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedTransfersSheet(workbook, ds.cumulativeTransfers || []);
     const filename = `Transferred_Patients_Refined_Report_${ds.dateLabel}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -11587,7 +11666,7 @@ app.get('/api/reports/entry_formatted', async (req, res) => {
       }
     });
 
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addEntrySheet(workbook, uniqueTodayEntries);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Entry.xlsx');
@@ -11605,7 +11684,7 @@ app.get('/api/reports/dialysis_formatted', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'No data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addDialysisSheet(workbook, cumulativeDialysis);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Dialysis.xlsx');
@@ -11621,7 +11700,7 @@ app.get('/api/reports/debts_formatted', async (req, res) => {
   if (!cumulativeDebts || cumulativeDebts.length === 0) await loadData();
   if (!cumulativeDebts || cumulativeDebts.length === 0) return res.status(400).json({ error: 'No debts data available. Please upload the debts source sheet first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedDebtsSheet(workbook, cumulativeDebts);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Debts.xlsx');
@@ -11637,7 +11716,7 @@ app.get('/api/reports/insured_debts_formatted', async (req, res) => {
   if (!cumulativeInsuredDebts || cumulativeInsuredDebts.length === 0) await loadData();
   if (!cumulativeInsuredDebts || cumulativeInsuredDebts.length === 0) return res.status(400).json({ error: 'No insured debts data available. Please upload the debts source sheet first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedInsuredDebtsSheet(workbook, cumulativeInsuredDebts);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Formatted_Insured_Debts.xlsx');
@@ -11653,7 +11732,7 @@ app.get('/api/reports/insured_non_cash_formatted', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'No occupancy data available. Please upload the source sheet first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addInsuredNonCashOccupancySheet(workbook, hospitalData);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Insured_Non_Cash_Patients.xlsx');
@@ -11755,12 +11834,16 @@ function createSingleMedicalPlanSheet(workbook: ExcelJS.Workbook, sheetName: str
 }
 
 app.post('/api/reports/medical_plans_formatted', async (req, res) => {
-  const { plans } = req.body;
-  const plansToUse = plans || cumulativeMedicalPlans;
+  const { plans } = req.body || {};
+  if ((!Array.isArray(plans) || plans.length === 0) && !isServerHydrated) {
+    try { await loadData(); } catch (_) {}
+  }
+  const rawPlans = (Array.isArray(plans) && plans.length > 0) ? plans : cumulativeMedicalPlans;
+  const plansToUse = rawPlans.map((p: any) => (p && p.sbar === undefined ? { ...p, sbar: p.colAH || '' } : p));
   
   if (plansToUse.length === 0) return res.status(400).json({ error: 'No medical plans data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     
     // 1. Sort plans
     const sortedPlans = [...plansToUse].sort((a, b) => {
@@ -11843,8 +11926,13 @@ app.post('/api/reports/medical_plans_formatted', async (req, res) => {
 
 
 app.post('/api/reports/vip_cases_medical_updates', async (req, res) => {
-  const { plans } = req.body;
-  const plansToUse = plans || cumulativeMedicalPlans;
+  const { plans } = req.body || {};
+  if ((!Array.isArray(plans) || plans.length === 0) && !isServerHydrated) {
+    try { await loadData(); } catch (_) {}
+  }
+  await ensureVipCasesLoaded();
+  const rawPlans = (Array.isArray(plans) && plans.length > 0) ? plans : cumulativeMedicalPlans;
+  const plansToUse = rawPlans.map((p: any) => (p && p.sbar === undefined ? { ...p, sbar: p.colAH || '' } : p));
   
   if (plansToUse.length === 0) {
     return res.status(400).json({ error: 'No medical plans data available. Please upload the debts source sheet first.' });
@@ -11860,7 +11948,7 @@ app.post('/api/reports/vip_cases_medical_updates', async (req, res) => {
   }
 
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     
     // Sort plans
     const sortedPlans = [...vipPlans].sort((a: any, b: any) => {
@@ -12427,7 +12515,7 @@ app.get('/api/reports/inpatient_occupancy_by_floor_accommodation', async (req, r
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addGridOccupancyWithAccommodationSheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Inpatient_occupancy_by_floor_accommodation_${getCairoDateTime().dateStr}.xlsx"`);
@@ -12443,7 +12531,7 @@ app.get('/api/reports/vacant_by_category', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addVacantRoomsByCategorySheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_by_Category_${getCairoDateTime().dateStr}.xlsx"`);
@@ -12459,7 +12547,7 @@ app.get('/api/reports/vacant_rooms_ascending', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addVacantRoomsAscendingSheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Vacant_Rooms_Ascending_${getCairoDateTime().dateStr}.xlsx"`);
@@ -13121,6 +13209,7 @@ async function addOccupancyChartsDashboardSheet(
   // Render SVGs to PNGs using sharp and add them to the worksheet
   const addChartImageToSheet = async (svgStr: string, col: number, row: number) => {
     try {
+      const sharp = await getSharp();
       const pngBuffer = await sharp(Buffer.from(svgStr)).png().toBuffer();
       const imageId = workbook.addImage({
         buffer: pngBuffer,
@@ -13676,7 +13765,7 @@ app.get('/api/reports/occupancy_charts_dashboard', async (req, res) => {
       zoneOccupied["CCU"] = 2;
     }
 
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addOccupancyChartsDashboardSheet(
       workbook,
       occupiedCount,
@@ -13952,7 +14041,7 @@ app.get('/api/reports/early_discharge_cases', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addEarlyDischargeCasesSheet(workbook, getOccupancyRows(hospitalData), earlyDischargeRoomsText);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Early_Discharge_Cases_Sheet_${getCairoDateTime().dateStr}.xlsx"`);
@@ -15349,7 +15438,7 @@ app.get('/api/reports/or_timeline_refined', async (req, res) => {
   const ds = await resolveORDataset(reqDate);
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
     await addRefinedORTimelineSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -15367,7 +15456,7 @@ app.get('/api/reports/or_list_refined', async (req, res) => {
   const ds = await resolveORDataset(reqDate);
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
     await addRefinedORListSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -15385,7 +15474,7 @@ app.get('/api/reports/or_list_simple_refined', async (req, res) => {
   const ds = await resolveORDataset(reqDate);
   if (!ds.orList || ds.orList.length === 0) return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}.` });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
     await addRefinedORListSimpleSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -15405,7 +15494,7 @@ app.get('/api/reports/or_combined', async (req, res) => {
     return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}. Please upload OR list first or choose a historical date.` });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { hospitalData: occData, occRows, dischargedOverride, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
     const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
 
@@ -15445,13 +15534,18 @@ function isOrXRoom(roomStr: string): boolean {
          /\bor\s*-\s*\d+/i.test(bLower);
 }
 
-function getOverListPatients(data: any[][] | null, orList: any[]): any[] {
+function getOverListPatients(
+  data: any[][] | null,
+  orList: any[],
+  precomputedUnfiltered?: any[][],
+  precomputedOccRows?: any[][]
+): any[] {
   const overList: any[] = [];
   
   if (data && data.length > 0) {
-    const unfilteredRows = getOccupancyRowsUnfiltered(data);
+    const unfilteredRows = precomputedUnfiltered || getOccupancyRowsUnfiltered(data);
     if (unfilteredRows.length > 3) {
-      const occRows = getOccupancyRows(data);
+      const occRows = precomputedOccRows || getOccupancyRows(data);
 
       unfilteredRows.slice(3).forEach((row, index) => {
         const room = String(row[0] || "").trim();
@@ -15809,7 +15903,7 @@ app.get('/api/reports/or_reconciliation_refined', async (req, res) => {
   const reqDate = req.query.date ? String(req.query.date).trim() : null;
   const ds = await resolveORDataset(reqDate);
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { hospitalData: occData, occRows, dischargedOverride, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
     const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
     await addRefinedORReconciliationSheet(workbook, ds.orList, occRows, overList, dischargedOverride);
@@ -15829,7 +15923,7 @@ app.get('/api/reports/or_over_list_refined', async (req, res) => {
   const { hospitalData: occData, isFutureDate } = await resolveOccupancyContextForORDate(reqDate);
   const overList = isFutureDate ? [] : getOverListPatients(occData, ds.orList);
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedOROverListSheet(workbook, overList);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Over_Listed_OR_Cases_${ds.dateLabel}.xlsx`);
@@ -15892,6 +15986,7 @@ app.get('/api/approvals/data', async (req, res) => {
   try {
     const force = req.query.refresh === '1' || req.query.refresh === 'true';
     const { data, updatedAt } = await readIsolatedFeedNode('feeds/insurance_approvals', force);
+    res.setHeader('Cache-Control', force ? 'no-store' : 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
     if (!data) {
       return res.json({ available: false, data: null, updatedAt: null, isStale: true });
     }
@@ -15916,6 +16011,7 @@ app.get('/api/opd/live', async (req, res) => {
     }
     const force = req.query.refresh === '1' || req.query.refresh === 'true';
     const { data, updatedAt } = await readIsolatedFeedNode('feeds/opd_live', force);
+    res.setHeader('Cache-Control', force ? 'no-store' : 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
     if (!data) {
       return res.json({ available: false, data: null, updatedAt: null, isStale: true });
     }
@@ -15941,6 +16037,7 @@ app.get('/api/procedures/data', async (req, res) => {
       readIsolatedFeedNode('feeds/cathlab_list', force),
       readIsolatedFeedNode('feeds/endoscopy_list', force),
     ]);
+    res.setHeader('Cache-Control', force ? 'no-store' : 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
     const cathTs = cathRes.data?.updatedAt || cathRes.updatedAt;
     const endoTs = endoRes.data?.updatedAt || endoRes.updatedAt;
     const cathFresh = computeFeedFreshness(cathTs, 240);
@@ -15976,7 +16073,8 @@ async function handleProcedureRefinedDownload(
     const allItems = dedupeProcedureCases(data?.items || [], unit);
     const dayItems = allItems.filter((c) => c.procedureDate === targetDate);
 
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
+    const { addRefinedProcedureSheet } = await getProcedureExcelGen();
     await addRefinedProcedureSheet(workbook, unit, dayItems, targetDate, {
       applyRefinedHeaderFn: applyRefinedHeader,
       isVipFn: (name) => isPatientVip(name),
@@ -16004,8 +16102,10 @@ app.get('/api/opd/data', async (_req, res) => {
       await loadData();
     } catch (_) {}
   }
+  const { getOPDSpecialtyStats } = await getOpdLogic();
   const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
   const opdNode = inMemoryStateMap['state/opd_list'];
+  res.setHeader('Cache-Control', 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
   res.json({
     opdDate: activeDate,
     items: cumulativeOPDList,
@@ -16018,6 +16118,7 @@ app.get('/api/opd/data', async (_req, res) => {
 app.post('/api/opd/sync', async (_req, res) => {
   try {
     await loadData(true);
+    const { getOPDSpecialtyStats } = await getOpdLogic();
     const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
     const opdNode = inMemoryStateMap['state/opd_list'];
     res.json({
@@ -16038,6 +16139,7 @@ app.post('/api/upload-opd-list', handleUploadSingle, async (req: any, res) => {
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: 'No OPD doctors Sheet file uploaded.' });
     }
+    const { parseOPDDoctorsExcel, getOPDSpecialtyStats } = await getOpdLogic();
     const cairoNow = getCairoDateTime();
     const parsed = parseOPDDoctorsExcel(req.file.buffer, cairoNow.dateStr);
     if (!parsed.items || parsed.items.length === 0) {
@@ -16058,6 +16160,7 @@ app.post('/api/upload-opd-list', handleUploadSingle, async (req: any, res) => {
 
     inMemoryStateMap['state/opd_list'] = nodeData;
     inMemoryNodeTimestamps['state/opd_list'] = nowIso;
+    invalidateOccupancyResponseCache();
 
     if (supabaseAdmin) {
       await supabaseAdmin.from('rtdb_nodes').upsert([
@@ -16084,7 +16187,8 @@ app.get('/api/reports/opd_refined', async (_req, res) => {
   }
   const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
+    const { addRefinedOPDScheduleSheet } = await getOpdLogic();
     await addRefinedOPDScheduleSheet(workbook, cumulativeOPDList, activeDate, applyRefinedHeader);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=OPD_Doctors_Schedule_${activeDate}.xlsx`);
@@ -16102,7 +16206,8 @@ app.get('/api/reports/opd_timeline', async (_req, res) => {
   }
   const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
+    const { addRefinedOPDTimelineSheet } = await getOpdLogic();
     await addRefinedOPDTimelineSheet(workbook, cumulativeOPDList, activeDate, applyRefinedHeader);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=OPD_Timeline_${activeDate}.xlsx`);
@@ -16120,7 +16225,8 @@ app.get('/api/reports/opd_housing', async (_req, res) => {
   }
   const activeDate = opdListDate || cumulativeOPDList[0]?.opdDate || getCairoDateTime().dateStr;
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
+    const { addOPDHousingSheet } = await getOpdLogic();
     addOPDHousingSheet(workbook, cumulativeOPDList, activeDate);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=OPD_Housing_${activeDate}.xlsx`);
@@ -17192,7 +17298,7 @@ app.get('/api/reports/or_admissions', async (req, res) => {
     return res.status(400).json({ error: `No OR list data available for date: ${reqDate || 'current'}. Please upload OR list first.` });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     const { occRows, dischargedOverride } = await resolveOccupancyContextForORDate(reqDate);
     await addORAdmissionsSheet(workbook, ds.orList, occRows, dischargedOverride);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -17209,7 +17315,7 @@ app.get('/api/reports/exceeding_alos_refined', async (req, res) => {
   if (!cumulativeLOS || cumulativeLOS.length === 0) await loadData();
   if (!cumulativeLOS || cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedExceedingALOSSheet(workbook, cumulativeLOS);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Exceeding_ALOS_Refined.xlsx');
@@ -17225,7 +17331,7 @@ app.get('/api/reports/companion_status_refined', async (req, res) => {
   if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) await loadData();
   if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addRefinedCompanionStatusSheet(workbook, cumulativeCompanionStatus);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Companion_Status_Refined.xlsx');
@@ -17241,7 +17347,7 @@ app.get('/api/reports/companion_status', async (req, res) => {
   if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) await loadData();
   if (!cumulativeCompanionStatus || cumulativeCompanionStatus.length === 0) return res.status(400).json({ error: 'No companion status data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addCompanionStatusSheet(workbook, cumulativeCompanionStatus);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Companion_Status.xlsx');
@@ -17571,7 +17677,7 @@ app.get('/api/reports/los_sheet', async (req, res) => {
   if (!cumulativeLOS || cumulativeLOS.length === 0) await loadData();
   if (!cumulativeLOS || cumulativeLOS.length === 0) return res.status(400).json({ error: 'No LOS data available.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addLOSSheet(workbook, cumulativeLOS);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=LOS_Sheet.xlsx');
@@ -17979,7 +18085,7 @@ app.get('/api/reports/closed_units_summary', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addClosedUnitsSummarySheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Closed_Units_Occupancy.xlsx');
@@ -17995,7 +18101,7 @@ app.get('/api/reports/inpatient_summary', async (req, res) => {
   if (!hospitalData || hospitalData.length === 0) await loadData();
   if (!hospitalData || hospitalData.length === 0) return res.status(400).json({ error: 'Please upload data first.' });
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addInpatientSummarySheet(workbook, getOccupancyRows(hospitalData));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Inpatient_Summary.xlsx');
@@ -18033,7 +18139,7 @@ app.get('/api/reports/exit_formatted', async (req, res) => {
       }
     });
 
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     addExitSheet(workbook, uniqueCleanDischarged);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Formatted_Exit_${getCairoDateTime().dateStr}.xlsx"`);
@@ -18095,7 +18201,7 @@ async function generateCombinedReportBuffer(
     }
   });
 
-  const workbook = new ExcelJS.Workbook();
+  const workbook = await createExcelWorkbook();
 
   // Add all sheets if data exists (except companion status sheets per user request)
   if (isRefined) {
@@ -18274,6 +18380,7 @@ app.post('/api/whatsapp/vip-discharge-automation', async (req, res) => {
     inMemoryStateMap['state/metadata'] = updatedMeta;
     inMemoryNodeTimestamps['state/metadata'] = dbTs;
     lastKnownDatabaseUpdatedAt = dbTs;
+    invalidateOccupancyResponseCache();
 
     console.log(`[VIP WhatsApp] Automation ${nextPaused ? 'PAUSED' : 'RESUMED'} via Mohanad's Sheets.`);
     return res.json({ success: true, paused: nextPaused });
@@ -18501,6 +18608,7 @@ async function executeSendRefinedCombinedImagesToWhatsApp(reqDate: string | null
   const dateLabel = ds.dateLabel || cairoCombTodayStr;
 
   // Comprehensive MRN and Patient lookups from all datasets
+  const sheetGen = await getSheetGen();
   const mrnLookups = sheetGen.buildMrnLookup(
     ds.hospitalData,
     [
@@ -18935,7 +19043,7 @@ app.get('/api/reports/specialty_occupancy', async (req, res) => {
     return res.status(400).json({ error: 'No data available. Please upload the source sheet first.' });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     await addSpecialtyOccupancySheet(workbook, ds.cumulativeMedicalPlans || cumulativeMedicalPlans, ds.cumulativeLOS || cumulativeLOS, ds.hospitalData || hospitalData);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=Inpatients_By_Specialty.xlsx');
@@ -18954,7 +19062,7 @@ app.get('/api/reports/medical_director_combined', async (req, res) => {
     return res.status(400).json({ error: `No hospital data available for date: ${reqDate || 'current'}.` });
   }
   try {
-    const workbook = new ExcelJS.Workbook();
+    const workbook = await createExcelWorkbook();
     
     // 1. Formatted Occupancy
     addOccupancySheet(workbook, getOccupancyRows(ds.hospitalData));
@@ -19357,10 +19465,27 @@ function isMaintenanceAdmin(req: any): boolean {
   return email === 'mohanad.md07@gmail.com';
 }
 
+let lastVercelSyncEnsureWriteMs = 0;
+
 // Called automatically whenever any logged-in user opens the web app
 app.post('/api/sync/ensure', async (req, res) => {
   try {
     const email = String(req.body?.email || req.headers['x-user-email'] || '').trim();
+    if (process.env.VERCEL) {
+      // On Vercel serverless there is no local runner to spawn; throttle lastUserOpenedAt writes
+      // to once per 10 minutes and skip getFullStatus() (whose 200-log payload the client discards).
+      const now = Date.now();
+      if (now - lastVercelSyncEnsureWriteMs >= 600_000) {
+        lastVercelSyncEnsureWriteMs = now;
+        const control = await syncSupervisor.loadControlState();
+        await syncSupervisor.saveControlState({
+          lastUserOpenedAt: new Date().toISOString(),
+          desiredState: control.paused ? 'paused' : 'running',
+          updatedBy: email || control.updatedBy,
+        });
+      }
+      return res.json({ success: true, serverMode: 'cloud-vercel' });
+    }
     const status = await syncSupervisor.ensureRunning(email || undefined);
     res.json({ success: true, status });
   } catch (err: any) {

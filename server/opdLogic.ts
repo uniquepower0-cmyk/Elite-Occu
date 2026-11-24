@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import fs from 'fs';
 import path from 'path';

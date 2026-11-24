@@ -1,0 +1,21 @@
+# Exclude local dev scripts, Python virtualenvs, test suites, scratch outputs, and local JSON dumps from Vercel deploys
+.venv/
+__pycache__/
+*.py
+*.pyc
+*.bat
+*.command
+*.patch
+*.orig
+*.log
+response.txt
+scratch/
+tests/
+hospital_data.json
+occ.json
+occ_full.json
+data.json
+hist.json
+service-account-key.json
+*.test.ts
+*.test.tsx

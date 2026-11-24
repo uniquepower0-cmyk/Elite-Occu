@@ -70,9 +70,9 @@ export interface CumulativeORData {
   days: DailyORCensusItem[];
 }
 
-export function useCumulativeBeds(month?: string, refreshTrigger?: any) {
+export function useCumulativeBeds(month?: string, refreshTrigger?: any, enabled: boolean = true) {
   const [data, setData] = useState<CumulativeBedData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(enabled);
   const [error, setError] = useState<string | null>(null);
   const hasLoadedRef = useRef<boolean>(false);
 
@@ -99,15 +99,16 @@ export function useCumulativeBeds(month?: string, refreshTrigger?: any) {
   }, [month]);
 
   useEffect(() => {
+    if (!enabled) return;
     fetchBeds();
-  }, [fetchBeds, refreshTrigger]);
+  }, [fetchBeds, refreshTrigger, enabled]);
 
   return { data, loading, error, refresh: fetchBeds };
 }
 
-export function useCumulativeOR(month?: string, refreshTrigger?: any) {
+export function useCumulativeOR(month?: string, refreshTrigger?: any, enabled: boolean = true) {
   const [data, setData] = useState<CumulativeORData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(enabled);
   const [error, setError] = useState<string | null>(null);
   const hasLoadedRef = useRef<boolean>(false);
 
@@ -134,15 +135,17 @@ export function useCumulativeOR(month?: string, refreshTrigger?: any) {
   }, [month]);
 
   useEffect(() => {
+    if (!enabled) return;
     fetchOR();
-  }, [fetchOR, refreshTrigger]);
+  }, [fetchOR, refreshTrigger, enabled]);
 
   return { data, loading, error, refresh: fetchOR };
 }
 
-export function useCumulativeBedHistory() {
+export function useCumulativeBedHistory(enabled: boolean = true) {
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+  const hasLoadedRef = useRef<boolean>(false);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -151,6 +154,7 @@ export function useCumulativeBedHistory() {
       if (res.ok) {
         const json = await res.json();
         setHistory(json.summaries || []);
+        hasLoadedRef.current = true;
       }
     } catch (err) {
       console.warn('Failed to fetch bed history:', err);
@@ -160,15 +164,17 @@ export function useCumulativeBedHistory() {
   }, []);
 
   useEffect(() => {
+    if (!enabled || hasLoadedRef.current) return;
     fetchHistory();
-  }, [fetchHistory]);
+  }, [fetchHistory, enabled]);
 
   return { history, loading, refresh: fetchHistory };
 }
 
-export function useCumulativeORHistory() {
+export function useCumulativeORHistory(enabled: boolean = true) {
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+  const hasLoadedRef = useRef<boolean>(false);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -177,6 +183,7 @@ export function useCumulativeORHistory() {
       if (res.ok) {
         const json = await res.json();
         setHistory(json.summaries || []);
+        hasLoadedRef.current = true;
       }
     } catch (err) {
       console.warn('Failed to fetch OR history:', err);
@@ -186,8 +193,9 @@ export function useCumulativeORHistory() {
   }, []);
 
   useEffect(() => {
+    if (!enabled || hasLoadedRef.current) return;
     fetchHistory();
-  }, [fetchHistory]);
+  }, [fetchHistory, enabled]);
 
   return { history, loading, refresh: fetchHistory };
 }

@@ -6,7 +6,7 @@
     "api/index.ts": {
       "memory": 1024,
       "maxDuration": 60,
-      "includeFiles": "fonts/**,header_bg.png,node_modules/sharp/**,node_modules/@img/**"
+      "includeFiles": "fonts/**,header_bg.webp,header_bg.png,node_modules/sharp/**,node_modules/@img/**"
     }
   },
   "crons": [

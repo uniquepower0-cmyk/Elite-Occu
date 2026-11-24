@@ -41,7 +41,7 @@ export const CumulativeORPanel: React.FC<CumulativeORPanelProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'trend' | 'rooms' | 'history'>('trend');
-  const { history, loading: historyLoading } = useCumulativeORHistory();
+  const { history, loading: historyLoading } = useCumulativeORHistory(isOpen);
 
   const chartData = useMemo(() => {
     if (!data || !data.days || data.days.length === 0) return [];

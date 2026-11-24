@@ -539,22 +539,37 @@ async function updateChangeLogIndex(dateStr: string): Promise<void> {
   }
 }
 
+const CAIRO_DATETIME_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Africa/Cairo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false
+});
+
+const CAIRO_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Africa/Cairo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+
+let cachedCairoDtSec = -1;
+let cachedCairoDtVal: { dateStr: string; timeStr: string; hours: number; minutes: number; fullStr: string } | null = null;
+
 /**
  * Returns current date and time formatted in Egypt / Cairo timezone (Africa/Cairo)
  */
 export function getCairoDateTime(): { dateStr: string; timeStr: string; hours: number; minutes: number; fullStr: string } {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Africa/Cairo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-  const parts = formatter.formatToParts(now);
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  if (cachedCairoDtVal && cachedCairoDtSec === nowSec) {
+    return cachedCairoDtVal;
+  }
+  const parts = CAIRO_DATETIME_FORMATTER.formatToParts(new Date(nowMs));
   const getPart = (type: string) => parts.find(p => p.type === type)?.value || '00';
   const year = getPart('year');
   const month = getPart('month');
@@ -564,13 +579,15 @@ export function getCairoDateTime(): { dateStr: string; timeStr: string; hours: n
   const second = parseInt(getPart('second'), 10);
   const dateStr = `${year}-${month}-${day}`;
   const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
-  return {
+  cachedCairoDtVal = {
     dateStr,
     timeStr,
     hours: hour,
     minutes: minute,
     fullStr: `${dateStr} ${timeStr}`
   };
+  cachedCairoDtSec = nowSec;
+  return cachedCairoDtVal;
 }
 
 /**
@@ -578,14 +595,7 @@ export function getCairoDateTime(): { dateStr: string; timeStr: string; hours: n
  */
 export function getCairoDateFromTimestamp(ts: number): string {
   try {
-    const d = new Date(ts);
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Africa/Cairo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    });
-    return formatter.format(d);
+    return CAIRO_DATE_FORMATTER.format(new Date(ts));
   } catch (e) {
     return getCairoDateTime().dateStr;
   }

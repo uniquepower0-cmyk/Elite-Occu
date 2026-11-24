@@ -623,8 +623,8 @@ export default function App() {
   const [occupancyHistoryRefreshKey, setOccupancyHistoryRefreshKey] = useState<number>(0);
   const [orHistoryRefreshKey, setOrHistoryRefreshKey] = useState<number>(0);
 
-  const { data: cumulativeBedData, loading: cumulativeBedLoading, error: cumulativeBedError } = useCumulativeBeds(undefined, occupancyHistoryRefreshKey);
-  const { data: cumulativeORData, loading: cumulativeORLoading, error: cumulativeORError } = useCumulativeOR(undefined, orHistoryRefreshKey);
+  const { data: cumulativeBedData, loading: cumulativeBedLoading, error: cumulativeBedError } = useCumulativeBeds(undefined, occupancyHistoryRefreshKey, isAuthenticated);
+  const { data: cumulativeORData, loading: cumulativeORLoading, error: cumulativeORError } = useCumulativeOR(undefined, orHistoryRefreshKey, isAuthenticated);
 
   const lastDbTimestampRef = useRef<string | null>(null);
   const pendingDbTimestampRef = useRef<string | null>(null);
@@ -732,16 +732,23 @@ export default function App() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      checkHeaderBgStatus();
-      // Ensure the sync supervisor is running once when an authenticated user opens the app
-      fetch('/api/sync/ensure', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-email': user?.email || '',
-        },
-        body: JSON.stringify({ email: user?.email || '' }),
-      }).catch(() => {});
+      // Serve static /header_bg.webp directly from CDN by default (zero serverless function hit on page load).
+      // Only ping /api/sync/ensure when running locally or once per session on Vercel.
+      const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (isLocalHost) {
+        checkHeaderBgStatus();
+      }
+      if (isLocalHost || !sessionStorage.getItem('elite_sync_ensured')) {
+        sessionStorage.setItem('elite_sync_ensured', '1');
+        fetch('/api/sync/ensure', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-email': user?.email || '',
+          },
+          body: JSON.stringify({ email: user?.email || '' }),
+        }).catch(() => {});
+      }
     }
   }, [isAuthenticated, user?.email]);
 
@@ -2579,26 +2586,11 @@ export default function App() {
   const downloadRefinedMedicalPlansReport = async () => {
     setProcessing('Downloading Refined Medical Plans Sheet');
     try {
-      // 1. Fetch the raw medical plans from the server
-      const dataRes = await fetch('/api/occupancy/data');
-      const data = await dataRes.json();
-      const rawPlans = data.medicalPlans || [];
-
-      if (rawPlans.length === 0) {
-        throw new Error('No medical plans data found. Please upload the debts source sheet first.');
-      }
-
-      // 2. Process each plan
-      const processedPlans = rawPlans.map((plan: any) => ({
-        ...plan,
-        sbar: plan.colAH || ""
-      }));
-
-      // 3. Send the processed plans to the server to generate the Excel with refined format
+      // Server resolves latest cumulativeMedicalPlans directly in-memory without a redundant /api/occupancy/data round-trip
       const res = await fetch('/api/reports/medical_plans_formatted?refined=true', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plans: processedPlans, refined: true })
+        body: JSON.stringify({ refined: true })
       });
 
       if (!res.ok) {
@@ -2626,26 +2618,11 @@ export default function App() {
   const downloadVipCasesMedicalUpdatesReport = async () => {
     setProcessing('Downloading VIP Cases Medical Updates');
     try {
-      // 1. Fetch the raw medical plans from the server
-      const dataRes = await fetch('/api/occupancy/data');
-      const data = await dataRes.json();
-      const rawPlans = data.medicalPlans || [];
-
-      if (rawPlans.length === 0) {
-        throw new Error('No medical plans data found. Please upload the debts source sheet first.');
-      }
-
-      // 2. Process each plan
-      const processedPlans = rawPlans.map((plan: any) => ({
-        ...plan,
-        sbar: plan.colAH || ""
-      }));
-
-      // 3. Send the processed plans to the server to generate the Excel
+      // Server resolves latest cumulativeMedicalPlans & VIP cases directly without a redundant /api/occupancy/data round-trip
       const res = await fetch('/api/reports/vip_cases_medical_updates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plans: processedPlans })
+        body: JSON.stringify({})
       });
 
       if (!res.ok) {

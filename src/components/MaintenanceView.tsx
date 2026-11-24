@@ -125,7 +125,7 @@ export function MaintenanceView({ userEmail }: MaintenanceViewProps) {
       if (!document.hidden) {
         fetchStatus();
       }
-    }, 30000);
+    }, 60000);
     return () => clearInterval(timer);
   }, [fetchStatus]);
 

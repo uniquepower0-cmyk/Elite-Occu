@@ -5,6 +5,12 @@ import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } 
 import { isNameMatch, normalizeArabicName, isOperatingRoom, isOrXRoom, cleanRoomStr } from '../nameUtils.js';
 import { formatRoomForSheet, formatMrnForSheet } from '../columnResolver.js';
 
+if (process.env.VERCEL) {
+  try { sharp.concurrency(2); } catch (_) {}
+}
+
+const sheetHeaderBufferCache = new Map<string, Buffer>();
+
 export { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay };
 
 const DIALYSIS_EXCLUSIONS = [
@@ -134,6 +140,11 @@ function getGroupColors(groupName: string): { badge: string; row: string } {
  */
 async function createExcelHeaderBuffer(title: string, width: number, height = 180): Promise<Buffer> {
   const safeTitle = escapeXml(title);
+  const bgPath = getHeaderBgPath();
+  const cacheKey = `${safeTitle}__${bgPath || 'fallback'}__${width}x${height}`;
+  const cached = sheetHeaderBufferCache.get(cacheKey);
+  if (cached) return cached;
+
   const boxWidth = Math.min(540, width - 80);
   const boxX = (width - boxWidth) / 2;
 
@@ -144,10 +155,10 @@ async function createExcelHeaderBuffer(title: string, width: number, height = 18
     </svg>
   `;
 
-  const bgPath = getHeaderBgPath();
+  let outBuf: Buffer | null = null;
   if (bgPath) {
     try {
-      return await sharp(bgPath)
+      outBuf = await sharp(bgPath)
         .resize(width, height, { fit: 'fill' })
         .composite([{ input: Buffer.from(overlaySvg), top: 0, left: 0 }])
         .png()
@@ -157,22 +168,28 @@ async function createExcelHeaderBuffer(title: string, width: number, height = 18
     }
   }
 
-  // Fallback if background image file is missing
-  const fallbackSvg = `
-    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="${width}" height="${height}" fill="#EBF3F5"/>
-      <rect x="${boxX}" y="45" width="${boxWidth}" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.9" stroke="#CBD5E1" stroke-width="1.5"/>
-      <text x="${width / 2}" y="105" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="38" font-weight="bold" fill="#094037" text-anchor="middle">${safeTitle}</text>
-    </svg>
-  `;
-  return sharp(Buffer.from(fallbackSvg)).png().toBuffer();
+  if (!outBuf) {
+    // Fallback if background image file is missing
+    const fallbackSvg = `
+      <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+        <rect width="${width}" height="${height}" fill="#EBF3F5"/>
+        <rect x="${boxX}" y="45" width="${boxWidth}" height="90" rx="16" ry="16" fill="#FFFFFF" fill-opacity="0.9" stroke="#CBD5E1" stroke-width="1.5"/>
+        <text x="${width / 2}" y="105" font-family="'Calibri', 'Cairo', Arial, sans-serif" font-size="38" font-weight="bold" fill="#094037" text-anchor="middle">${safeTitle}</text>
+      </svg>
+    `;
+    outBuf = await sharp(Buffer.from(fallbackSvg)).png().toBuffer();
+  }
+
+  if (sheetHeaderBufferCache.size > 40) sheetHeaderBufferCache.clear();
+  sheetHeaderBufferCache.set(cacheKey, outBuf);
+  return outBuf;
 }
 
 /**
- * Composite header banner above the table into a single high-res JPEG
+ * Composite header banner above the table directly into a single high-res JPEG
+ * (skips redundant intermediate lossless PNG encode/decode to cut Active CPU by ~30%)
  */
 async function assembleSheetImage(headerBuf: Buffer, tableSvg: string, width: number, headerHeight: number, tableHeight: number): Promise<Buffer> {
-  const tableBuf = await sharp(Buffer.from(tableSvg)).png().toBuffer();
   const totalHeight = headerHeight + tableHeight;
 
   return sharp({
@@ -185,7 +202,7 @@ async function assembleSheetImage(headerBuf: Buffer, tableSvg: string, width: nu
   })
     .composite([
       { input: headerBuf, top: 0, left: 0 },
-      { input: tableBuf, top: headerHeight, left: 0 },
+      { input: Buffer.from(tableSvg), top: headerHeight, left: 0 },
     ])
     .jpeg({ quality: 92 })
     .toBuffer();

@@ -40,7 +40,7 @@ export const CumulativeOccupancyPanel: React.FC<CumulativeOccupancyPanelProps> =
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'trend' | 'history'>('trend');
-  const { history, loading: historyLoading } = useCumulativeBedHistory();
+  const { history, loading: historyLoading } = useCumulativeBedHistory(isOpen);
 
   // Compute daily chart points with running cumulative rate
   const chartData = useMemo(() => {

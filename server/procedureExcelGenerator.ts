@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 import type { ProcedureCaseItem } from '../src/types';
 import { cleanContractorForDisplay, getResponsibleOfficer } from './contractorOfficers.js';
 import { cleanProcedureOpName, dedupeProcedureCases, parseProcedureTimeMinutes } from './newFeedsLogic.js';
