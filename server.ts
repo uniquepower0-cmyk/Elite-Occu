@@ -43,7 +43,8 @@ import { normalizeSpecialty } from './server/specialtyNormalizer.js';
 import { getResponsibleOfficer, formatDateForSheet, cleanContractorForDisplay } from './server/contractorOfficers.js';
 import { cumulativeOccupancy } from './server/cumulativeOccupancy/service.js';
 import { isLastDayOfMonth } from './server/cumulativeOccupancy/calculator.js';
-import { computeFeedFreshness, enrichOpdLiveWithScheduleCapacity } from './server/newFeedsLogic.js';
+import { computeFeedFreshness, dedupeProcedureCases, enrichOpdLiveWithScheduleCapacity } from './server/newFeedsLogic.js';
+import { addRefinedProcedureSheet } from './server/procedureExcelGenerator.js';
 import { buildColumnIndexResolver, buildDeterministicUnknownMrn, formatMrnForSheet, formatRoomForSheet } from './server/columnResolver.js';
 import { isCompanionBed, isNonInpatientRoomForOR, hasConflictingRealMrns } from './server/nameUtils.js';
 import {
@@ -15945,13 +15946,55 @@ app.get('/api/procedures/data', async (req, res) => {
     const cathFresh = computeFeedFreshness(cathTs, 240);
     const endoFresh = computeFeedFreshness(endoTs, 240);
     return res.json({
-      cathlab: cathRes.data ? { ...cathRes.data, updatedAt: cathTs, isStale: cathFresh.isStale } : null,
-      endoscopy: endoRes.data ? { ...endoRes.data, updatedAt: endoTs, isStale: endoFresh.isStale } : null,
+      cathlab: cathRes.data
+        ? { ...cathRes.data, items: dedupeProcedureCases(cathRes.data.items || []), updatedAt: cathTs, isStale: cathFresh.isStale }
+        : null,
+      endoscopy: endoRes.data
+        ? { ...endoRes.data, items: dedupeProcedureCases(endoRes.data.items || []), updatedAt: endoTs, isStale: endoFresh.isStale }
+        : null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to read procedures schedule feeds' });
   }
 });
+
+async function handleProcedureRefinedDownload(
+  unit: 'cathlab' | 'endoscopy',
+  req: express.Request,
+  res: express.Response,
+) {
+  try {
+    if (!isServerHydrated) {
+      try { await loadData(); } catch (_) {}
+    }
+    const feedPath = unit === 'endoscopy' ? 'feeds/endoscopy_list' : 'feeds/cathlab_list';
+    const { data } = await readIsolatedFeedNode(feedPath, false);
+    const requestedDate = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim())
+      ? req.query.date.trim()
+      : '';
+    const targetDate = requestedDate || data?.referenceDate || getCairoDateTime().dateStr;
+    const allItems = dedupeProcedureCases(data?.items || []);
+    const dayItems = allItems.filter((c) => c.procedureDate === targetDate);
+
+    const workbook = new ExcelJS.Workbook();
+    await addRefinedProcedureSheet(workbook, unit, dayItems, targetDate, {
+      applyRefinedHeaderFn: applyRefinedHeader,
+      isVipFn: (name) => isPatientVip(name),
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const filePrefix = unit === 'endoscopy' ? 'Endoscopy_List' : 'CathLab_List';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filePrefix}_${targetDate}.xlsx"`);
+    res.send(Buffer.from(buffer));
+  } catch (err: any) {
+    console.error(`[Reports] Error generating refined ${unit} sheet:`, err);
+    res.status(500).json({ error: err?.message || `Failed to generate ${unit} Excel sheet` });
+  }
+}
+
+app.get('/api/reports/endoscopy_refined', (req, res) => handleProcedureRefinedDownload('endoscopy', req, res));
+app.get('/api/reports/cathlab_refined', (req, res) => handleProcedureRefinedDownload('cathlab', req, res));
 
 // ─── OPD Status Endpoints & 3 Downloadable Sheets ────────────────────────────
 

@@ -4459,11 +4459,12 @@ def _fetch_powerbi_table_export(
     fallback_model_id: int,
     section_index: int = 0,
     where_override: Optional[list[dict[str, Any]]] = None,
+    extra_select_props: Optional[list[tuple[str, str]]] = None,
     auth: Optional[Any] = None,
     timeout: tuple[int, int] = (10, 45),
 ) -> bytes:
     """Dynamically fetches modelsAndExploration for a Power BI report, locates its tableEx visual,
-    applies optional Where filters, and returns raw XLSX export bytes."""
+    applies optional Where filters and extra Select columns, and returns raw XLSX export bytes."""
     report_base = export_url.rsplit("/export/", 1)[0]
     meta_resp = requests.get(f"{report_base}/modelsAndExploration", auth=auth, timeout=(10, 20))
     meta_resp.raise_for_status()
@@ -4485,6 +4486,19 @@ def _fetch_powerbi_table_export(
             break
     if not pq or not pq.get("Select"):
         raise ValueError(f"No tableEx prototypeQuery found in section {section_index} of {report_base}")
+
+    if extra_select_props:
+        existing_names = {str(s.get("Name", "")).lower() for s in pq["Select"]}
+        src_alias = (pq.get("From") or [{}])[0].get("Name", "o")
+        ent_name = (pq.get("From") or [{}])[0].get("Entity", "OperationReservation_soussi")
+        for prop, label in extra_select_props:
+            full_name = f"{ent_name}.{label}"
+            if full_name.lower() not in existing_names:
+                pq["Select"].append({
+                    "Column": {"Expression": {"SourceRef": {"Source": src_alias}}, "Property": prop},
+                    "Name": full_name,
+                })
+                existing_names.add(full_name.lower())
 
     if where_override is not None:
         pq["Where"] = where_override
@@ -4962,12 +4976,42 @@ def fetch_powerbi_opd_live_and_sync(force: bool = False, dry_run: bool = False) 
         return False
 
 
+def _clean_procedure_op_text(raw: str) -> str:
+    """Strips Cybernetics internal severity/nature suffixes like '//s-Major', '//s-Moderate', '//s-SpecialNature//'."""
+    if not raw:
+        return ""
+    cleaned = re.sub(r"\s*//\s*s-[^\s/]+/*\s*", "", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*//+\s*$", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _parse_time_12h_minutes(time_str: str) -> int:
+    """Converts '10:00 AM' / '07:55 PM' / '19:55' into minutes since midnight for chronological sorting."""
+    if not time_str:
+        return 9999
+    s = time_str.strip().lower()
+    m = re.search(r"(\d{1,2}):(\d{2})", s)
+    if not m:
+        return 9999
+    h = int(m.group(1))
+    mins = int(m.group(2))
+    is_pm = "pm" in s or "م" in s
+    is_am = "am" in s or "ص" in s
+    if is_pm and h < 12:
+        h += 12
+    elif is_am and h == 12:
+        h = 0
+    return h * 60 + mins
+
+
 def parse_powerbi_procedure_excel(
     excel_bytes: bytes,
     unit: str,
     reference_date_str: str,
 ) -> dict[str, Any]:
-    """Parses /BICathlabReservation or /BIEndoReservation Excel export into normalized procedure records."""
+    """Parses /BICathlabReservation or /BIEndoReservation Excel export into deduplicated procedure records.
+    Deduplicates SQL join fan-out (e.g. Cathlab Dose Cartesian product) by composite slot key
+    (procedureDate|mrn_or_name|startTime|room) and merges distinct multi-procedures cleanly."""
     df = _extract_excel_table(excel_bytes, ["room name", "mrn", "englishfullname", "startdatetime"])
     cols = list(df.columns)
 
@@ -4992,15 +5036,18 @@ def parse_powerbi_procedure_excel(
     c_act_start = _find_df_col(cols, ["Actual Start"])
     c_act_end = _find_df_col(cols, ["Actual End"])
 
-    items: list[dict[str, Any]] = []
-    today_cnt = 0
-    upcoming_cnt = 0
-    recent_cnt = 0
-    in_progress_cnt = 0
-    completed_today_cnt = 0
-    scheduled_today_cnt = 0
+    grouped: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
 
-    for idx, row in df.iterrows():
+    def _merge_distinct(existing_val: str, new_val: str, sep: str = " / ") -> str:
+        if not new_val:
+            return existing_val
+        parts = [p.strip() for p in existing_val.split(sep.strip()) if p.strip()] if existing_val else []
+        if new_val not in parts:
+            parts.append(new_val)
+        return sep.join(parts)
+
+    for _, row in df.iterrows():
         patient_name = _safe_str(row[c_patient]) if c_patient else ""
         mrn = clean_mrn_str(row[c_mrn]) if c_mrn else ""
         room = _safe_str(row[c_room]) if c_room else ""
@@ -5009,48 +5056,113 @@ def parse_powerbi_procedure_excel(
 
         raw_dt = _safe_str(row[c_start_dt]) if c_start_dt else ""
         proc_date = raw_dt[:10] if len(raw_dt) >= 10 else reference_date_str
-        status = _safe_str(row[c_status]) if c_status else "Scheduled"
+        start_12h = format_time_12h(_safe_str(row[c_start])) if c_start else ""
+        end_12h = format_time_12h(_safe_str(row[c_end])) if c_end else ""
+        act_start = _safe_str(row[c_act_start]) if c_act_start else ""
+        act_end = _safe_str(row[c_act_end]) if c_act_end else ""
 
-        if proc_date == reference_date_str:
+        raw_status = _safe_str(row[c_status]) if c_status else ""
+        if not raw_status:
+            if act_end:
+                status = "Completed"
+            elif act_start:
+                status = "InOR"
+            else:
+                status = "Scheduled"
+        else:
+            status = raw_status
+
+        op_en = _clean_procedure_op_text(_safe_str(row[c_op_en])) if c_op_en else ""
+        op_ar = _clean_procedure_op_text(_safe_str(row[c_op_ar])) if c_op_ar else ""
+        surgeon = re.sub(r"\s+", " ", _safe_str(row[c_surgeon])).strip() if c_surgeon else ""
+        contractor = _safe_str(row[c_contractor]) if c_contractor else ""
+        paid_by = _safe_str(row[c_paidby]) if c_paidby else ""
+        fl_class = _safe_str(row[c_class]) if c_class else ""
+        vt = _safe_str(row[c_vt]) if c_vt else ""
+        post_c = _safe_str(row[c_postc]) if c_postc else ""
+        prep = _safe_str(row[c_prep]) if c_prep else ""
+        comment = _safe_str(row[c_comment]) if c_comment else ""
+        dose = _safe_str(row[c_dose]) if c_dose else ""
+
+        norm_name = normalize_arabic_name(patient_name) or patient_name.lower()
+        group_key = f"{proc_date}|{mrn or norm_name}|{start_12h}|{room.lower()}"
+
+        if group_key not in grouped:
+            ordered_keys.append(group_key)
+            grouped[group_key] = {
+                "serial": str(len(ordered_keys)),
+                "procedureDate": proc_date,
+                "room": room,
+                "startTime": start_12h,
+                "endTime": end_12h,
+                "actualStart": act_start,
+                "actualEnd": act_end,
+                "status": status,
+                "mrn": mrn,
+                "patientName": patient_name,
+                "surgeonName": surgeon,
+                "engOperationName": op_en,
+                "arOperationName": op_ar,
+                "contractorName": contractor,
+                "paidBy": paid_by,
+                "flClassName": fl_class,
+                "vt": vt,
+                "postC": post_c,
+                "preparationInstructions": prep,
+                "operativeComment": comment,
+                "cathlabDose": dose,
+            }
+        else:
+            ex = grouped[group_key]
+            ex["engOperationName"] = _merge_distinct(ex["engOperationName"], op_en)
+            ex["arOperationName"] = _merge_distinct(ex["arOperationName"], op_ar)
+            ex["surgeonName"] = _merge_distinct(ex["surgeonName"], surgeon)
+            ex["operativeComment"] = _merge_distinct(ex["operativeComment"], comment)
+            ex["preparationInstructions"] = _merge_distinct(ex["preparationInstructions"], prep)
+            ex["cathlabDose"] = _merge_distinct(ex["cathlabDose"], dose, sep=" | ")
+            if not ex["endTime"] and end_12h:
+                ex["endTime"] = end_12h
+            if not ex["actualStart"] and act_start:
+                ex["actualStart"] = act_start
+            if not ex["actualEnd"] and act_end:
+                ex["actualEnd"] = act_end
+            if ex["status"].lower() != "completed" and status.lower() == "completed":
+                ex["status"] = status
+            if not ex["contractorName"] and contractor:
+                ex["contractorName"] = contractor
+            if not ex["paidBy"] and paid_by:
+                ex["paidBy"] = paid_by
+            if not ex["vt"] and vt:
+                ex["vt"] = vt
+            if not ex["postC"] and post_c:
+                ex["postC"] = post_c
+
+    items = [grouped[k] for k in ordered_keys]
+    items.sort(key=lambda x: (x["procedureDate"], _parse_time_12h_minutes(x["startTime"]), x["room"]))
+
+    today_cnt = 0
+    upcoming_cnt = 0
+    recent_cnt = 0
+    in_progress_cnt = 0
+    completed_today_cnt = 0
+    scheduled_today_cnt = 0
+
+    for i, item in enumerate(items, 1):
+        item["serial"] = str(i)
+        pd_str = item["procedureDate"]
+        st_low = item["status"].lower()
+        if pd_str == reference_date_str:
             today_cnt += 1
-            if status.lower() == "inor":
+            if st_low == "inor":
                 in_progress_cnt += 1
-            elif status.lower() == "completed":
+            elif st_low == "completed":
                 completed_today_cnt += 1
             else:
                 scheduled_today_cnt += 1
-        elif proc_date > reference_date_str:
+        elif pd_str > reference_date_str:
             upcoming_cnt += 1
         else:
             recent_cnt += 1
-
-        items.append({
-            "serial": str(len(items) + 1),
-            "procedureDate": proc_date,
-            "room": room,
-            "startTime": format_time_12h(_safe_str(row[c_start])) if c_start else "",
-            "endTime": format_time_12h(_safe_str(row[c_end])) if c_end else "",
-            "actualStart": _safe_str(row[c_act_start]) if c_act_start else "",
-            "actualEnd": _safe_str(row[c_act_end]) if c_act_end else "",
-            "status": status,
-            "mrn": mrn,
-            "patientName": patient_name,
-            "surgeonName": _safe_str(row[c_surgeon]) if c_surgeon else "",
-            "engOperationName": _safe_str(row[c_op_en]) if c_op_en else "",
-            "arOperationName": _safe_str(row[c_op_ar]) if c_op_ar else "",
-            "contractorName": _safe_str(row[c_contractor]) if c_contractor else "",
-            "paidBy": _safe_str(row[c_paidby]) if c_paidby else "",
-            "flClassName": _safe_str(row[c_class]) if c_class else "",
-            "vt": _safe_str(row[c_vt]) if c_vt else "",
-            "postC": _safe_str(row[c_postc]) if c_postc else "",
-            "preparationInstructions": _safe_str(row[c_prep]) if c_prep else "",
-            "operativeComment": _safe_str(row[c_comment]) if c_comment else "",
-            "cathlabDose": _safe_str(row[c_dose]) if c_dose else "",
-        })
-
-    items.sort(key=lambda x: (x["procedureDate"], x["startTime"], x["room"]))
-    for i, item in enumerate(items, 1):
-        item["serial"] = str(i)
 
     return {
         "unit": unit,
@@ -5089,17 +5201,18 @@ def fetch_powerbi_procedures_and_sync(force: bool = False, dry_run: bool = False
         ]
 
     specs = [
-        ("cathlab", "feeds/cathlab_list", POWERBI_CATHLAB_EXPORT_URL, 141890993, 1, ["Cath Lab Theatre", "CathLab Operation Theatre 2"]),
-        ("endoscopy", "feeds/endoscopy_list", POWERBI_ENDO_EXPORT_URL, 1497662051, 2, ["Endoscopy Operation Theatre"]),
+        ("cathlab", "feeds/cathlab_list", POWERBI_CATHLAB_EXPORT_URL, 141890993, 1, ["Cath Lab Theatre", "CathLab Operation Theatre 2"], None),
+        ("endoscopy", "feeds/endoscopy_list", POWERBI_ENDO_EXPORT_URL, 1497662051, 2, ["Endoscopy Operation Theatre"], [("Status", "Status"), ("VT", "VT")]),
     ]
     all_ok = True
-    for unit, path, url, fallback_mid, sec_idx, rooms in specs:
+    for unit, path, url, fallback_mid, sec_idx, rooms, extra_props in specs:
         try:
             xlsx = _fetch_powerbi_table_export(
                 url,
                 fallback_model_id=fallback_mid,
                 section_index=sec_idx,
                 where_override=_build_where(rooms),
+                extra_select_props=extra_props,
                 auth=auth,
             )
             parsed = parse_powerbi_procedure_excel(xlsx, unit=unit, reference_date_str=ref_str)

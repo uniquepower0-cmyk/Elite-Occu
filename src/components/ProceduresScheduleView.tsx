@@ -5,6 +5,7 @@ import {
   Calendar,
   CheckCircle2,
   Clock,
+  Download,
   HeartPulse,
   Microscope,
   RefreshCw,
@@ -38,6 +39,27 @@ function formatDateLabel(isoDate: string): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : isoDate || '—';
 }
 
+function parseTimeMinutes(timeStr: string): number {
+  if (!timeStr) return 9999;
+  const s = String(timeStr).trim().toLowerCase();
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return 9999;
+  let h = parseInt(m[1], 10);
+  const mins = parseInt(m[2], 10);
+  const isPM = s.includes('pm') || s.includes('م');
+  const isAM = s.includes('am') || s.includes('ص');
+  if (isPM && h < 12) h += 12;
+  else if (isAM && h === 12) h = 0;
+  return h * 60 + mins;
+}
+
+function cleanOpLabel(raw: string): string {
+  return String(raw || '')
+    .replace(/\s*\/\/\s*s-[^\s/]+\/*\s*/gi, '')
+    .replace(/\s*\/\/+\s*$/, '')
+    .trim();
+}
+
 export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ isVipFn }) => {
   const [data, setData] = useState<ProceduresDataResponse>({ cathlab: null, endoscopy: null });
   const [loading, setLoading] = useState<boolean>(true);
@@ -47,6 +69,31 @@ export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ 
   const [windowMode, setWindowMode] = useState<WindowMode>('today');
   const [specificDate, setSpecificDate] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [downloadingUnit, setDownloadingUnit] = useState<'cathlab' | 'endoscopy' | null>(null);
+
+  const handleDownloadRefined = async (unit: 'cathlab' | 'endoscopy') => {
+    const exportDate = specificDate || referenceDate;
+    setDownloadingUnit(unit);
+    setError(null);
+    try {
+      const endpoint = unit === 'endoscopy' ? '/api/reports/endoscopy_refined' : '/api/reports/cathlab_refined';
+      const res = await fetch(`${endpoint}?date=${encodeURIComponent(exportDate)}`);
+      if (!res.ok) throw new Error(`Download failed (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${unit === 'endoscopy' ? 'Endoscopy_List' : 'CathLab_List'}_${exportDate}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err?.message || `Failed to download ${unit} sheet`);
+    } finally {
+      setDownloadingUnit(null);
+    }
+  };
 
   const loadProcedures = async (force = false) => {
     if (force) setRefreshing(true);
@@ -86,9 +133,11 @@ export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ 
         out.push({ ...item, unit: 'endoscopy' });
       }
     }
-    return out.sort((a, b) =>
-      `${b.procedureDate} ${a.startTime}`.localeCompare(`${a.procedureDate} ${b.startTime}`),
-    );
+    return out.sort((a, b) => {
+      const dCmp = String(b.procedureDate || '').localeCompare(String(a.procedureDate || ''));
+      if (dCmp !== 0) return dCmp;
+      return parseTimeMinutes(a.startTime) - parseTimeMinutes(b.startTime);
+    });
   }, [data, unitFilter]);
 
   const availableDates = useMemo(() => {
@@ -149,16 +198,38 @@ export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ 
             Rolling 14-day schedule window ({formatDateLabel(data.cathlab?.windowStart || '')} → {formatDateLabel(data.cathlab?.windowEnd || '')}) isolated from Surgical OR
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => loadProcedures(true)}
-          disabled={refreshing || loading}
-          className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-[#142924] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-emerald-500/25 hover:bg-slate-50 cursor-pointer disabled:opacity-50"
-          aria-label="Refresh Cath Lab and Endoscopy schedules"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => handleDownloadRefined('endoscopy')}
+            disabled={downloadingUnit !== null || loading}
+            title={`Download Refined Endoscopy List for ${formatDateLabel(specificDate || referenceDate)}`}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-sky-700 hover:bg-sky-800 text-white transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {downloadingUnit === 'endoscopy' ? 'Generating...' : `Endoscopy List (${formatDateLabel(specificDate || referenceDate)})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDownloadRefined('cathlab')}
+            disabled={downloadingUnit !== null || loading}
+            title={`Download Refined Cath Lab List for ${formatDateLabel(specificDate || referenceDate)}`}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-rose-700 hover:bg-rose-800 text-white transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {downloadingUnit === 'cathlab' ? 'Generating...' : `Cath Lab List (${formatDateLabel(specificDate || referenceDate)})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => loadProcedures(true)}
+            disabled={refreshing || loading}
+            className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-[#142924] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-emerald-500/25 hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+            aria-label="Refresh Cath Lab and Endoscopy schedules"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -413,11 +484,11 @@ export const ProceduresScheduleView: React.FC<ProceduresScheduleViewProps> = ({ 
                       </td>
                       <td className="py-3 px-4 max-w-xs">
                         <div className="font-medium text-slate-800 dark:text-slate-200">
-                          {c.engOperationName || c.arOperationName || '—'}
+                          {cleanOpLabel(c.engOperationName) || cleanOpLabel(c.arOperationName) || '—'}
                         </div>
                         {c.arOperationName && c.engOperationName && (
                           <div className="text-[11px] text-slate-500 dark:text-slate-400" dir="rtl">
-                            {c.arOperationName}
+                            {cleanOpLabel(c.arOperationName)}
                           </div>
                         )}
                         {c.surgeonName && (

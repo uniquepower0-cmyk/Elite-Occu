@@ -143,6 +143,55 @@ class TestNewPowerBIFeeds(unittest.TestCase):
         self.assertEqual(empty_res["items"], [])
         self.assertEqual(empty_res["summary"]["todayCount"], 0)
 
+    def test_parse_procedures_dedupes_cathlab_dose_fanout_and_cleans_endo_status(self):
+        # Reproduces exact 23/11 MRN 275679 2x2 Cathlab Dose fan-out -> must collapse 4 rows into 2
+        fanout_xlsx = _df_to_xlsx_bytes([
+            [
+                "EnglishFullName", "Room Name", "Start Time", "End Time",
+                "Expr1", "Expr2", "MRN", "Actual Patient Name", "Cathlab Dose",
+                "StartDateTime", "Status", "VT",
+            ],
+            [
+                "Ahmed Sultaan", "Cath Lab Theatre", "19:55", "20:15",
+                "Cerebral coiling", "تصوير الشرايين المخيه//s-SpecialNature//", "275679", "Amal", "radiation dose : 6515 gycm2",
+                "2026-11-23 19:55:00", "Completed", "HC",
+            ],
+            [
+                "Ahmed Sultaan", "Cath Lab Theatre", "19:55", "20:15",
+                "Cerebral coiling", "تصوير الشرايين المخيه//s-SpecialNature//", "275679", "Amal", "radiation dose : 30 gycm2",
+                "2026-11-23 19:55:00", "Completed", "HC",
+            ],
+            [
+                "Ahmed Sultaan", "Cath Lab Theatre", "10:00", "10:20",
+                "Diagnostic Cerebral Angiography", "قسطرة تشخيصية//s-Major", "275679", "Amal", "radiation dose : 6515 gycm2",
+                "2026-11-23 10:00:00", "Completed", "HC",
+            ],
+            [
+                "Ahmed Sultaan", "Cath Lab Theatre", "10:00", "10:20",
+                "Diagnostic Cerebral Angiography", "قسطرة تشخيصية//s-Major", "275679", "Amal", "radiation dose : 30 gycm2",
+                "2026-11-23 10:00:00", "Completed", "HC",
+            ],
+        ])
+        res = sync_mod.parse_powerbi_procedure_excel(fanout_xlsx, unit="cathlab", reference_date_str="2026-11-24")
+        self.assertEqual(len(res["items"]), 2)
+        self.assertEqual(res["summary"]["recentCount"], 2)
+        # Chronological 24h order: 10:00 AM before 07:55 PM
+        self.assertEqual(res["items"][0]["startTime"], "10:00 AM")
+        self.assertEqual(res["items"][1]["startTime"], "07:55 PM")
+        # //s-* suffix stripped from Arabic operation name
+        self.assertEqual(res["items"][0]["arOperationName"], "قسطرة تشخيصية")
+        self.assertEqual(res["items"][1]["arOperationName"], "تصوير الشرايين المخيه")
+
+        # Endoscopy without explicit Status column should infer Completed when Actual End exists
+        endo_xlsx = _df_to_xlsx_bytes([
+            ["EnglishFullName", "Room Name", "Start Time", "End Time", "Expr1", "Expr2", "MRN", "Patient Name", "StartDateTime", "Actual Start", "Actual End"],
+            ["Essam Bedawi", "Endoscopy Operation Theatre", "03:30", "03:50", "Colonoscopy", "منظار قولون//s-Moderate", "275816", "Ali", "2026-11-23 03:30:00", "2026-11-23 13:17:47", "2026-11-23 13:24:35"],
+        ])
+        endo_res = sync_mod.parse_powerbi_procedure_excel(endo_xlsx, unit="endoscopy", reference_date_str="2026-11-24")
+        self.assertEqual(len(endo_res["items"]), 1)
+        self.assertEqual(endo_res["items"][0]["status"], "Completed")
+        self.assertEqual(endo_res["items"][0]["arOperationName"], "منظار قولون")
+
     def test_upsert_feed_node_two_tier_dedup_and_dry_run(self):
         sync_mod._last_feed_hashes.clear()
         payload_body = {"summary": {"total": 2}, "items": [{"mrn": "1"}, {"mrn": "2"}]}

@@ -142,6 +142,82 @@ export function enrichOpdLiveWithScheduleCapacity(
 
 export type ProcedureWindowMode = 'today' | 'upcoming' | 'recent' | 'all';
 
+export function cleanProcedureOpName(raw: string | null | undefined): string {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/\s*\/\/\s*s-[^\s/]+\/*\s*/gi, '')
+    .replace(/\s*\/\/+\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function parseProcedureTimeMinutes(timeStr: string | null | undefined): number {
+  if (!timeStr) return 9999;
+  const s = String(timeStr).trim().toLowerCase();
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return 9999;
+  let h = parseInt(m[1], 10);
+  const mins = parseInt(m[2], 10);
+  const isPM = s.includes('pm') || s.includes('م');
+  const isAM = s.includes('am') || s.includes('ص');
+  if (isPM && h < 12) h += 12;
+  else if (isAM && h === 12) h = 0;
+  return h * 60 + mins;
+}
+
+export function dedupeProcedureCases(items: ProcedureCaseItem[]): ProcedureCaseItem[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const mergeDistinct = (existing: string, incoming: string, sep = ' / '): string => {
+    const cleanIn = String(incoming || '').trim();
+    if (!cleanIn) return existing || '';
+    const parts = String(existing || '')
+      .split(sep.trim())
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (!parts.includes(cleanIn)) parts.push(cleanIn);
+    return parts.join(sep);
+  };
+
+  const map = new Map<string, ProcedureCaseItem>();
+  for (const raw of items) {
+    const mrnKey = cleanMrnKey(raw.mrn);
+    const nameKey = normalizeDoctorKey(raw.patientName);
+    const key = `${raw.procedureDate || ''}|${mrnKey || nameKey}|${(raw.startTime || '').trim()}|${(raw.room || '').trim().toLowerCase()}`;
+    const cleanedOpEn = cleanProcedureOpName(raw.engOperationName);
+    const cleanedOpAr = cleanProcedureOpName(raw.arOperationName);
+
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, {
+        ...raw,
+        engOperationName: cleanedOpEn,
+        arOperationName: cleanedOpAr,
+      });
+    } else {
+      existing.engOperationName = mergeDistinct(existing.engOperationName, cleanedOpEn);
+      existing.arOperationName = mergeDistinct(existing.arOperationName, cleanedOpAr);
+      existing.surgeonName = mergeDistinct(existing.surgeonName, raw.surgeonName);
+      existing.cathlabDose = mergeDistinct(existing.cathlabDose, raw.cathlabDose, ' | ');
+      existing.operativeComment = mergeDistinct(existing.operativeComment, raw.operativeComment);
+      if (!existing.actualStart && raw.actualStart) existing.actualStart = raw.actualStart;
+      if (!existing.actualEnd && raw.actualEnd) existing.actualEnd = raw.actualEnd;
+      if (existing.status?.toLowerCase() !== 'completed' && raw.status?.toLowerCase() === 'completed') {
+        existing.status = raw.status;
+      }
+    }
+  }
+
+  return Array.from(map.values())
+    .sort((a, b) => {
+      const dateCmp = String(a.procedureDate || '').localeCompare(String(b.procedureDate || ''));
+      if (dateCmp !== 0) return dateCmp;
+      const tCmp = parseProcedureTimeMinutes(a.startTime) - parseProcedureTimeMinutes(b.startTime);
+      if (tCmp !== 0) return tCmp;
+      return String(a.room || '').localeCompare(String(b.room || ''));
+    })
+    .map((item, idx) => ({ ...item, serial: String(idx + 1) }));
+}
+
 export function filterProcedureCases(
   items: ProcedureCaseItem[],
   referenceDate: string,
@@ -149,11 +225,12 @@ export function filterProcedureCases(
   specificDate?: string,
 ): ProcedureCaseItem[] {
   if (!Array.isArray(items)) return [];
+  const deduped = dedupeProcedureCases(items);
   if (specificDate) {
-    return items.filter((it) => it.procedureDate === specificDate);
+    return deduped.filter((it) => it.procedureDate === specificDate);
   }
-  if (mode === 'today') return items.filter((it) => it.procedureDate === referenceDate);
-  if (mode === 'upcoming') return items.filter((it) => it.procedureDate > referenceDate);
-  if (mode === 'recent') return items.filter((it) => it.procedureDate < referenceDate);
-  return items;
+  if (mode === 'today') return deduped.filter((it) => it.procedureDate === referenceDate);
+  if (mode === 'upcoming') return deduped.filter((it) => it.procedureDate > referenceDate);
+  if (mode === 'recent') return deduped.filter((it) => it.procedureDate < referenceDate);
+  return deduped;
 }
