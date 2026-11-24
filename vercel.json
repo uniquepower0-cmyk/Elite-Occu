@@ -3,6 +3,10 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
+    "api/ping.ts": {
+      "memory": 128,
+      "maxDuration": 5
+    },
     "api/index.ts": {
       "memory": 1024,
       "maxDuration": 60,
@@ -36,6 +40,6 @@
     }
   ],
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index" }
+    { "source": "/api/((?!ping$).*)", "destination": "/api/index" }
   ]
 }
