@@ -161,7 +161,7 @@ const ViewLoadingFallback = () => (
   </div>
 );
 
-type View = 'dashboard' | 'patients' | 'approvals' | 'opd' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'procedures' | 'audit-logs' | 'maintenance';
+type View = 'dashboard' | 'patients' | 'approvals' | 'medical-director' | 'duty-manager' | 'mohanad-sheets' | 'occupancy-history' | 'or-history' | 'audit-logs' | 'maintenance';
 type MohanadSubTab = 'downloads' | 'inputs' | 'transfers';
 type PaymentFilter = 'all' | 'cash' | 'insured' | 'vip';
 
@@ -557,7 +557,9 @@ export default function App() {
   const [opdList, setOpdList] = useState<any[]>([]);
   const [opdListDate, setOpdListDate] = useState<string>('');
   const [rawOccupancyRows, setRawOccupancyRows] = useState<any[][]>([]);
-  const [dashboardTab, setDashboardTab] = useState<'hospital' | 'or-list'>('hospital');
+  const [dashboardTab, setDashboardTab] = useState<'hospital' | 'or-list' | 'opd' | 'procedures'>('hospital');
+  const [opdRetryKey, setOpdRetryKey] = useState(0);
+  const [proceduresRetryKey, setProceduresRetryKey] = useState(0);
   const [hoveredPatient, setHoveredPatient] = useState<any | null>(null);
   const [orSearchQuery, setOrSearchQuery] = useState('');
   const deferredOrSearchQuery = useDeferredValue(orSearchQuery);
@@ -3045,7 +3047,8 @@ export default function App() {
       { id: 'nav-dm', label: 'Go to Duty Manager', category: 'Navigation', onSelect: () => setCurrentView('duty-manager') },
       { id: 'nav-mohanad', label: "Go to Mohanad's Sheets", category: 'Navigation', keywords: 'vip transfers downloads', onSelect: () => { setCurrentView('mohanad-sheets'); setMohanadSubTab('downloads'); } },
       { id: 'nav-occ-hist', label: 'Go to Occupancy History (11:59 PM)', category: 'Navigation', onSelect: () => setCurrentView('occupancy-history') },
-      { id: 'nav-opd', label: 'Go to OPD Status', category: 'Navigation', onSelect: () => setCurrentView('opd') },
+      { id: 'nav-opd', label: 'Go to OPD Dashboard', category: 'Navigation', keywords: 'outpatient clinics queue opd', onSelect: () => { setCurrentView('dashboard'); setDashboardTab('opd'); } },
+      { id: 'nav-procedures', label: 'Go to Cath Lab & Endoscopy', category: 'Navigation', keywords: 'cath lab endoscopy procedures heart', onSelect: () => { setCurrentView('dashboard'); setDashboardTab('procedures'); } },
       { id: 'nav-or-hist', label: 'Go to OR Dashboard History', category: 'Navigation', onSelect: () => setCurrentView('or-history') },
       { id: 'act-sync', label: 'Sync Now with Database', category: 'Action', keywords: 'refresh reload', icon: <RefreshCw className="w-4 h-4" />, onSelect: () => { fetchData({ force: true }); setOccupancyHistoryRefreshKey(k => k + 1); } },
       { id: 'act-copy-vip', label: 'Copy Formatted VIP Cases', category: 'Action', icon: <Crown className="w-4 h-4" />, onSelect: handleCopyFormattedVips },
@@ -3332,13 +3335,6 @@ export default function App() {
             <h3 className="text-[10px] font-extrabold text-brand-primary/70 uppercase tracking-widest mb-3 px-3">History & Archives</h3>
             <nav className="space-y-1.5">
               <NavItem 
-                active={currentView === 'opd'} 
-                onClick={() => handleNav('opd')}
-                icon={<Stethoscope />}
-                label="OPD Status"
-                badge={opdList.length > 0 ? `${opdList.length}` : 'OPD'}
-              />
-              <NavItem 
                 active={currentView === 'occupancy-history'} 
                 onClick={() => handleNav('occupancy-history')}
                 icon={<Calendar />}
@@ -3351,13 +3347,6 @@ export default function App() {
                 icon={<Activity />}
                 label="OR Dashboard History"
                 badge="OR"
-              />
-              <NavItem
-                active={currentView === 'procedures'}
-                onClick={() => handleNav('procedures')}
-                icon={<HeartPulse />}
-                label="Cath Lab & Endo"
-                badge="CATH"
               />
             </nav>
           </div>
@@ -3646,41 +3635,104 @@ export default function App() {
                 className="space-y-8 min-w-0 w-full max-w-full"
               >
                 {/* Dashboard Tabs Selector */}
-                <div className="flex border-b border-teal-600/10 pb-px gap-6 px-1 shrink-0">
+                <div
+                  role="tablist"
+                  aria-label="Operational dashboards"
+                  className="flex items-center overflow-x-auto custom-scrollbar border-b border-teal-600/10 dark:border-emerald-500/20 pb-px gap-5 sm:gap-6 px-1 shrink-0"
+                >
                   <button
+                    type="button"
+                    role="tab"
+                    id="dashboard-tab-hospital"
+                    aria-selected={dashboardTab === 'hospital'}
+                    aria-controls="dashboard-panel-hospital"
                     onClick={() => setDashboardTab('hospital')}
-                    className={`pb-3 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 ${
+                    className={`min-h-[44px] pb-3 pt-2 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/50 rounded-t-lg ${
                       dashboardTab === 'hospital'
-                        ? 'text-brand-primary'
-                        : 'text-slate-400 hover:text-slate-600'
+                        ? 'text-brand-primary dark:text-emerald-400'
+                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
                     }`}
                   >
                     Hospital Occupancy Dashboard
                     {dashboardTab === 'hospital' && (
                       <motion.div 
                         layoutId="activeSubDashboardTab" 
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary dark:bg-emerald-400" 
                       />
                     )}
                   </button>
                   <button
+                    type="button"
+                    role="tab"
+                    id="dashboard-tab-or-list"
+                    aria-selected={dashboardTab === 'or-list'}
+                    aria-controls="dashboard-panel-or-list"
                     onClick={() => setDashboardTab('or-list')}
-                    className={`pb-3 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 ${
+                    className={`min-h-[44px] pb-3 pt-2 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/50 rounded-t-lg ${
                       dashboardTab === 'or-list'
-                        ? 'text-brand-primary'
-                        : 'text-slate-400 hover:text-slate-600'
+                        ? 'text-brand-primary dark:text-emerald-400'
+                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
                     }`}
                   >
                     OR Dashboard
                     {(orListCount > 0 || orOccupancyPatients.length > 0) && (
-                      <span className="px-1.5 py-0.5 bg-brand-primary/10 text-brand-primary text-[10px] font-bold rounded-full font-mono">
+                      <span className="px-1.5 py-0.5 bg-brand-primary/10 dark:bg-emerald-500/20 text-brand-primary dark:text-emerald-300 text-[10px] font-bold rounded-full font-mono">
                         {orListCount > 0 ? orListCount : orOccupancyPatients.length}
                       </span>
                     )}
                     {dashboardTab === 'or-list' && (
                       <motion.div 
                         layoutId="activeSubDashboardTab" 
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary dark:bg-emerald-400" 
+                      />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="dashboard-tab-opd"
+                    aria-selected={dashboardTab === 'opd'}
+                    aria-controls="dashboard-panel-opd"
+                    onClick={() => setDashboardTab('opd')}
+                    className={`min-h-[44px] pb-3 pt-2 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/50 rounded-t-lg ${
+                      dashboardTab === 'opd'
+                        ? 'text-brand-primary dark:text-emerald-400'
+                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <Stethoscope className="w-4 h-4 shrink-0" />
+                    OPD Dashboard
+                    {opdList.length > 0 && (
+                      <span className="px-1.5 py-0.5 bg-brand-primary/10 dark:bg-emerald-500/20 text-brand-primary dark:text-emerald-300 text-[10px] font-bold rounded-full font-mono">
+                        {opdList.length}
+                      </span>
+                    )}
+                    {dashboardTab === 'opd' && (
+                      <motion.div 
+                        layoutId="activeSubDashboardTab" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary dark:bg-emerald-400" 
+                      />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="dashboard-tab-procedures"
+                    aria-selected={dashboardTab === 'procedures'}
+                    aria-controls="dashboard-panel-procedures"
+                    onClick={() => setDashboardTab('procedures')}
+                    className={`min-h-[44px] pb-3 pt-2 text-sm font-extrabold tracking-tight transition-all relative flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/50 rounded-t-lg ${
+                      dashboardTab === 'procedures'
+                        ? 'text-brand-primary dark:text-emerald-400'
+                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <HeartPulse className="w-4 h-4 shrink-0" />
+                    Cath Lab &amp; Endoscopy
+                    {dashboardTab === 'procedures' && (
+                      <motion.div 
+                        layoutId="activeSubDashboardTab" 
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary dark:bg-emerald-400" 
                       />
                     )}
                   </button>
@@ -3706,7 +3758,8 @@ export default function App() {
                   )}
                 </AnimatePresence>
 
-                {/* Auto-Fetch Schedule & Cloud Sync Bar with Dual Timestamps */}
+                {/* Auto-Fetch Schedule & Cloud Sync Bar with Dual Timestamps (Inpatient & OR only) */}
+                {(dashboardTab === 'hospital' || dashboardTab === 'or-list') && (
                 <div className="bg-white/95 border border-emerald-900/10 text-slate-800 p-4 rounded-2xl flex flex-col 2xl:flex-row 2xl:items-center 2xl:justify-between gap-4 shadow-xs w-full">
                   <div className="flex flex-wrap items-center gap-3">
                     {/* Live Realtime State Pill */}
@@ -3831,9 +3884,15 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                )}
 
                 {dashboardTab === 'hospital' && (
-                  <>
+                  <div
+                    role="tabpanel"
+                    id="dashboard-panel-hospital"
+                    aria-labelledby="dashboard-tab-hospital"
+                    className="space-y-8"
+                  >
 
                 {/* Metrics Matrix: 4 Clinical Domains */}
                 <div className="space-y-5 shrink-0">
@@ -4372,12 +4431,17 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                  </>
+                  </div>
                 )}
 
                 {dashboardTab === 'or-list' && (
                   /* Operating Room Sub-dashboard */
-                  <div className="space-y-8">
+                  <div
+                    role="tabpanel"
+                    id="dashboard-panel-or-list"
+                    aria-labelledby="dashboard-tab-or-list"
+                    className="space-y-8"
+                  >
                     {(!hasORList || orList.length === 0) && orOccupancyPatients.length === 0 ? (
                       <div className="flex flex-col items-center justify-center p-16 bg-white/60 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm text-center">
                         <FileSpreadsheet className="w-16 h-16 text-indigo-300 mb-4 animate-pulse" />
@@ -5266,6 +5330,44 @@ export default function App() {
                   </div>
                 )}
 
+                {dashboardTab === 'opd' && (
+                  <div
+                    role="tabpanel"
+                    id="dashboard-panel-opd"
+                    aria-labelledby="dashboard-tab-opd"
+                    className="space-y-6 animate-fade-in"
+                  >
+                    <ErrorBoundary
+                      fallbackTitle="OPD Dashboard Unavailable"
+                      fallbackSubtitle="Could not load OPD Dashboard view. Check network and retry."
+                      onReset={() => setOpdRetryKey(k => k + 1)}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <OPDStatusView key={opdRetryKey} initialItems={opdList} initialDate={opdListDate} />
+                      </React.Suspense>
+                    </ErrorBoundary>
+                  </div>
+                )}
+
+                {dashboardTab === 'procedures' && (
+                  <div
+                    role="tabpanel"
+                    id="dashboard-panel-procedures"
+                    aria-labelledby="dashboard-tab-procedures"
+                    className="space-y-6 animate-fade-in"
+                  >
+                    <ErrorBoundary
+                      fallbackTitle="Cath Lab & Endoscopy Schedules Unavailable"
+                      fallbackSubtitle="Could not load Cath Lab and Endoscopy schedules. Please retry."
+                      onReset={() => setProceduresRetryKey(k => k + 1)}
+                    >
+                      <React.Suspense fallback={<ViewLoadingFallback />}>
+                        <ProceduresScheduleView key={proceduresRetryKey} isVipFn={isVipMatcher} />
+                      </React.Suspense>
+                    </ErrorBoundary>
+                  </div>
+                )}
+
               </motion.div>
             )}
 
@@ -5481,7 +5583,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {(currentView === 'approvals' || currentView === 'procedures' || currentView === 'opd' || currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
+            {(currentView === 'approvals' || currentView === 'medical-director' || currentView === 'duty-manager' || currentView === 'mohanad-sheets' || currentView === 'occupancy-history' || currentView === 'or-history' || currentView === 'audit-logs' || currentView === 'maintenance') && (
               <motion.div 
                 key="role-workflows"
                 initial={{ opacity: 0, y: 10 }}
@@ -6076,21 +6178,6 @@ export default function App() {
                 )}
 
 
-                {/* Section: OPD Status */}
-                {currentView === 'opd' && (
-                  <section className="space-y-6 animate-fade-in">
-                    <ErrorBoundary
-                      fallbackTitle="OPD Status Unavailable"
-                      fallbackSubtitle="Could not load OPD Status view. Check network and retry."
-                      onReset={() => setCurrentView('opd')}
-                    >
-                      <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <OPDStatusView initialItems={opdList} initialDate={opdListDate} />
-                      </React.Suspense>
-                    </ErrorBoundary>
-                  </section>
-                )}
-
                 {/* Section: Standalone OR Dashboard History View */}
                 {currentView === 'or-history' && (
                   <section className="space-y-6 animate-fade-in">
@@ -6128,21 +6215,6 @@ export default function App() {
                             if (found) setSelectedPatient(found);
                           }}
                         />
-                      </React.Suspense>
-                    </ErrorBoundary>
-                  </section>
-                )}
-
-                {/* Section: Cath Lab & Endoscopy Schedules */}
-                {currentView === 'procedures' && (
-                  <section className="space-y-6 animate-fade-in">
-                    <ErrorBoundary
-                      fallbackTitle="Cath Lab & Endoscopy Schedules Unavailable"
-                      fallbackSubtitle="Could not load Cath Lab and Endoscopy schedules. Please retry."
-                      onReset={() => setCurrentView('procedures')}
-                    >
-                      <React.Suspense fallback={<ViewLoadingFallback />}>
-                        <ProceduresScheduleView isVipFn={isVipMatcher} />
                       </React.Suspense>
                     </ErrorBoundary>
                   </section>
