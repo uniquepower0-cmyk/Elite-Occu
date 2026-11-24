@@ -32,7 +32,7 @@ import platform
 import socket
 from dataclasses import dataclass, field
 from typing import Any, Final, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 
 import urllib3
 import requests
@@ -107,9 +107,11 @@ if os.path.exists(_env_path):
 SUPABASE_URL: Final[str] = os.getenv("SUPABASE_URL", "https://uuvomcxbgldgtmuqtymk.supabase.co").rstrip("/")
 SUPABASE_KEY: Final[str] = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-FORTINET_URL: Final[str] = os.getenv("FORTINET_URL", "http://10.0.17.4:1000")
+FORTINET_URL: Final[str] = os.getenv("FORTINET_URL", "https://10.0.17.4:1003").rstrip("/")
 FORTINET_USER: Final[str] = os.getenv("FORTINET_USER", "")
 FORTINET_PASS: Final[str] = os.getenv("FORTINET_PASS", "")
+# FortiGate captive portal commonly uses an internal self-signed cert on :1003; set FORTINET_SSL_VERIFY=1 if trusted CA is installed
+FORTINET_SSL_VERIFY: Final[bool] = os.getenv("FORTINET_SSL_VERIFY", "0").lower() not in ("0", "false", "no")
 
 POWERBI_EXPORT_URL: Final[str] = os.getenv(
     "POWERBI_EXPORT_URL",
@@ -150,7 +152,7 @@ POWERBI_TIMEOUT: Final[int] = int(os.getenv("POWERBI_TIMEOUT", "90"))
 # SSL Verification configuration (defaults to True; set SUPABASE_SSL_VERIFY=0 only if internal proxy intercepts SSL)
 SUPABASE_SSL_VERIFY: Final[bool] = os.getenv("SUPABASE_SSL_VERIFY", "1").lower() not in ("0", "false", "no")
 
-if not SUPABASE_SSL_VERIFY:
+if not SUPABASE_SSL_VERIFY or not FORTINET_SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SUPABASE_REST_URL: Final[str] = f"{SUPABASE_URL}/rest/v1/rtdb_nodes"
@@ -852,46 +854,211 @@ class NormalizedPatientRecord:
 
 # --- FORTINET AUTHENTICATION ---
 
-def fortinet_reconnect(max_retries: int = 5) -> bool:
-    """Authenticates with the Fortinet gateway with exponential backoff and bounded retries."""
+_fortinet_keepalive_url: Optional[str] = None
+
+
+def _is_fortinet_gateway_reachable(url: str, timeout: float = 3.0) -> bool:
+    """TCP reachability pre-check against the Fortinet portal host/port before attempting logout."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        return False
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _parse_fortinet_login_form(html: str, page_url: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Extracts the Fortinet form action URL, hidden magic token, and hidden 4Tredir field from HTML."""
+    action_match = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    action = action_match.group(1) if action_match else "/"
+    post_url = urljoin(page_url, action)
+
+    def _extract_input_value(field_name: str) -> Optional[str]:
+        escaped = re.escape(field_name)
+        m = re.search(
+            rf'<input[^>]+name=["\']{escaped}["\'][^>]+value=["\']([^"\']*)["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if not m:
+            m = re.search(
+                rf'<input[^>]+value=["\']([^"\']*)["\'][^>]+name=["\']{escaped}["\']',
+                html,
+                re.IGNORECASE,
+            )
+        return m.group(1) if m else None
+
+    magic_token = _extract_input_value("magic")
+    if not magic_token:
+        magic_token = parse_qs(urlparse(page_url).query).get("magic", [None])[0]
+    redir_value = _extract_input_value("4Tredir")
+    return post_url, magic_token, redir_value
+
+
+def _extract_fortinet_keepalive_url(response: requests.Response, base_url: str) -> Optional[str]:
+    """Extracts the FortiGate /keepalive?<token> URL from either Location header or JS redirect body."""
+    location = response.headers.get("Location", "")
+    if "keepalive?" in location.lower():
+        return urljoin(base_url, location)
+    match = re.search(r'["\']([^"\']*keepalive\?[^"\']+)["\']', response.text, re.IGNORECASE)
+    if match:
+        return urljoin(base_url, match.group(1))
+    return None
+
+
+def _is_fortinet_keepalive_active(response: requests.Response) -> bool:
+    """Validates that a keepalive response represents an active FortiGate authenticated session."""
+    if response.status_code != 200:
+        return False
+    body_lower = response.text.lower()
+    if 'name="password"' in body_lower or "authentication failed" in body_lower:
+        return False
+    return ("keepalive window" in body_lower) or ('id="countdown"' in body_lower) or ("keepalive?" in body_lower)
+
+
+def _extract_fortinet_failure_reason(html: str) -> str:
+    """Extracts a sanitized human-readable error message from a failed FortiGate login page."""
+    h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL)
+    p_matches = re.findall(r"<p[^>]*>(.*?)</p>", html, re.IGNORECASE | re.DOTALL)
+    parts: list[str] = []
+    if h1_match:
+        heading = re.sub(r"<[^>]+>", "", h1_match.group(1)).strip()
+        if heading:
+            parts.append(heading)
+    for p_raw in p_matches:
+        p_txt = re.sub(r"<[^>]+>", "", p_raw).replace("&apos;", "'").strip()
+        if p_txt:
+            parts.append(p_txt)
+            break
+    return " - ".join(parts) if parts else "Login response did not return a keepalive session URL"
+
+
+def fortinet_reconnect(
+    max_retries: int = 5,
+    force_relogin: bool = False,
+    logout_wait_seconds: float = 2.0,
+) -> bool:
+    """Authenticates with the Fortinet gateway using keepalive-first refresh and atomic logout/relogin."""
+    global _fortinet_keepalive_url
+
     if not FORTINET_USER or not FORTINET_PASS:
         log("No Fortinet credentials provided in environment; skipping firewall auth.")
         return True
 
-    login_url = f"{FORTINET_URL}/login"
-    logout_url = f"{FORTINET_URL}/logout"
+    if not _is_fortinet_gateway_reachable(FORTINET_URL):
+        log(f"Fortinet gateway {FORTINET_URL} unreachable (off-site or not intercepting); proceeding.")
+        return True
+
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    # Fast path: reuse active keepalive session instead of tearing down connectivity on every cycle
+    if not force_relogin and _fortinet_keepalive_url:
+        try:
+            with requests.Session() as ka_session:
+                ka_session.headers.update(headers)
+                ka_resp = ka_session.get(
+                    _fortinet_keepalive_url,
+                    timeout=6,
+                    verify=FORTINET_SSL_VERIFY,
+                    allow_redirects=False,
+                )
+                if _is_fortinet_keepalive_active(ka_resp):
+                    log("Fortinet firewall session refreshed via keepalive.")
+                    return True
+                log("Fortinet keepalive session expired; performing full logout/relogin...", level="warning")
+        except Exception as e:
+            log(f"Fortinet keepalive refresh failed ({type(e).__name__}); performing full logout/relogin...", level="warning")
+        _fortinet_keepalive_url = None
+
+    # Non-empty query (?0) is required: FortiGate drops bare /logout and /login, and requests strips trailing '?'
+    logout_url = f"{FORTINET_URL}/logout?0"
+    login_url = f"{FORTINET_URL}/login?0"
 
     for attempt in range(1, max_retries + 1):
         with requests.Session() as session:
             session.headers.update(headers)
-            log(f"Fortinet session authentication attempt {attempt}/{max_retries}...")
+            log(f"Fortinet session authentication attempt {attempt}/{max_retries} ({FORTINET_URL})...")
             try:
+                # Step 1: Clear any active firewall session so concurrent session limits are not hit
                 try:
-                    session.get(logout_url, timeout=6)
-                except Exception:
-                    pass
-                time.sleep(2)
+                    logout_resp = session.get(
+                        logout_url,
+                        timeout=6,
+                        verify=FORTINET_SSL_VERIFY,
+                        allow_redirects=False,
+                    )
+                    if "successfully logged out" in logout_resp.text.lower():
+                        log("Fortinet existing session logged out cleanly.")
+                except Exception as logout_err:
+                    log(f"Fortinet logout step notice: {type(logout_err).__name__}: {logout_err}", level="warning")
 
-                credentials = {"username": FORTINET_USER, "password": FORTINET_PASS}
-                login_page = session.get(login_url, timeout=8)
-                parsed_url = urlparse(login_page.url)
-                magic_token = parse_qs(parsed_url.query).get("magic", [None])[0]
-                if magic_token:
-                    credentials["magic"] = magic_token
+                # Wait locally before re-authenticating (no external internet required)
+                if logout_wait_seconds > 0:
+                    time.sleep(logout_wait_seconds)
 
-                response = session.post(login_page.url, data=credentials, timeout=12)
-                if response.status_code in (200, 302, 303):
+                # Step 2: Fetch login page and parse form action, hidden magic token, and 4Tredir
+                login_page = session.get(
+                    login_url,
+                    timeout=8,
+                    verify=FORTINET_SSL_VERIFY,
+                    allow_redirects=True,
+                )
+                if login_page.status_code != 200:
+                    raise RuntimeError(f"Unexpected HTTP {login_page.status_code} from Fortinet login page")
+
+                post_url, magic_token, redir_value = _parse_fortinet_login_form(login_page.text, login_page.url)
+                if not magic_token:
+                    raise RuntimeError("Could not extract Fortinet hidden 'magic' token from login page")
+
+                credentials: dict[str, str] = {
+                    "username": FORTINET_USER,
+                    "password": FORTINET_PASS,
+                    "magic": magic_token,
+                }
+                if redir_value:
+                    credentials["4Tredir"] = redir_value
+
+                # Step 3: POST credentials to resolved form action URL (typically '/')
+                response = session.post(
+                    post_url,
+                    data=credentials,
+                    timeout=12,
+                    verify=FORTINET_SSL_VERIFY,
+                    allow_redirects=False,
+                )
+                keepalive_url = _extract_fortinet_keepalive_url(response, post_url)
+                if keepalive_url:
+                    _fortinet_keepalive_url = keepalive_url
+                    try:
+                        ka_confirm = session.get(
+                            keepalive_url,
+                            timeout=6,
+                            verify=FORTINET_SSL_VERIFY,
+                            allow_redirects=False,
+                        )
+                        if _is_fortinet_keepalive_active(ka_confirm):
+                            log("Successfully authenticated with Fortinet Firewall (keepalive confirmed).")
+                            return True
+                    except Exception as ka_err:
+                        log(f"Fortinet login returned keepalive URL, confirmation notice: {ka_err}", level="warning")
                     log("Successfully authenticated with Fortinet Firewall.")
                     return True
-            except requests.exceptions.ConnectionError:
-                log("Fortinet endpoint directly reachable or not intercepting; proceeding.")
-                return True
-            except Exception as e:
-                log(f"Fortinet auth attempt {attempt} encountered error: {e}", level="warning")
 
-        backoff = min(2 ** attempt, 15)
-        failure_countdown(backoff, "Fortinet Authentication")
+                reason = _extract_fortinet_failure_reason(response.text)
+                log(
+                    f"Fortinet auth attempt {attempt} rejected (HTTP {response.status_code}): {reason}",
+                    level="warning",
+                )
+            except Exception as e:
+                log(f"Fortinet auth attempt {attempt} encountered error: {type(e).__name__}: {e}", level="warning")
+
+        if attempt < max_retries:
+            backoff = min(2 ** attempt, 15)
+            failure_countdown(backoff, "Fortinet Authentication")
 
     log("Exceeded maximum Fortinet authentication attempts; proceeding with sync attempt.", level="warning")
     return False
